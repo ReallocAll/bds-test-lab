@@ -1,31 +1,206 @@
 {
-  "bds_version": [],
-  "completed_at": "2026-08-24T21:11:19.676198Z",
+  "bds_version": "26.44",
+  "completed_at": "2026-08-24T21:13:42.541966Z",
   "components": {
-    "endstone": null,
-    "spark": null
+    "endstone": {
+      "artifact": "endstone-0.11.10.dev372-linux-x86_64.zip",
+      "artifact_id": 9536585748,
+      "run_id": 32770415029,
+      "run_url": "https://github.com/EndstoneMC/endstone/actions/runs/32770415029",
+      "sha": "bf772c28a02db73d3119a45f58c479207254795a",
+      "workflow": "Build"
+    },
+    "spark": {
+      "artifact": "spark-linux-32772545567",
+      "artifact_id": 9536855609,
+      "run_id": 32772545567,
+      "run_url": "https://github.com/ReallocAll/spark/actions/runs/32772545567",
+      "sha": "0794b58222979e7ea3f747a2566ea5e200281a89",
+      "workflow": "Build"
+    }
   },
-  "lab_commit": "b461849347c56dca1ca2b07db268bc5734f29c36",
+  "lab_commit": "f721e42ef4a6c6741ed2466ff6cc5ac586c6566d",
   "platforms": {
     "linux": {
-      "allocation_profile_viewer_url": null,
-      "bds_version": null,
-      "checks": [],
-      "error_summary": "ArtifactResolutionError: Artifact download failed (415) for EndstoneMC/endstone/endstone-0.11.10.dev372-linux-x86_64.zip: {\"message\":\"Unsupported 'Accept' header: 'application/octet-stream'. Must accept 'application/json'.\",\"documentation_url\":\"https://docs.github.com/v3/media\",\"status\":\"415\"}",
-      "execution_profile_viewer_url": null,
-      "failed_stage": "artifact-discovery",
-      "shutdown_status": "not_started",
-      "status": "FAIL"
+      "allocation_profile_viewer_url": "https://spark.lucko.me/EQl2TQgsNK",
+      "bds_version": "26.44",
+      "checks": [
+        {
+          "name": "artifact-discovery",
+          "status": "PASS"
+        },
+        {
+          "detail": "downloads/endstone/payload/endstone-0.11.10.dev372-linux-x86_64/endstone-0.11.10.dev372-cp313-cp313-manylinux_2_31_x86_64.whl",
+          "name": "endstone-wheel-located",
+          "status": "PASS"
+        },
+        {
+          "detail": "work/linux/bedrock_server/plugins/endstone_spark.so",
+          "name": "spark-plugin-deployed",
+          "status": "PASS"
+        },
+        {
+          "name": "bds-start",
+          "status": "PASS"
+        },
+        {
+          "name": "ready",
+          "status": "PASS"
+        },
+        {
+          "name": "spark-load-enable",
+          "status": "PASS"
+        },
+        {
+          "detail": "spark profiler info",
+          "name": "spark-profiler-info",
+          "status": "PASS"
+        },
+        {
+          "detail": "spark tps",
+          "name": "spark-tps",
+          "status": "PASS"
+        },
+        {
+          "detail": "spark health",
+          "name": "spark-health",
+          "status": "PASS"
+        },
+        {
+          "detail": "spark activity",
+          "name": "spark-activity",
+          "status": "PASS"
+        },
+        {
+          "name": "execution-profiler",
+          "status": "PASS",
+          "viewer_url": "https://spark.lucko.me/IbirG9oiMR"
+        },
+        {
+          "name": "allocation-profiler",
+          "status": "PASS",
+          "viewer_url": "https://spark.lucko.me/EQl2TQgsNK"
+        },
+        {
+          "name": "bds-start",
+          "status": "PASS"
+        },
+        {
+          "name": "ready",
+          "status": "PASS"
+        },
+        {
+          "name": "spark-load-enable",
+          "status": "PASS"
+        },
+        {
+          "crash_replay": "not_forced",
+          "detail": "clean restart succeeded; abrupt crash-replay path not forced in headless CI",
+          "name": "recovery",
+          "status": "PASS"
+        },
+        {
+          "detail": "graceful; no residual BDS process",
+          "name": "shutdown",
+          "status": "PASS"
+        }
+      ],
+      "error_summary": null,
+      "execution_profile_viewer_url": "https://spark.lucko.me/IbirG9oiMR",
+      "failed_stage": null,
+      "shutdown_status": "graceful",
+      "status": "PASS"
     },
     "windows": {
       "allocation_profile_viewer_url": null,
-      "bds_version": null,
-      "checks": [],
-      "error_summary": "ArtifactResolutionError: Artifact download failed (415) for EndstoneMC/endstone/endstone-0.11.10.dev372-windows-x86_64.zip: {\"message\":\"Unsupported 'Accept' header: 'application/octet-stream'. Must accept 'application/json'.\",\"documentation_url\":\"https://docs.github.com/v3/media\",\"status\":\"415\"}",
-      "execution_profile_viewer_url": null,
-      "failed_stage": "artifact-discovery",
-      "shutdown_status": "not_started",
-      "status": "FAIL"
+      "bds_version": "26.44",
+      "checks": [
+        {
+          "name": "artifact-discovery",
+          "status": "PASS"
+        },
+        {
+          "detail": "downloads\\endstone\\payload\\endstone-0.11.10.dev372-windows-x86_64\\endstone-0.11.10.dev372-cp313-cp313-win_amd64.whl",
+          "name": "endstone-wheel-located",
+          "status": "PASS"
+        },
+        {
+          "detail": "work\\windows\\bedrock_server\\plugins\\endstone_spark.dll",
+          "name": "spark-plugin-deployed",
+          "status": "PASS"
+        },
+        {
+          "name": "bds-start",
+          "status": "PASS"
+        },
+        {
+          "name": "ready",
+          "status": "PASS"
+        },
+        {
+          "name": "spark-load-enable",
+          "status": "PASS"
+        },
+        {
+          "detail": "spark profiler info",
+          "name": "spark-profiler-info",
+          "status": "PASS"
+        },
+        {
+          "detail": "spark tps",
+          "name": "spark-tps",
+          "status": "PASS"
+        },
+        {
+          "detail": "spark health",
+          "name": "spark-health",
+          "status": "PASS"
+        },
+        {
+          "detail": "spark activity",
+          "name": "spark-activity",
+          "status": "PASS"
+        },
+        {
+          "name": "execution-profiler",
+          "status": "PASS",
+          "viewer_url": "https://spark.lucko.me/0mm7svVHU7"
+        },
+        {
+          "detail": "explicitly disabled on Windows",
+          "expected_disabled": true,
+          "name": "allocation-profiler",
+          "status": "PASS"
+        },
+        {
+          "name": "bds-start",
+          "status": "PASS"
+        },
+        {
+          "name": "ready",
+          "status": "PASS"
+        },
+        {
+          "name": "spark-load-enable",
+          "status": "PASS"
+        },
+        {
+          "crash_replay": "not_forced",
+          "detail": "clean restart succeeded; abrupt crash-replay path not forced in headless CI",
+          "name": "recovery",
+          "status": "PASS"
+        },
+        {
+          "detail": "graceful; no residual BDS process",
+          "name": "shutdown",
+          "status": "PASS"
+        }
+      ],
+      "error_summary": null,
+      "execution_profile_viewer_url": "https://spark.lucko.me/0mm7svVHU7",
+      "failed_stage": null,
+      "shutdown_status": "graceful",
+      "status": "PASS"
     }
   },
   "schema_version": 1,
