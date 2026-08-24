@@ -1,8 +1,9 @@
 # Latest BDS integration test
 
-- Lab commit: `f721e42ef4a6c6741ed2466ff6cc5ac586c6566d`
+- Lab commit: `b3a0922db4e07109d3555d1cd57db0c66d817ee2`
+- Lab Actions: [32778560023](https://github.com/ReallocAll/bds-test-lab/actions/runs/32778560023)
 - State: **completed**
-- Completed: `2026-08-24T21:13:42.541966Z`
+- Completed: `2026-08-24T21:17:55.424631Z`
 
 ## Versions
 
@@ -15,5 +16,5 @@
 
 | Platform | Result | BDS | Failed stage | Shutdown | Execution profile | Allocation profile |
 |---|---|---|---|---|---|---|
-| Windows | **PASS** | `26.44` | `` | `graceful` | [viewer](https://spark.lucko.me/0mm7svVHU7) |  |
-| Linux | **PASS** | `26.44` | `` | `graceful` | [viewer](https://spark.lucko.me/IbirG9oiMR) | [viewer](https://spark.lucko.me/EQl2TQgsNK) |
+| Windows | **PASS** | `26.44` | `` | `graceful` | [viewer](https://spark.lucko.me/xlKEJp2o4Z) |  |
+| Linux | **PASS** | `26.44` | `` | `graceful` | [viewer](https://spark.lucko.me/4GWMxlTnhK) | [viewer](https://spark.lucko.me/6f3uGIQCjU) |

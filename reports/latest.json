@@ -1,6 +1,6 @@
 {
   "bds_version": "26.44",
-  "completed_at": "2026-08-24T21:13:42.541966Z",
+  "completed_at": "2026-08-24T21:17:55.424631Z",
   "components": {
     "endstone": {
       "artifact": "endstone-0.11.10.dev372-linux-x86_64.zip",
@@ -19,10 +19,13 @@
       "workflow": "Build"
     }
   },
-  "lab_commit": "f721e42ef4a6c6741ed2466ff6cc5ac586c6566d",
+  "lab_commit": "b3a0922db4e07109d3555d1cd57db0c66d817ee2",
+  "lab_run_id": "32778560023",
+  "lab_run_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/32778560023",
   "platforms": {
     "linux": {
-      "allocation_profile_viewer_url": "https://spark.lucko.me/EQl2TQgsNK",
+      "actions_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/32778560023",
+      "allocation_profile_viewer_url": "https://spark.lucko.me/6f3uGIQCjU",
       "bds_version": "26.44",
       "checks": [
         {
@@ -74,12 +77,12 @@
         {
           "name": "execution-profiler",
           "status": "PASS",
-          "viewer_url": "https://spark.lucko.me/IbirG9oiMR"
+          "viewer_url": "https://spark.lucko.me/4GWMxlTnhK"
         },
         {
           "name": "allocation-profiler",
           "status": "PASS",
-          "viewer_url": "https://spark.lucko.me/EQl2TQgsNK"
+          "viewer_url": "https://spark.lucko.me/6f3uGIQCjU"
         },
         {
           "name": "bds-start",
@@ -106,12 +109,13 @@
         }
       ],
       "error_summary": null,
-      "execution_profile_viewer_url": "https://spark.lucko.me/IbirG9oiMR",
+      "execution_profile_viewer_url": "https://spark.lucko.me/4GWMxlTnhK",
       "failed_stage": null,
       "shutdown_status": "graceful",
       "status": "PASS"
     },
     "windows": {
+      "actions_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/32778560023",
       "allocation_profile_viewer_url": null,
       "bds_version": "26.44",
       "checks": [
@@ -164,7 +168,7 @@
         {
           "name": "execution-profiler",
           "status": "PASS",
-          "viewer_url": "https://spark.lucko.me/0mm7svVHU7"
+          "viewer_url": "https://spark.lucko.me/xlKEJp2o4Z"
         },
         {
           "detail": "explicitly disabled on Windows",
@@ -197,7 +201,7 @@
         }
       ],
       "error_summary": null,
-      "execution_profile_viewer_url": "https://spark.lucko.me/0mm7svVHU7",
+      "execution_profile_viewer_url": "https://spark.lucko.me/xlKEJp2o4Z",
       "failed_stage": null,
       "shutdown_status": "graceful",
       "status": "PASS"
