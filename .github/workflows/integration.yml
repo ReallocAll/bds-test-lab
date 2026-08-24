@@ -83,7 +83,12 @@ jobs:
           path: collected
 
       - name: Build report
-        run: python3 controller/build_report.py --lab-commit "${{ github.sha }}" --input-root collected
+        run: >-
+          python3 controller/build_report.py
+          --lab-commit "${{ github.sha }}"
+          --lab-run-id "${{ github.run_id }}"
+          --lab-run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          --input-root collected
 
       - name: Add report to Actions summary
         if: always()
