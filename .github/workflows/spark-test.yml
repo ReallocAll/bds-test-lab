@@ -1,0 +1,57 @@
+name: Spark Endstone Headless Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      spark_ref:
+        description: Spark git ref
+        required: false
+        default: develop
+      endstone_ref:
+        description: Endstone git ref
+        required: false
+        default: develop
+      platform:
+        description: Runner platform
+        required: false
+        default: ubuntu
+        type: choice
+        options:
+          - ubuntu
+          - windows
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  test:
+    runs-on: ${{ inputs.platform == 'windows' && 'windows-latest' || 'ubuntu-24.04' }}
+    steps:
+      - name: Checkout harness
+        uses: actions/checkout@v6
+
+      - name: Checkout Spark source reference
+        uses: actions/checkout@v6
+        with:
+          repository: ReallocAll/spark
+          ref: ${{ inputs.spark_ref }}
+          path: spark-src
+
+      - name: Resolve metadata
+        shell: bash
+        run: |
+          echo "spark_ref=${{ inputs.spark_ref }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "platform=${{ inputs.platform }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Prepare test workspace
+        shell: bash
+        run: |
+          mkdir -p workspace/plugins workspace/logs
+          echo "workspace ready"
+
+      - name: Upload result skeleton
+        uses: actions/upload-artifact@v7
+        with:
+          name: bds-test-result-${{ github.run_id }}
+          path: test-results.schema.json
