@@ -163,7 +163,7 @@ def _download_artifact(repo: str, artifact: dict[str, Any], destination: pathlib
     url = f"{API}/repos/{repo}/actions/artifacts/{artifact['id']}/zip"
     opener = urllib.request.build_opener(_SafeRedirect())
     try:
-        with opener.open(_request(url, accept="application/octet-stream"), timeout=120) as response:
+        with opener.open(_request(url, accept="application/vnd.github+json"), timeout=120) as response:
             with archive.open("wb") as out:
                 shutil.copyfileobj(response, out, length=1024 * 1024)
     except urllib.error.HTTPError as exc:
@@ -233,10 +233,11 @@ def resolve_artifacts(
 
     for component, config in COMPONENTS.items():
         run, artifact = discover(component, platform_name)
-        payload = _download_artifact(config["repo"], artifact, root / component)
         info = _metadata(component, config["repo"], run, artifact)
-        info["payload_dir"] = str(payload)
         result["components"][component] = info
+        save_metadata(result, metadata_path)
+        payload = _download_artifact(config["repo"], artifact, root / component)
+        info["payload_dir"] = str(payload)
         save_metadata(result, metadata_path)
         print(
             f"[artifact] {component}: {info['sha']} run={info['run_id']} "
