@@ -1,21 +1,104 @@
 name: BDS Integration Test
 
 on:
-  workflow_dispatch:
   push:
-    branches: [main]
+    branches:
+      - main
+    paths-ignore:
+      - "reports/**"
+  workflow_dispatch:
+
+concurrency:
+  group: bds-integration-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
 
 jobs:
-  linux:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run Linux integration
-        run: python3 controller/run_test.py --platform linux
+  integration:
+    name: BDS integration (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            os: ubuntu-24.04
+          - platform: windows
+            os: windows-2022
 
-  windows:
-    runs-on: windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+
     steps:
-      - uses: actions/checkout@v4
-      - name: Run Windows integration
-        run: python controller/run_test.py --platform windows
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Run integration test
+        run: python controller/run_test.py --platform ${{ matrix.platform }}
+
+      - name: Upload integration evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bds-test-${{ matrix.platform }}
+          path: |
+            metadata.json
+            bds.log
+            endstone.log
+            spark.log
+            test-results.json
+            failure-diagnostics.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+  report:
+    name: Publish latest report
+    needs: integration
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout main with report push credential
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          token: ${{ secrets.REPO_PAT }}
+          persist-credentials: true
+
+      - name: Download integration evidence
+        uses: actions/download-artifact@v8
+        with:
+          pattern: bds-test-*
+          path: collected
+
+      - name: Build report
+        run: python3 controller/build_report.py --lab-commit "${{ github.sha }}" --input-root collected
+
+      - name: Add report to Actions summary
+        if: always()
+        run: cat reports/latest.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit latest report
+        if: always()
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add reports/latest.json reports/latest.md
+          if git diff --cached --quiet; then
+            echo "Report unchanged."
+            exit 0
+          fi
+          git commit -m "ci: update integration test report [skip ci]"
+          git push origin HEAD:main
