@@ -1,8 +1,8 @@
 # Latest BDS integration test
 
-- Lab commit: `3f2493f996cac6d5425f1bd15fb185da4cfa3813`
+- Lab commit: `b461849347c56dca1ca2b07db268bc5734f29c36`
 - State: **completed**
-- Completed: `2026-08-24T21:09:46.010109Z`
+- Completed: `2026-08-24T21:11:19.676198Z`
 
 ## Versions
 
@@ -15,9 +15,9 @@
 
 | Platform | Result | BDS | Failed stage | Shutdown | Execution profile | Allocation profile |
 |---|---|---|---|---|---|---|
-| Windows | **FAIL** | `` | `job-output-missing` | `unknown` |  |  |
+| Windows | **FAIL** | `` | `artifact-discovery` | `not_started` |  |  |
 
-**Windows error:** `No test-results.json was produced for windows`
-| Linux | **FAIL** | `` | `job-output-missing` | `unknown` |  |  |
+**Windows error:** `ArtifactResolutionError: Artifact download failed (415) for EndstoneMC/endstone/endstone-0.11.10.dev372-windows-x86_64.zip: {"message":"Unsupported 'Accept' header: 'application/octet-stream'. Must accept 'application/json'.","documentation_url":"https://docs.github.com/v3/media","status":"415"}`
+| Linux | **FAIL** | `` | `artifact-discovery` | `not_started` |  |  |
 
-**Linux error:** `No test-results.json was produced for linux`
+**Linux error:** `ArtifactResolutionError: Artifact download failed (415) for EndstoneMC/endstone/endstone-0.11.10.dev372-linux-x86_64.zip: {"message":"Unsupported 'Accept' header: 'application/octet-stream'. Must accept 'application/json'.","documentation_url":"https://docs.github.com/v3/media","status":"415"}`

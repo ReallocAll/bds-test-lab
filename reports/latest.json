@@ -1,28 +1,30 @@
 {
   "bds_version": [],
-  "completed_at": "2026-08-24T21:09:46.010109Z",
+  "completed_at": "2026-08-24T21:11:19.676198Z",
   "components": {
     "endstone": null,
     "spark": null
   },
-  "lab_commit": "3f2493f996cac6d5425f1bd15fb185da4cfa3813",
+  "lab_commit": "b461849347c56dca1ca2b07db268bc5734f29c36",
   "platforms": {
     "linux": {
       "allocation_profile_viewer_url": null,
       "bds_version": null,
-      "error_summary": "No test-results.json was produced for linux",
+      "checks": [],
+      "error_summary": "ArtifactResolutionError: Artifact download failed (415) for EndstoneMC/endstone/endstone-0.11.10.dev372-linux-x86_64.zip: {\"message\":\"Unsupported 'Accept' header: 'application/octet-stream'. Must accept 'application/json'.\",\"documentation_url\":\"https://docs.github.com/v3/media\",\"status\":\"415\"}",
       "execution_profile_viewer_url": null,
-      "failed_stage": "job-output-missing",
-      "shutdown_status": "unknown",
+      "failed_stage": "artifact-discovery",
+      "shutdown_status": "not_started",
       "status": "FAIL"
     },
     "windows": {
       "allocation_profile_viewer_url": null,
       "bds_version": null,
-      "error_summary": "No test-results.json was produced for windows",
+      "checks": [],
+      "error_summary": "ArtifactResolutionError: Artifact download failed (415) for EndstoneMC/endstone/endstone-0.11.10.dev372-windows-x86_64.zip: {\"message\":\"Unsupported 'Accept' header: 'application/octet-stream'. Must accept 'application/json'.\",\"documentation_url\":\"https://docs.github.com/v3/media\",\"status\":\"415\"}",
       "execution_profile_viewer_url": null,
-      "failed_stage": "job-output-missing",
-      "shutdown_status": "unknown",
+      "failed_stage": "artifact-discovery",
+      "shutdown_status": "not_started",
       "status": "FAIL"
     }
   },
