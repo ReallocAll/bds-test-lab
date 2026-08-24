@@ -1,0 +1,12 @@
+{
+  "platform": "",
+  "bds_version": "",
+  "endstone_sha": "",
+  "spark_sha": "",
+  "server_ready": false,
+  "plugin_loaded": false,
+  "execution_profile": {},
+  "allocation_profile": {},
+  "recovery": {},
+  "shutdown": {}
+}
