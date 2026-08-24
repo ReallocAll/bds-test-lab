@@ -7,6 +7,11 @@ on:
     paths-ignore:
       - "reports/**"
   workflow_dispatch:
+    inputs:
+      soak_minutes:
+        description: "Headless BDS soak duration per platform"
+        required: false
+        default: "30"
 
 concurrency:
   group: bds-integration-${{ github.ref }}
@@ -18,6 +23,7 @@ permissions:
 env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
+  BDS_SOAK_MINUTES: ${{ github.event.inputs.soak_minutes || '30' }}
 
 jobs:
   integration:
@@ -32,7 +38,7 @@ jobs:
             os: windows-2022
 
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    timeout-minutes: 75
 
     steps:
       - name: Checkout
@@ -43,8 +49,14 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Run integration test
-        run: python controller/run_test.py --platform ${{ matrix.platform }}
+      - name: Install validation dependencies
+        run: python -m pip install --disable-pip-version-check psutil
+
+      - name: Run extended integration test
+        run: >-
+          python controller/extended_validation.py
+          --platform ${{ matrix.platform }}
+          --soak-minutes ${{ env.BDS_SOAK_MINUTES }}
 
       - name: Upload integration evidence
         if: always()
@@ -84,7 +96,7 @@ jobs:
 
       - name: Build report
         run: >-
-          python3 controller/build_report.py
+          python3 controller/build_extended_report.py
           --lab-commit "${{ github.sha }}"
           --lab-run-id "${{ github.run_id }}"
           --lab-run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
