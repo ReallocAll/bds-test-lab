@@ -54,7 +54,7 @@ jobs:
 
       - name: Run extended integration test
         run: >-
-          python controller/extended_validation.py
+          python -m controller.extended_validation
           --platform ${{ matrix.platform }}
           --soak-minutes ${{ env.BDS_SOAK_MINUTES }}
 
