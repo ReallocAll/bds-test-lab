@@ -1,0 +1,29 @@
+name: Validate Extended BDS Harness
+
+on:
+  push:
+    branches:
+      - recovery-writer-final-validation
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --disable-pip-version-check psutil
+      - name: Compile controllers
+        run: >-
+          python -m py_compile
+          controller/run_test.py
+          controller/extended_validation.py
+          controller/build_extended_report.py
+      - name: Validate CLIs
+        run: |
+          python -m controller.extended_validation --help
+          python controller/build_extended_report.py --help
