@@ -1,0 +1,31 @@
+{
+  "bds_version": [],
+  "completed_at": "2026-08-24T21:09:46.010109Z",
+  "components": {
+    "endstone": null,
+    "spark": null
+  },
+  "lab_commit": "3f2493f996cac6d5425f1bd15fb185da4cfa3813",
+  "platforms": {
+    "linux": {
+      "allocation_profile_viewer_url": null,
+      "bds_version": null,
+      "error_summary": "No test-results.json was produced for linux",
+      "execution_profile_viewer_url": null,
+      "failed_stage": "job-output-missing",
+      "shutdown_status": "unknown",
+      "status": "FAIL"
+    },
+    "windows": {
+      "allocation_profile_viewer_url": null,
+      "bds_version": null,
+      "error_summary": "No test-results.json was produced for windows",
+      "execution_profile_viewer_url": null,
+      "failed_stage": "job-output-missing",
+      "shutdown_status": "unknown",
+      "status": "FAIL"
+    }
+  },
+  "schema_version": 1,
+  "state": "completed"
+}
