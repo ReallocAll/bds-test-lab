@@ -84,6 +84,7 @@ def build_markdown(report: dict[str, Any]) -> str:
         "# Latest BDS integration test",
         "",
         f"- Lab commit: `{report['lab_commit']}`",
+        f"- Lab Actions: [{report.get('lab_run_id')}]({report.get('lab_run_url')})" if report.get("lab_run_url") else "- Lab Actions: unavailable",
         f"- State: **{report['state']}**",
         f"- Completed: `{report['completed_at']}`",
         "",
@@ -99,6 +100,7 @@ def build_markdown(report: dict[str, Any]) -> str:
             lines.append(f"| {component.capitalize()} | `{info.get('sha') or ''}` | {action} | `{info.get('artifact') or ''}` |")
         else:
             lines.append(f"| {component.capitalize()} |  |  |  |")
+
     lines += [
         "",
         "## Platforms",
@@ -114,9 +116,14 @@ def build_markdown(report: dict[str, Any]) -> str:
             execution = f"[viewer]({execution})"
         if allocation:
             allocation = f"[viewer]({allocation})"
-        lines.append(f"| {platform.capitalize()} | **{item.get('status')}** | `{item.get('bds_version') or ''}` | `{item.get('failed_stage') or ''}` | `{item.get('shutdown_status') or ''}` | {execution} | {allocation} |")
+        lines.append(
+            f"| {platform.capitalize()} | **{item.get('status')}** | "
+            f"`{item.get('bds_version') or ''}` | `{item.get('failed_stage') or ''}` | "
+            f"`{item.get('shutdown_status') or ''}` | {execution} | {allocation} |"
+        )
         if item.get("error_summary"):
             lines += ["", f"**{platform.capitalize()} error:** `{item['error_summary']}`"]
+
     lines.append("")
     return "\n".join(lines)
 
@@ -124,6 +131,8 @@ def build_markdown(report: dict[str, Any]) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--lab-commit", required=True)
+    parser.add_argument("--lab-run-id", required=True)
+    parser.add_argument("--lab-run-url", required=True)
     parser.add_argument("--input-root", default="collected")
     parser.add_argument("--output-dir", default="reports")
     args = parser.parse_args()
@@ -131,10 +140,13 @@ def main() -> int:
     root = pathlib.Path(args.input_root)
     platform_results = find_platform_results(root)
     metadata = find_metadata(root)
+
     report = {
         "schema_version": 1,
         "state": "completed",
         "lab_commit": args.lab_commit,
+        "lab_run_id": args.lab_run_id,
+        "lab_run_url": args.lab_run_url,
         "components": {
             "endstone": component_record(metadata.get("endstone")),
             "spark": component_record(metadata.get("spark")),
@@ -145,12 +157,23 @@ def main() -> int:
         },
         "completed_at": now_iso(),
     }
-    versions = {value.get("bds_version") for value in report["platforms"].values() if value.get("bds_version")}
+
+    for value in report["platforms"].values():
+        value["actions_url"] = args.lab_run_url
+
+    versions = {
+        value.get("bds_version")
+        for value in report["platforms"].values()
+        if value.get("bds_version")
+    }
     report["bds_version"] = next(iter(versions)) if len(versions) == 1 else sorted(versions)
 
     out_dir = pathlib.Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "latest.json").write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    (out_dir / "latest.json").write_text(
+        json.dumps(report, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
     (out_dir / "latest.md").write_text(build_markdown(report), encoding="utf-8")
     print(json.dumps(report, indent=2))
     return 0
