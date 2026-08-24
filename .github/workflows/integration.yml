@@ -1,0 +1,21 @@
+name: BDS Integration Test
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Linux integration
+        run: python3 controller/run_test.py --platform linux
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Windows integration
+        run: python controller/run_test.py --platform windows
