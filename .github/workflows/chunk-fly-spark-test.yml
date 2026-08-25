@@ -66,32 +66,11 @@ jobs:
           from pathlib import Path
           path = Path("providers/artifact_provider.py")
           text = path.read_text()
-          needle = '''def discover(component: str, platform_name: str) -> tuple[dict[str, Any], dict[str, Any]]:
-    config = COMPONENTS[component]
-    repo = config["repo"]
-    branch = config["branch"]
-'''
-          replacement = '''def discover(component: str, platform_name: str) -> tuple[dict[str, Any], dict[str, Any]]:
-    config = COMPONENTS[component]
-    repo = config["repo"]
-    branch = config["branch"]
-    override_run_id = os.environ.get(f"{component.upper()}_RUN_ID", "").strip()
-    if override_run_id:
-        run = _get_json(f"/repos/{repo}/actions/runs/{override_run_id}")
-        if run.get("head_branch") != branch or run.get("conclusion") != "success":
-            raise ArtifactResolutionError(
-                f"Pinned {component} run {override_run_id} is not a successful {repo}@{branch} run"
-            )
-        artifact = _select_from_run(component, platform_name, repo, run)
-        if artifact is None:
-            raise ArtifactResolutionError(
-                f"Pinned {component} run {override_run_id} has no compatible {platform_name} artifact"
-            )
-        return run, artifact
-'''
+          needle = "    branch = config[\"branch\"]\n"
+          injected = "    branch = config[\"branch\"]\n    override_run_id = os.environ.get(f\"{component.upper()}_RUN_ID\", \"\").strip()\n    if override_run_id:\n        run = _get_json(f\"/repos/{repo}/actions/runs/{override_run_id}\")\n        if run.get(\"head_branch\") != branch or run.get(\"conclusion\") != \"success\":\n            raise ArtifactResolutionError(f\"Pinned {component} run {override_run_id} is not a successful {repo}@{branch} run\")\n        artifact = _select_from_run(component, platform_name, repo, run)\n        if artifact is None:\n            raise ArtifactResolutionError(f\"Pinned {component} run {override_run_id} has no compatible {platform_name} artifact\")\n        return run, artifact\n"
           if needle not in text:
               raise SystemExit("artifact provider discover target not found")
-          path.write_text(text.replace(needle, replacement, 1))
+          path.write_text(text.replace(needle, injected, 1))
           PY
 
       - name: Checkout bot at exact ref
