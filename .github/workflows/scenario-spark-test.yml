@@ -24,7 +24,7 @@ on:
       bot_ref:
         description: "Exact bds-test-bot commit/ref to validate"
         required: false
-        default: "e51f71e41159aa5a96cf6940d65fe4d3e7c73465"
+        default: "db4e746acbf2007658ef305877d45d75a9d51f21"
       profile_seconds:
         description: "Seconds per Spark execution profile"
         required: false
@@ -41,7 +41,7 @@ permissions:
 env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
-  BOT_REF: ${{ github.event.inputs.bot_ref || 'e51f71e41159aa5a96cf6940d65fe4d3e7c73465' }}
+  BOT_REF: ${{ github.event.inputs.bot_ref || 'db4e746acbf2007658ef305877d45d75a9d51f21' }}
   PROFILE_SECONDS: ${{ github.event.inputs.profile_seconds || '30' }}
 
 jobs:
