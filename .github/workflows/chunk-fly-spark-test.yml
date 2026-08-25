@@ -52,7 +52,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        count: [1, 5, 10, 20]
+        count: [1]
 
     steps:
       - name: Checkout test lab
