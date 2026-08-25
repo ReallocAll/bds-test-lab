@@ -1,0 +1,158 @@
+name: Spark Configured Scenario Fleet Test
+
+on:
+  push:
+    branches:
+      - test/scenario-engine
+    paths:
+      - ".github/workflows/scenario-spark-test.yml"
+      - "controller/scenario_validation.py"
+      - "controller/fleet_spark_validation.py"
+      - "controller/bot_validation.py"
+      - "controller/run_test.py"
+      - "providers/artifact_provider.py"
+  pull_request:
+    paths:
+      - ".github/workflows/scenario-spark-test.yml"
+      - "controller/scenario_validation.py"
+      - "controller/fleet_spark_validation.py"
+      - "controller/bot_validation.py"
+      - "controller/run_test.py"
+      - "providers/artifact_provider.py"
+  workflow_dispatch:
+    inputs:
+      bot_ref:
+        description: "Exact bds-test-bot commit/ref to validate"
+        required: false
+        default: "89036764f627d6a4aa5387b6f1133e6fd1bf20a8"
+      profile_seconds:
+        description: "Seconds per Spark execution profile"
+        required: false
+        default: "30"
+
+concurrency:
+  group: spark-configured-scenario-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+  BOT_REF: ${{ github.event.inputs.bot_ref || '89036764f627d6a4aa5387b6f1133e6fd1bf20a8' }}
+  PROFILE_SECONDS: ${{ github.event.inputs.profile_seconds || '30' }}
+
+jobs:
+  configured-scenario-fleet:
+    name: Configured scenario ${{ matrix.count }} bots
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        count: [1, 5, 10, 20]
+
+    steps:
+      - name: Checkout test lab
+        uses: actions/checkout@v7
+
+      - name: Checkout bot at exact ref
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/bds-test-bot
+          ref: ${{ env.BOT_REF }}
+          path: bot-src
+          persist-credentials: false
+
+      - name: Set up Go 1.25
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Build exact bot revision
+        working-directory: bot-src
+        shell: bash
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+          unformatted="$(gofmt -l .)"
+          if [[ -n "$unformatted" ]]; then
+            echo "Unformatted files:"
+            echo "$unformatted"
+            exit 1
+          fi
+          go vet ./...
+          go test ./...
+          mkdir -p ../dist
+          go build -trimpath -o ../dist/bds-test-bot ./cmd/bds-test-bot
+          echo "Bot ref: \`${BOT_REF}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install validation dependencies
+        run: python -m pip install --disable-pip-version-check psutil
+
+      - name: Run real BDS configured scenario Spark load
+        run: >-
+          python -m controller.scenario_validation
+          --bot dist/bds-test-bot
+          --count ${{ matrix.count }}
+          --scenario-file bot-src/scenarios/scenario-smoke.yaml
+          --profile-seconds ${{ env.PROFILE_SECONDS }}
+
+      - name: Add load metrics to summary
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f fleet-spark-result.json ]]; then
+            python3 - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path("fleet-spark-result.json").read_text())
+          metrics = data.get("metrics") or {}
+          mspt = metrics.get("mspt_10s") or {}
+          tps = metrics.get("tps") or {}
+          pcpu = metrics.get("process_cpu_percent") or {}
+          scpu = metrics.get("system_cpu_percent") or {}
+          mem = metrics.get("memory_rss_bytes") or {}
+          shutdown = data.get("fleet_shutdown_event") or {}
+          print(f"## Configured scenario: {data.get('bot_count')} bots")
+          print()
+          print(f"Status: **{data.get('status')}**")
+          print(f"BDS: `{data.get('bds_version')}`")
+          print(f"Scenario file: `{data.get('scenario_file')}`")
+          print(f"Spark profile: {data.get('spark_profile_viewer_url')}")
+          print(f"TPS 10s: {tps.get('10s')}")
+          print(f"MSPT 10s mean/p95/max: {mspt.get('mean')} / {mspt.get('p95')} / {mspt.get('max')}")
+          print(f"Process CPU 10s: {pcpu.get('10s')}%")
+          print(f"System CPU 10s: {scpu.get('10s')}%")
+          print(f"RSS mean/p95/max: {mem.get('mean')} / {mem.get('p95')} / {mem.get('max')} bytes")
+          print(f"Movement PlayerAuthInput: {shutdown.get('movement_inputs_sent')}")
+          PY
+          fi >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload scenario evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: spark-configured-scenario-${{ matrix.count }}-${{ github.run_id }}
+          path: |
+            metadata.json
+            bds.log
+            endstone.log
+            spark.log
+            fleet-${{ matrix.count }}-scenario-smoke.log
+            test-results.json
+            fleet-spark-result.json
+            failure-diagnostics.txt
+            bot-src/scenarios/scenario-smoke.yaml
+            work/linux/bedrock_server/server.properties
+            work/linux/bedrock_server/version.txt
+          if-no-files-found: warn
+          retention-days: 14
