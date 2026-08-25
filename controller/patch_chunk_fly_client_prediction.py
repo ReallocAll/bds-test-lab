@@ -15,51 +15,6 @@ def patch_tick(root: pathlib.Path) -> None:
     path = root / "internal/bot/tick.go"
     text = path.read_text()
 
-    neutral_tick = '''func (s *playerState) nextInputTick() uint64 {
-\ts.mu.Lock()
-\tdefer s.mu.Unlock()
-\t// PlayerAuthInput.Tick is a server tick, not a client-local frame
-\t// counter. Until a packet carrying a server tick establishes the
-\t// clock, keep the protocol's neutral zero value rather than sending
-\t// an ever-growing unrelated tick sequence.
-\tif !s.tickSynced {
-\t\treturn 0
-\t}
-\ttick := s.serverTick
-\ts.serverTick++
-\treturn tick
-}
-'''
-    client_tick = '''func (s *playerState) nextInputTick() uint64 {
-\ts.mu.Lock()
-\tdefer s.mu.Unlock()
-\t// PlayerAuthInput carries the client's monotonically advancing movement
-\t// frame id. Server packets may move this clock forward when they refer to
-\t// a later prediction, but initial movement starts at frame zero.
-\ttick := s.serverTick
-\ts.serverTick++
-\treturn tick
-}
-'''
-    if neutral_tick in text:
-        text = text.replace(neutral_tick, client_tick, 1)
-    elif "client's monotonically advancing movement" not in text:
-        raise SystemExit("client movement tick target not found")
-
-    server_driven = '''\t} else if s.control.fly {
-\t\tif !s.flyingConfirmed || !s.positionReady {
-\t\t\t// StartGame may contain the Bedrock placeholder altitude around
-\t\t\t// Y=32768. Wait for stable server-owned publisher coordinates and
-\t\t\t// a flight acknowledgement before sending movement intent.
-\t\t\tsnapshot.moveVector = mgl32.Vec2{}
-\t\t} else if s.position[1] < s.control.flightTargetY-0.75 {
-\t\t\t// Server-authoritative movement is driven by input state. Do not
-\t\t\t// fabricate a client position/delta for flight: request ascent and
-\t\t\t// let BDS advance the player, then consume publisher feedback.
-\t\t\tsnapshot.moveVector = mgl32.Vec2{}
-\t\t\tsnapshot.verticalDirection = 1
-\t\t}
-'''
     client_predicted = '''\t} else if s.control.fly {
 \t\tif !s.flyingConfirmed || !s.positionReady {
 \t\t\t// Never predict from StartGame's temporary Y≈32768 position. The
@@ -87,36 +42,97 @@ def patch_tick(root: pathlib.Path) -> None:
 \t\t\t}
 \t\t}
 '''
-    if server_driven in text:
-        text = text.replace(server_driven, client_predicted, 1)
-    elif "Bedrock server-authoritative movement is still client-predicted" not in text:
-        raise SystemExit("client prediction target not found")
+    server_driven = '''\t} else if s.control.fly {
+\t\tif !s.flyingConfirmed || !s.positionReady {
+\t\t\t// Wait for BDS to publish the real spawn position before movement.
+\t\t\tsnapshot.moveVector = mgl32.Vec2{}
+\t\t} else if s.position[1] < s.control.flightTargetY-0.75 {
+\t\t\t// Match a real client heartbeat: movement intent is authoritative,
+\t\t\t// while Position remains the last server-observed position and Delta
+\t\t\t// stays zero. BDS advances flight and publisher updates feed it back.
+\t\t\tsnapshot.moveVector = mgl32.Vec2{}
+\t\t\tsnapshot.verticalDirection = 1
+\t\t}
+'''
+    if client_predicted in text:
+        text = text.replace(client_predicted, server_driven, 1)
+    elif "Match a real client heartbeat" not in text:
+        raise SystemExit("server-driven flight target not found")
 
-    ungated = '''\t\tcase <-ticker.C:
-\t\t\ttick := state.nextInputTick()
+    old_tick = '''\t\t\ttick := state.nextInputTick()
 \t\t\tif err := runner.Tick(ctx, action.TickContext{Tick: tick}); err != nil {
-\t\t\t\treturn err
-\t\t\t}
-\t\t\tif err := writer.WritePacket(authInputPacket(state, tick)); err != nil {
 '''
-    gated = '''\t\tcase <-ticker.C:
-\t\t\t// Do not establish PlayerAuthInput movement history using the
-\t\t\t// temporary StartGame altitude. RequestAbility is already sent from
-\t\t\t// FlyAction.Start; PlayerAuthInput begins only after BDS publishes a
-\t\t\t// stable, valid player position that we can acknowledge.
-\t\t\tif cfg.Scenario == ScenarioChunkFly && !state.positionReadySnapshot() {
-\t\t\t\tcontinue
+    new_tick = '''\t\t\ttick := state.nextInputTick()
+\t\t\tif cfg.Scenario == ScenarioChunkFly {
+\t\t\t\t// Current Bedrock clients use the neutral movement tick for this
+\t\t\t\t// server-driven heartbeat path; keep other scenarios unchanged.
+\t\t\t\ttick = 0
 \t\t\t}
-\t\t\ttick := state.nextInputTick()
 \t\t\tif err := runner.Tick(ctx, action.TickContext{Tick: tick}); err != nil {
-\t\t\t\treturn err
-\t\t\t}
-\t\t\tif err := writer.WritePacket(authInputPacket(state, tick)); err != nil {
 '''
-    if ungated in text:
-        text = text.replace(ungated, gated, 1)
-    elif "PlayerAuthInput begins only after BDS publishes" not in text:
-        raise SystemExit("pre-authoritative auth-input gate target not found")
+    if old_tick in text:
+        text = text.replace(old_tick, new_tick, 1)
+    elif "neutral movement tick for this" not in text:
+        raise SystemExit("chunk-fly neutral tick target not found")
+
+    old_flags = '''\tflags := protocol.NewInputFlags(packet.InputFlagCount)
+\tflags.Set(packet.InputFlagBlockBreakingDelayEnabled)
+'''
+    new_flags = '''\tflags := protocol.NewInputFlags(packet.InputFlagCount)
+\tif !snapshot.flightRequested {
+\t\tflags.Set(packet.InputFlagBlockBreakingDelayEnabled)
+\t}
+'''
+    if old_flags in text:
+        text = text.replace(old_flags, new_flags, 1)
+    elif "if !snapshot.flightRequested" not in text:
+        raise SystemExit("chunk-fly baseline flags target not found")
+
+    old_return = '''\treturn &packet.PlayerAuthInput{
+\t\tPitch:              snapshot.pitch,
+\t\tYaw:                snapshot.yaw,
+\t\tPosition:           snapshot.position,
+\t\tMoveVector:         snapshot.moveVector,
+\t\tHeadYaw:            snapshot.headYaw,
+\t\tInputData:          flags,
+\t\tInputMode:          packet.InputModeMouse,
+\t\tPlayMode:           packet.PlayModeScreen,
+\t\tInteractionModel:   packet.InteractionModelCrosshair,
+\t\tInteractPitch:      snapshot.pitch,
+\t\tInteractYaw:        snapshot.yaw,
+\t\tTick:               tick,
+\t\tDelta:              snapshot.delta,
+\t\tAnalogueMoveVector: snapshot.moveVector,
+\t\tCameraOrientation:  camera,
+\t\tRawMoveVector:      snapshot.moveVector,
+\t}
+'''
+    new_return = '''\tinput := &packet.PlayerAuthInput{
+\t\tPitch:            snapshot.pitch,
+\t\tYaw:              snapshot.yaw,
+\t\tPosition:         snapshot.position,
+\t\tMoveVector:       snapshot.moveVector,
+\t\tHeadYaw:          snapshot.headYaw,
+\t\tInputData:        flags,
+\t\tInputMode:        packet.InputModeMouse,
+\t\tPlayMode:         packet.PlayModeScreen,
+\t\tInteractionModel: packet.InteractionModelCrosshair,
+\t\tTick:             tick,
+\t\tDelta:            snapshot.delta,
+\t}
+\tif !snapshot.flightRequested {
+\t\tinput.InteractPitch = snapshot.pitch
+\t\tinput.InteractYaw = snapshot.yaw
+\t\tinput.AnalogueMoveVector = snapshot.moveVector
+\t\tinput.CameraOrientation = camera
+\t\tinput.RawMoveVector = snapshot.moveVector
+\t}
+\treturn input
+'''
+    if old_return in text:
+        text = text.replace(old_return, new_return, 1)
+    elif "input := &packet.PlayerAuthInput" not in text:
+        raise SystemExit("minimal flight packet target not found")
 
     path.write_text(text)
 
@@ -124,12 +140,14 @@ def patch_tick(root: pathlib.Path) -> None:
 def patch_bot(root: pathlib.Path) -> None:
     path = root / "internal/bot/bot.go"
     text = path.read_text()
-    overwrite = '''\t\t\tif cfg.Scenario == ScenarioChunkFly {
+    marker = '''\t\t\tif cfg.Scenario == ScenarioChunkFly {
 \t\t\t\tstate.observePublisherPosition(publisherEyePosition(p.Position))
 \t\t\t}
 '''
-    if overwrite in text:
-        text = text.replace(overwrite, "", 1)
+    if marker not in text:
+        anchor = '''\t\t\tpublisherX, publisherY, publisherZ = x, y, z
+'''
+        text = replace_once(text, anchor, marker + anchor, "publisher feedback")
     path.write_text(text)
 
 
@@ -138,79 +156,77 @@ def patch_tests(root: pathlib.Path) -> None:
     text = path.read_text()
 
     text = text.replace(
-        '''\tif got := state.nextInputTick(); got != 0 {
-\t\tt.Fatalf("initial input tick = %d, want 0", got)
-\t}
-\tif got := state.nextInputTick(); got != 0 {
-\t\tt.Fatalf("unsynced input tick = %d, want neutral 0", got)
-\t}
-\tstate.syncServerTick(240)
-''',
-        '''\tif got := state.nextInputTick(); got != 0 {
-\t\tt.Fatalf("initial input tick = %d, want 0", got)
-\t}
-\tif got := state.nextInputTick(); got != 1 {
-\t\tt.Fatalf("second input tick = %d, want 1", got)
-\t}
-\tstate.syncServerTick(240)
-''',
-        1,
-    )
-
-    text = text.replace(
-        '''\tif climb.Delta != (mgl32.Vec3{}) || climb.MoveVector != (mgl32.Vec2{}) {
-\t\tt.Fatalf("post-ack climb must be server-driven with zero client delta: %+v", climb)
-\t}
-''',
         '''\tif climb.Delta[1] <= 0 || climb.MoveVector != (mgl32.Vec2{}) {
 \t\tt.Fatalf("post-ack climb did not include client prediction: %+v", climb)
 \t}
 ''',
-        1,
-    )
-    text = text.replace(
         '''\tif climb.Delta != (mgl32.Vec3{}) || climb.MoveVector != (mgl32.Vec2{}) {
-\t\tt.Fatalf("climb packet must carry input intent without client prediction: delta %v move %v", climb.Delta, climb.MoveVector)
+\t\tt.Fatalf("post-ack climb must be server-driven with zero client delta: %+v", climb)
 \t}
+''', 1)
 
-\tif !state.observePublisherPosition(mgl32.Vec3{0, fly.targetY, 0}) {
-\t\tt.Fatal("server publisher update did not advance flight state")
+    old_observe = '''\tinput := authInputPacket(state, 7)
+\twantPosition := serverPos
+\twantPosition[2] += chunkFlyStepPerTick
+\tif input.Position != wantPosition {
+\t\tt.Fatalf("auth input position = %v, want predicted position %v", input.Position, wantPosition)
 \t}
-''',
+\tif input.MoveVector != (mgl32.Vec2{0, 1}) || math.Abs(float64(input.Delta[2]-chunkFlyStepPerTick)) > 1e-5 {
+\t\tt.Fatalf("client-predicted cruise = move %v delta %v", input.MoveVector, input.Delta)
+\t}
+'''
+    new_observe = '''\tinput := authInputPacket(state, 0)
+\tif input.Position != serverPos {
+\t\tt.Fatalf("auth input position = %v, want server position %v", input.Position, serverPos)
+\t}
+\tif input.MoveVector != (mgl32.Vec2{0, 1}) || input.Delta != (mgl32.Vec3{}) {
+\t\tt.Fatalf("server-driven cruise = move %v delta %v", input.MoveVector, input.Delta)
+\t}
+\tif input.Tick != 0 || input.RawMoveVector != (mgl32.Vec2{}) || input.AnalogueMoveVector != (mgl32.Vec2{}) {
+\t\tt.Fatalf("flight heartbeat must keep tick/raw/analogue neutral: %+v", input)
+\t}
+'''
+    if old_observe in text:
+        text = text.replace(old_observe, new_observe, 1)
+    elif "flight heartbeat must keep tick/raw/analogue neutral" not in text:
+        raise SystemExit("publisher cruise test target not found")
+
+    text = text.replace(
         '''\tif climb.Delta[1] <= 0 || climb.MoveVector != (mgl32.Vec2{}) {
 \t\tt.Fatalf("climb packet = delta %v move %v", climb.Delta, climb.MoveVector)
 \t}
 
 \tstate.update(mgl32.Vec3{0, fly.targetY, 0}, 0, 0, 0, false)
 ''',
-        1,
-    )
-    text = text.replace(
-        '''\tif cruise.Delta != (mgl32.Vec3{}) {
-\t\tt.Fatalf("server-driven cruise must not fabricate client delta: %v", cruise.Delta)
+        '''\tif climb.Delta != (mgl32.Vec3{}) || climb.MoveVector != (mgl32.Vec2{}) {
+\t\tt.Fatalf("climb packet must carry ascent intent without client delta: delta %v move %v", climb.Delta, climb.MoveVector)
 \t}
-''',
+
+\tif !state.observePublisherPosition(mgl32.Vec3{0, fly.targetY, 0}) {
+\t\tt.Fatal("server publisher update did not advance flight state")
+\t}
+''', 1)
+
+    text = text.replace(
         '''\tif math.Abs(float64(cruise.Delta[2]-chunkFlyStepPerTick)) > 1e-5 || math.Abs(float64(cruise.Delta[1])) > 1e-5 {
 \t\tt.Fatalf("cruise delta = %v", cruise.Delta)
 \t}
 ''',
-        1,
-    )
-    text = text.replace(
-        '''\tif input.Delta != (mgl32.Vec3{}) || input.MoveVector != (mgl32.Vec2{}) ||
-\t\t!input.InputData.Load(packet.InputFlagAscend) || !input.InputData.Load(packet.InputFlagWantUp) {
-\t\tt.Fatalf("corrected flight should recover altitude through server-driven ascent intent: %+v", input)
+        '''\tif cruise.Delta != (mgl32.Vec3{}) {
+\t\tt.Fatalf("server-driven cruise must not fabricate client delta: %v", cruise.Delta)
 \t}
-''',
+''', 1)
+
+    text = text.replace(
         '''\tif input.Delta[1] <= 0 || input.MoveVector != (mgl32.Vec2{}) {
 \t\tt.Fatalf("corrected flight should recover altitude before horizontal traversal: %+v", input)
 \t}
 ''',
-        1,
-    )
-
-    if '"math"' not in text.split(')', 1)[0]:
-        text = text.replace('import (\n\t"context"\n', 'import (\n\t"context"\n\t"math"\n', 1)
+        '''\tif input.Delta != (mgl32.Vec3{}) || input.MoveVector != (mgl32.Vec2{}) ||
+\t\t!input.InputData.Load(packet.InputFlagAscend) || !input.InputData.Load(packet.InputFlagWantUp) {
+\t\tt.Fatalf("corrected flight should recover altitude through server-driven ascent intent: %+v", input)
+\t}
+''', 1)
 
     path.write_text(text)
 
