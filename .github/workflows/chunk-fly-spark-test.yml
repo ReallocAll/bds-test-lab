@@ -6,6 +6,7 @@ on:
       - test/chunk-fly-spark
     paths:
       - ".github/workflows/chunk-fly-spark-test.yml"
+      - "controller/chunk_fly_bot_ref.txt"
       - "controller/chunk_fly_validation.py"
       - "controller/fleet_spark_validation.py"
       - "controller/bot_validation.py"
@@ -14,6 +15,7 @@ on:
   pull_request:
     paths:
       - ".github/workflows/chunk-fly-spark-test.yml"
+      - "controller/chunk_fly_bot_ref.txt"
       - "controller/chunk_fly_validation.py"
       - "controller/fleet_spark_validation.py"
       - "controller/bot_validation.py"
@@ -22,9 +24,9 @@ on:
   workflow_dispatch:
     inputs:
       bot_ref:
-        description: "Exact bds-test-bot commit/ref to profile"
+        description: "Optional exact bds-test-bot commit/ref; blank uses controller/chunk_fly_bot_ref.txt"
         required: false
-        default: "2685dad29f0e54db7a1057b65ddad961ce1d8610"
+        default: ""
       profile_seconds:
         description: "Seconds per Spark execution profile"
         required: false
@@ -41,7 +43,6 @@ permissions:
 env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
-  BOT_REF: ${{ github.event.inputs.bot_ref || '2685dad29f0e54db7a1057b65ddad961ce1d8610' }}
   PROFILE_SECONDS: ${{ github.event.inputs.profile_seconds || '30' }}
   ENDSTONE_RUN_ID: "32770415029"
 
@@ -58,6 +59,23 @@ jobs:
     steps:
       - name: Checkout test lab
         uses: actions/checkout@v7
+
+      - name: Resolve exact bot revision
+        shell: bash
+        env:
+          INPUT_BOT_REF: ${{ github.event.inputs.bot_ref }}
+        run: |
+          if [[ -n "${INPUT_BOT_REF}" ]]; then
+            ref="${INPUT_BOT_REF}"
+          else
+            ref="$(tr -d '[:space:]' < controller/chunk_fly_bot_ref.txt)"
+          fi
+          if [[ ! "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid exact bot ref: $ref" >&2
+            exit 1
+          fi
+          echo "BOT_REF=$ref" >> "$GITHUB_ENV"
+          echo "Resolved bot ref: \`$ref\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Pin known-good Endstone artifact run
         shell: bash
