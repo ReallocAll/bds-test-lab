@@ -1,4 +1,4 @@
-name: Ground Collision BDS Diagnostic
+name: Raw Spawn Movement BDS Diagnostic
 
 on:
   push:
@@ -67,7 +67,7 @@ jobs:
           go vet ./...
           go test ./...
 
-      - name: Patch grounded collision input and telemetry
+      - name: Patch raw movement tracing and authoritative telemetry
         shell: bash
         run: |
           python3 - <<'PY'
@@ -79,15 +79,25 @@ jobs:
           new = "if (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && !state.positionReadySnapshot() {"
           if old not in text:
               raise SystemExit("tick readiness target not found")
-          text = text.replace(old, new, 1)
-          old = "\tflags.Set(packet.InputFlagBlockBreakingDelayEnabled)\n"
-          new = "\tflags.Set(packet.InputFlagBlockBreakingDelayEnabled)\n\tflags.Set(packet.InputFlagVerticalCollision)\n"
-          if old not in text:
-              raise SystemExit("vertical collision insertion target not found")
           tick.write_text(text.replace(old, new, 1))
 
           bot = Path("bot-src/internal/bot/bot.go")
           text = bot.read_text()
+          old = "\tstartGameSeen := make(chan struct{})\n\tvar startGameOnce sync.Once\n\tdialer := minecraft.Dialer{"
+          new = "\tstartGameSeen := make(chan struct{})\n\tvar startGameOnce sync.Once\n\tvar rawMovePlayer atomic.Uint64\n\tvar rawCorrection atomic.Uint64\n\tvar rawPostMove atomic.Uint64\n\tdialer := minecraft.Dialer{"
+          if old not in text:
+              raise SystemExit("raw counter declaration target not found")
+          text = text.replace(old, new, 1)
+          old = "\t\tPacketFunc: func(header packet.Header, _ []byte, _, _ net.Addr) {\n\t\t\tif header.PacketID == packet.IDStartGame {\n\t\t\t\tstartGameOnce.Do(func() { close(startGameSeen) })\n\t\t\t}\n\t\t},"
+          new = "\t\tPacketFunc: func(header packet.Header, _ []byte, _, _ net.Addr) {\n\t\t\tswitch header.PacketID {\n\t\t\tcase packet.IDStartGame:\n\t\t\t\tstartGameOnce.Do(func() { close(startGameSeen) })\n\t\t\tcase packet.IDMovePlayer:\n\t\t\t\trawMovePlayer.Add(1)\n\t\t\tcase packet.IDCorrectPlayerMovePrediction:\n\t\t\t\trawCorrection.Add(1)\n\t\t\tcase packet.IDServerPlayerPostMovePosition:\n\t\t\t\trawPostMove.Add(1)\n\t\t\t}\n\t\t},"
+          if old not in text:
+              raise SystemExit("PacketFunc tracing target not found")
+          text = text.replace(old, new, 1)
+          old = "\tgame := conn.GameData()\n"
+          new = "\tif err := out.Emit(\"raw_spawn_movement\", map[string]any{\"move_player\": rawMovePlayer.Load(), \"corrections\": rawCorrection.Load(), \"post_move\": rawPostMove.Load()}); err != nil {\n\t\treturn stageError(ExitRuntime, \"output\", err)\n\t}\n\n\tgame := conn.GameData()\n"
+          if old not in text:
+              raise SystemExit("spawn raw summary target not found")
+          text = text.replace(old, new, 1)
           for old, new in [
               ("if cfg.Scenario == ScenarioChunkFly && samePublisher {", "if (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && samePublisher {"),
               ("if cfg.Scenario == ScenarioChunkFly && changedChunk {", "if (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && changedChunk {"),
@@ -96,15 +106,10 @@ jobs:
               if old not in text:
                   raise SystemExit(f"telemetry target not found: {old}")
               text = text.replace(old, new, 1)
-          old = "\tvar publisherUpdates uint64\n\tvar postMoveUpdates uint64\n"
-          new = "\tvar publisherUpdates uint64\n\tvar movePlayerUpdates uint64\n\tvar postMoveUpdates uint64\n"
+          old = "\t\t\t\t\"server_post_move_updates\": postMoveUpdates,\n"
+          new = "\t\t\t\t\"server_post_move_updates\": postMoveUpdates,\n\t\t\t\t\"raw_move_player\":          rawMovePlayer.Load(),\n\t\t\t\t\"raw_corrections\":          rawCorrection.Load(),\n\t\t\t\t\"raw_post_move\":            rawPostMove.Load(),\n"
           if old not in text:
-              raise SystemExit("MovePlayer counter insertion target not found")
-          text = text.replace(old, new, 1)
-          old = "\t\tcase *packet.MovePlayer:\n\t\t\tif p.EntityRuntimeID == game.EntityRuntimeID {\n\t\t\t\tstate.update(p.Position, p.Pitch, p.Yaw, p.HeadYaw, p.Mode == packet.MoveModeTeleport)\n\t\t\t\tstate.syncServerTick(p.Tick)\n\t\t\t}\n"
-          new = "\t\tcase *packet.MovePlayer:\n\t\t\tif p.EntityRuntimeID == game.EntityRuntimeID {\n\t\t\t\tmovePlayerUpdates++\n\t\t\t\tif movePlayerUpdates <= 10 || movePlayerUpdates%100 == 0 {\n\t\t\t\t\tif err := out.Emit(\"move_player\", map[string]any{\"position\": []float32{p.Position[0], p.Position[1], p.Position[2]}, \"mode\": p.Mode, \"tick\": p.Tick, \"updates\": movePlayerUpdates}); err != nil {\n\t\t\t\t\t\treturn stageError(ExitRuntime, \"output\", err)\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t\tstate.update(p.Position, p.Pitch, p.Yaw, p.HeadYaw, p.Mode == packet.MoveModeTeleport)\n\t\t\t\tstate.syncServerTick(p.Tick)\n\t\t\t}\n"
-          if old not in text:
-              raise SystemExit("MovePlayer instrumentation target not found")
+              raise SystemExit("progress raw counters target not found")
           bot.write_text(text.replace(old, new, 1))
           PY
           gofmt -w bot-src/internal/bot/bot.go bot-src/internal/bot/tick.go
@@ -124,11 +129,11 @@ jobs:
 
       - run: python -m pip install --disable-pip-version-check psutil
 
-      - name: Run real BDS grounded-collision diagnostic
+      - name: Run real BDS raw-packet diagnostic
         continue-on-error: true
         run: python -m controller.chunk_walk_validation --bot dist/bds-test-bot --count 1 --profile-seconds 10
 
-      - name: Summarize server evidence
+      - name: Summarize raw server evidence
         if: always()
         shell: bash
         run: |
@@ -136,31 +141,29 @@ jobs:
           import json
           from pathlib import Path
           p = Path("fleet-1-chunk-walk.log")
-          print("## Grounded vertical-collision server evidence")
+          print("## Raw spawn movement packet evidence")
           if not p.exists():
               print("No fleet log")
               raise SystemExit
+          spawn=[]
           rows=[]
-          moves=[]
           for line in p.read_text(errors="replace").splitlines():
               try: e=json.loads(line)
               except json.JSONDecodeError: continue
+              if e.get("event") == "raw_spawn_movement": spawn.append(e)
               if e.get("event") == "bot_progress": rows.append(e)
-              if e.get("event") == "move_player": moves.append(e)
-          print(f"move_player_events={len(moves)}")
-          for e in moves[:10]:
-              print(f"MovePlayer mode={e.get('mode')} tick={e.get('tick')} pos={e.get('position')}")
+          print(f"spawn_raw={spawn}")
           print(f"progress_samples={len(rows)}")
           if rows:
               a,b=rows[0],rows[-1]
-              for k in ("publisher_position","publisher_chunk","chunks_received","server_post_move_updates","horizontal_distance","server_corrections","tick_synced"):
+              for k in ("raw_move_player","raw_corrections","raw_post_move","publisher_position","publisher_chunk","chunks_received","horizontal_distance"):
                   print(f"{k}: {a.get(k)} -> {b.get(k)}")
           PY
 
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: grounded-collision-${{ github.run_id }}
+          name: raw-spawn-movement-${{ github.run_id }}
           path: |
             fleet-1-chunk-walk.log
             fleet-spark-result.json
