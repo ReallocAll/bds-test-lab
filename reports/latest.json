@@ -1,5 +1,5 @@
 {
-  "completed_at": "2026-08-25T11:59:55.819414Z",
+  "completed_at": "2026-08-25T14:03:01.136234Z",
   "components": {
     "endstone": {
       "platforms": {
@@ -27,35 +27,35 @@
     "spark": {
       "platforms": {
         "linux": {
-          "artifact": "spark-linux-32826415092",
-          "artifact_id": 9555232821,
-          "run_id": 32826415092,
-          "run_url": "https://github.com/ReallocAll/spark/actions/runs/32826415092",
-          "sha": "e2d26b11636f536bf6e5ead6c4a59a20372483c4",
+          "artifact": "spark-linux-32851231820",
+          "artifact_id": 9564552848,
+          "run_id": 32851231820,
+          "run_url": "https://github.com/ReallocAll/spark/actions/runs/32851231820",
+          "sha": "8ba85ecb9d0da76100af5bc8d2ead086f370e74e",
           "workflow": "Build"
         },
         "windows": {
-          "artifact": "spark-windows-32826415092",
-          "artifact_id": 9555233231,
-          "run_id": 32826415092,
-          "run_url": "https://github.com/ReallocAll/spark/actions/runs/32826415092",
-          "sha": "e2d26b11636f536bf6e5ead6c4a59a20372483c4",
+          "artifact": "spark-windows-32851231820",
+          "artifact_id": 9564563516,
+          "run_id": 32851231820,
+          "run_url": "https://github.com/ReallocAll/spark/actions/runs/32851231820",
+          "sha": "8ba85ecb9d0da76100af5bc8d2ead086f370e74e",
           "workflow": "Build"
         }
       },
-      "run_id": 32826415092,
-      "run_url": "https://github.com/ReallocAll/spark/actions/runs/32826415092",
-      "sha": "e2d26b11636f536bf6e5ead6c4a59a20372483c4"
+      "run_id": 32851231820,
+      "run_url": "https://github.com/ReallocAll/spark/actions/runs/32851231820",
+      "sha": "8ba85ecb9d0da76100af5bc8d2ead086f370e74e"
     }
   },
   "endstone_sha": "bf772c28a02db73d3119a45f58c479207254795a",
-  "lab_commit": "3be4678cdeb9eefdfa062b49869d8d98d0525dab",
-  "lab_run_id": "32842388599",
-  "lab_run_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/32842388599",
+  "lab_commit": "45e2b0a1864d87d438d34b68696aeadc48b3182d",
+  "lab_run_id": "32853807410",
+  "lab_run_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/32853807410",
   "platforms": {
     "linux": {
-      "actions_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/32842388599",
-      "allocation_profile_viewer_url": "https://spark.lucko.me/ZXrXOgHpgS",
+      "actions_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/32853807410",
+      "allocation_profile_viewer_url": "https://spark.lucko.me/9yrce8Grqs",
       "bds_version": "26.44",
       "checks": [
         {
@@ -107,12 +107,12 @@
         {
           "name": "execution-profiler",
           "status": "PASS",
-          "viewer_url": "https://spark.lucko.me/XO0ZZoZ5Wi"
+          "viewer_url": "https://spark.lucko.me/JLTpb0Q7Tp"
         },
         {
           "name": "allocation-profiler",
           "status": "PASS",
-          "viewer_url": "https://spark.lucko.me/ZXrXOgHpgS"
+          "viewer_url": "https://spark.lucko.me/9yrce8Grqs"
         },
         {
           "name": "bds-start",
@@ -129,9 +129,9 @@
         {
           "detail": "controlled hard kill produced a replayable journal and recovered profile",
           "name": "crash-recovery",
-          "sha256": "8d202ed6574e104f76a8c25cade0fd2296b0594c832ed249a1ba05907a4e6557",
+          "sha256": "074494e26a8a91af2ee7bcef19b1ab2c58af3b0090bd937dd9375d29e210ee96",
           "status": "PASS",
-          "viewer_url": "https://spark.lucko.me/GYpIVAR5d0"
+          "viewer_url": "https://spark.lucko.me/gdM2GROBFX"
         },
         {
           "detail": "spark profiler info",
@@ -141,8 +141,8 @@
         {
           "detail": "BDS remained responsive for 30 minutes",
           "name": "soak-stability",
-          "rss_growth_bytes": 6070272,
-          "rss_peak_bytes": 761565184,
+          "rss_growth_bytes": 5378048,
+          "rss_peak_bytes": 761597952,
           "status": "PASS",
           "thread_delta": 1,
           "threads_peak": 30
@@ -154,203 +154,203 @@
         }
       ],
       "error_summary": null,
-      "execution_profile_viewer_url": "https://spark.lucko.me/XO0ZZoZ5Wi",
+      "execution_profile_viewer_url": "https://spark.lucko.me/JLTpb0Q7Tp",
       "failed_stage": null,
       "profiles": [
         {
           "duration_seconds": 12,
           "kind": "execution",
           "notes": "Headless execution profiler",
-          "profile_key": "XO0ZZoZ5Wi",
+          "profile_key": "JLTpb0Q7Tp",
           "server_version": "26.44",
-          "url": "https://spark.lucko.me/XO0ZZoZ5Wi"
+          "url": "https://spark.lucko.me/JLTpb0Q7Tp"
         },
         {
           "duration_seconds": 12,
           "kind": "allocation",
           "notes": "Headless native allocation profiler",
-          "profile_key": "ZXrXOgHpgS",
+          "profile_key": "9yrce8Grqs",
           "server_version": "26.44",
-          "url": "https://spark.lucko.me/ZXrXOgHpgS"
+          "url": "https://spark.lucko.me/9yrce8Grqs"
         },
         {
           "duration_seconds": 12,
           "kind": "crash-recovery",
           "notes": "Recovered from RecoveryWriter journal after controlled hard kill and uploaded by the lab.",
-          "profile_key": "GYpIVAR5d0",
+          "profile_key": "gdM2GROBFX",
           "server_version": "26.44",
-          "sha256": "8d202ed6574e104f76a8c25cade0fd2296b0594c832ed249a1ba05907a4e6557",
-          "url": "https://spark.lucko.me/GYpIVAR5d0"
+          "sha256": "074494e26a8a91af2ee7bcef19b1ab2c58af3b0090bd937dd9375d29e210ee96",
+          "url": "https://spark.lucko.me/gdM2GROBFX"
         }
       ],
       "recovery": {
         "crash_replay": "PASS",
         "journal_segments_before_restart": 1,
-        "recovered_profile_path": "work/linux/bedrock_server/plugins/spark/profiles/profile-1787657320245.sparkprofile",
-        "recovered_profile_sha256": "8d202ed6574e104f76a8c25cade0fd2296b0594c832ed249a1ba05907a4e6557",
-        "recovered_profile_viewer_url": "https://spark.lucko.me/GYpIVAR5d0"
+        "recovered_profile_path": "work/linux/bedrock_server/plugins/spark/profiles/profile-1787664733766.sparkprofile",
+        "recovered_profile_sha256": "074494e26a8a91af2ee7bcef19b1ab2c58af3b0090bd937dd9375d29e210ee96",
+        "recovered_profile_viewer_url": "https://spark.lucko.me/gdM2GROBFX"
       },
       "shutdown_status": "graceful",
       "soak": {
         "duration_minutes": 30,
-        "rss_end_bytes": 761565184,
-        "rss_growth_bytes": 6070272,
-        "rss_peak_bytes": 761565184,
-        "rss_start_bytes": 755494912,
+        "rss_end_bytes": 761597952,
+        "rss_growth_bytes": 5378048,
+        "rss_peak_bytes": 761597952,
+        "rss_start_bytes": 756219904,
         "samples": [
           {
             "elapsed_seconds": 0,
-            "rss_bytes": 755494912,
+            "rss_bytes": 756219904,
             "threads": 29
           },
           {
             "elapsed_seconds": 60,
-            "rss_bytes": 755752960,
+            "rss_bytes": 756355072,
             "threads": 29
           },
           {
             "elapsed_seconds": 120,
-            "rss_bytes": 756596736,
+            "rss_bytes": 756527104,
             "threads": 29
           },
           {
             "elapsed_seconds": 180,
-            "rss_bytes": 757682176,
+            "rss_bytes": 756940800,
             "threads": 29
           },
           {
             "elapsed_seconds": 240,
-            "rss_bytes": 760238080,
+            "rss_bytes": 759545856,
             "threads": 30
           },
           {
             "elapsed_seconds": 300,
-            "rss_bytes": 760283136,
+            "rss_bytes": 760537088,
             "threads": 30
           },
           {
             "elapsed_seconds": 360,
-            "rss_bytes": 760365056,
+            "rss_bytes": 760672256,
             "threads": 30
           },
           {
             "elapsed_seconds": 420,
-            "rss_bytes": 760426496,
+            "rss_bytes": 760717312,
             "threads": 30
           },
           {
             "elapsed_seconds": 480,
-            "rss_bytes": 760471552,
+            "rss_bytes": 760758272,
             "threads": 30
           },
           {
             "elapsed_seconds": 540,
-            "rss_bytes": 760504320,
+            "rss_bytes": 760803328,
             "threads": 30
           },
           {
             "elapsed_seconds": 600,
-            "rss_bytes": 760549376,
+            "rss_bytes": 760848384,
             "threads": 30
           },
           {
             "elapsed_seconds": 660,
-            "rss_bytes": 760598528,
+            "rss_bytes": 760893440,
             "threads": 30
           },
           {
             "elapsed_seconds": 720,
-            "rss_bytes": 760647680,
+            "rss_bytes": 760934400,
             "threads": 30
           },
           {
             "elapsed_seconds": 780,
-            "rss_bytes": 760688640,
+            "rss_bytes": 760979456,
             "threads": 30
           },
           {
             "elapsed_seconds": 840,
-            "rss_bytes": 760782848,
+            "rss_bytes": 761012224,
             "threads": 30
           },
           {
             "elapsed_seconds": 900,
-            "rss_bytes": 760832000,
+            "rss_bytes": 761053184,
             "threads": 30
           },
           {
             "elapsed_seconds": 960,
-            "rss_bytes": 760971264,
+            "rss_bytes": 761085952,
             "threads": 30
           },
           {
             "elapsed_seconds": 1020,
-            "rss_bytes": 761008128,
+            "rss_bytes": 761118720,
             "threads": 30
           },
           {
             "elapsed_seconds": 1080,
-            "rss_bytes": 761049088,
+            "rss_bytes": 761151488,
             "threads": 30
           },
           {
             "elapsed_seconds": 1140,
-            "rss_bytes": 761094144,
-            "threads": 30
-          },
-          {
-            "elapsed_seconds": 1200,
-            "rss_bytes": 761147392,
-            "threads": 30
-          },
-          {
-            "elapsed_seconds": 1260,
             "rss_bytes": 761188352,
             "threads": 30
           },
           {
+            "elapsed_seconds": 1200,
+            "rss_bytes": 761233408,
+            "threads": 30
+          },
+          {
+            "elapsed_seconds": 1260,
+            "rss_bytes": 761270272,
+            "threads": 30
+          },
+          {
             "elapsed_seconds": 1320,
-            "rss_bytes": 761229312,
+            "rss_bytes": 761303040,
             "threads": 30
           },
           {
             "elapsed_seconds": 1380,
-            "rss_bytes": 761282560,
+            "rss_bytes": 761335808,
             "threads": 30
           },
           {
             "elapsed_seconds": 1440,
-            "rss_bytes": 761319424,
-            "threads": 30
-          },
-          {
-            "elapsed_seconds": 1500,
             "rss_bytes": 761364480,
             "threads": 30
           },
           {
+            "elapsed_seconds": 1500,
+            "rss_bytes": 761389056,
+            "threads": 30
+          },
+          {
             "elapsed_seconds": 1560,
-            "rss_bytes": 761405440,
+            "rss_bytes": 761421824,
             "threads": 30
           },
           {
             "elapsed_seconds": 1620,
-            "rss_bytes": 761446400,
+            "rss_bytes": 761507840,
             "threads": 30
           },
           {
             "elapsed_seconds": 1680,
-            "rss_bytes": 761483264,
+            "rss_bytes": 761540608,
             "threads": 30
           },
           {
             "elapsed_seconds": 1740,
-            "rss_bytes": 761520128,
+            "rss_bytes": 761561088,
             "threads": 30
           },
           {
             "elapsed_seconds": 1800,
-            "rss_bytes": 761565184,
+            "rss_bytes": 761597952,
             "threads": 30
           }
         ],
@@ -362,7 +362,7 @@
       "status": "PASS"
     },
     "windows": {
-      "actions_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/32842388599",
+      "actions_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/32853807410",
       "allocation_profile_viewer_url": null,
       "bds_version": "26.44",
       "checks": [
@@ -415,7 +415,7 @@
         {
           "name": "execution-profiler",
           "status": "PASS",
-          "viewer_url": "https://spark.lucko.me/KVxuGy8BHN"
+          "viewer_url": "https://spark.lucko.me/mdIUtt9Ooq"
         },
         {
           "detail": "explicitly disabled on Windows",
@@ -438,9 +438,9 @@
         {
           "detail": "controlled hard kill produced a replayable journal and recovered profile",
           "name": "crash-recovery",
-          "sha256": "ab1cf0af4fa05226adbb17d7e9067e380b669f9c0b0402fe03c825c7eb69ab6c",
+          "sha256": "875c0b4409eef20f6b193aee64c8b3b3afbad02251a1860bf8173469226c5aba",
           "status": "PASS",
-          "viewer_url": "https://spark.lucko.me/iaYc9kmpm4"
+          "viewer_url": "https://spark.lucko.me/flD1qxWwu8"
         },
         {
           "detail": "spark profiler info",
@@ -450,8 +450,8 @@
         {
           "detail": "BDS remained responsive for 30 minutes",
           "name": "soak-stability",
-          "rss_growth_bytes": -561516544,
-          "rss_peak_bytes": 615858176,
+          "rss_growth_bytes": -564576256,
+          "rss_peak_bytes": 614830080,
           "status": "PASS",
           "thread_delta": -16,
           "threads_peak": 58
@@ -463,195 +463,195 @@
         }
       ],
       "error_summary": null,
-      "execution_profile_viewer_url": "https://spark.lucko.me/KVxuGy8BHN",
+      "execution_profile_viewer_url": "https://spark.lucko.me/mdIUtt9Ooq",
       "failed_stage": null,
       "profiles": [
         {
           "duration_seconds": 12,
           "kind": "execution",
           "notes": "Headless execution profiler",
-          "profile_key": "KVxuGy8BHN",
+          "profile_key": "mdIUtt9Ooq",
           "server_version": "26.44",
-          "url": "https://spark.lucko.me/KVxuGy8BHN"
+          "url": "https://spark.lucko.me/mdIUtt9Ooq"
         },
         {
           "duration_seconds": 12,
           "kind": "crash-recovery",
           "notes": "Recovered from RecoveryWriter journal after controlled hard kill and uploaded by the lab.",
-          "profile_key": "iaYc9kmpm4",
+          "profile_key": "flD1qxWwu8",
           "server_version": "26.44",
-          "sha256": "ab1cf0af4fa05226adbb17d7e9067e380b669f9c0b0402fe03c825c7eb69ab6c",
-          "url": "https://spark.lucko.me/iaYc9kmpm4"
+          "sha256": "875c0b4409eef20f6b193aee64c8b3b3afbad02251a1860bf8173469226c5aba",
+          "url": "https://spark.lucko.me/flD1qxWwu8"
         }
       ],
       "recovery": {
         "crash_replay": "PASS",
         "journal_segments_before_restart": 1,
-        "recovered_profile_path": "work\\windows\\bedrock_server\\plugins\\spark\\profiles\\profile-1787657363801.sparkprofile",
-        "recovered_profile_sha256": "ab1cf0af4fa05226adbb17d7e9067e380b669f9c0b0402fe03c825c7eb69ab6c",
-        "recovered_profile_viewer_url": "https://spark.lucko.me/iaYc9kmpm4"
+        "recovered_profile_path": "work\\windows\\bedrock_server\\plugins\\spark\\profiles\\profile-1787664748583.sparkprofile",
+        "recovered_profile_sha256": "875c0b4409eef20f6b193aee64c8b3b3afbad02251a1860bf8173469226c5aba",
+        "recovered_profile_viewer_url": "https://spark.lucko.me/flD1qxWwu8"
       },
       "shutdown_status": "graceful",
       "soak": {
         "duration_minutes": 30,
-        "rss_end_bytes": 52957184,
-        "rss_growth_bytes": -561516544,
-        "rss_peak_bytes": 615858176,
-        "rss_start_bytes": 614473728,
+        "rss_end_bytes": 49053696,
+        "rss_growth_bytes": -564576256,
+        "rss_peak_bytes": 614830080,
+        "rss_start_bytes": 613629952,
         "samples": [
           {
             "elapsed_seconds": 0,
-            "rss_bytes": 614473728,
+            "rss_bytes": 613629952,
             "threads": 58
           },
           {
             "elapsed_seconds": 60,
-            "rss_bytes": 615858176,
+            "rss_bytes": 614830080,
             "threads": 49
           },
           {
             "elapsed_seconds": 120,
-            "rss_bytes": 502951936,
+            "rss_bytes": 501207040,
             "threads": 48
           },
           {
             "elapsed_seconds": 180,
-            "rss_bytes": 315260928,
-            "threads": 45
+            "rss_bytes": 285683712,
+            "threads": 46
           },
           {
             "elapsed_seconds": 240,
-            "rss_bytes": 184487936,
-            "threads": 45
+            "rss_bytes": 181977088,
+            "threads": 47
           },
           {
             "elapsed_seconds": 300,
-            "rss_bytes": 109072384,
-            "threads": 45
+            "rss_bytes": 118616064,
+            "threads": 46
           },
           {
             "elapsed_seconds": 360,
-            "rss_bytes": 85921792,
-            "threads": 45
+            "rss_bytes": 122052608,
+            "threads": 46
           },
           {
             "elapsed_seconds": 420,
-            "rss_bytes": 70131712,
+            "rss_bytes": 112988160,
             "threads": 42
           },
           {
             "elapsed_seconds": 480,
-            "rss_bytes": 69419008,
-            "threads": 43
+            "rss_bytes": 96002048,
+            "threads": 42
           },
           {
             "elapsed_seconds": 540,
-            "rss_bytes": 60551168,
+            "rss_bytes": 67129344,
             "threads": 42
           },
           {
             "elapsed_seconds": 600,
-            "rss_bytes": 55713792,
+            "rss_bytes": 47038464,
             "threads": 46
           },
           {
             "elapsed_seconds": 660,
-            "rss_bytes": 48996352,
+            "rss_bytes": 45678592,
             "threads": 46
           },
           {
             "elapsed_seconds": 720,
-            "rss_bytes": 46788608,
+            "rss_bytes": 46223360,
             "threads": 42
           },
           {
             "elapsed_seconds": 780,
-            "rss_bytes": 47534080,
+            "rss_bytes": 44945408,
             "threads": 42
           },
           {
             "elapsed_seconds": 840,
-            "rss_bytes": 47099904,
+            "rss_bytes": 43520000,
             "threads": 42
           },
           {
             "elapsed_seconds": 900,
-            "rss_bytes": 47198208,
-            "threads": 42
+            "rss_bytes": 45240320,
+            "threads": 43
           },
           {
             "elapsed_seconds": 960,
-            "rss_bytes": 47869952,
-            "threads": 42
+            "rss_bytes": 45719552,
+            "threads": 43
           },
           {
             "elapsed_seconds": 1020,
-            "rss_bytes": 47296512,
+            "rss_bytes": 45604864,
             "threads": 42
           },
           {
             "elapsed_seconds": 1080,
-            "rss_bytes": 48316416,
+            "rss_bytes": 45707264,
             "threads": 42
           },
           {
             "elapsed_seconds": 1140,
-            "rss_bytes": 62169088,
+            "rss_bytes": 60383232,
             "threads": 42
           },
           {
             "elapsed_seconds": 1200,
-            "rss_bytes": 62259200,
+            "rss_bytes": 60121088,
             "threads": 42
           },
           {
             "elapsed_seconds": 1260,
-            "rss_bytes": 57831424,
+            "rss_bytes": 50925568,
             "threads": 42
           },
           {
             "elapsed_seconds": 1320,
-            "rss_bytes": 53989376,
+            "rss_bytes": 46919680,
             "threads": 42
           },
           {
             "elapsed_seconds": 1380,
-            "rss_bytes": 49344512,
+            "rss_bytes": 46481408,
             "threads": 42
           },
           {
             "elapsed_seconds": 1440,
-            "rss_bytes": 49946624,
-            "threads": 42
-          },
-          {
-            "elapsed_seconds": 1500,
-            "rss_bytes": 49999872,
-            "threads": 42
-          },
-          {
-            "elapsed_seconds": 1560,
-            "rss_bytes": 51118080,
+            "rss_bytes": 47456256,
             "threads": 43
           },
           {
+            "elapsed_seconds": 1500,
+            "rss_bytes": 47575040,
+            "threads": 43
+          },
+          {
+            "elapsed_seconds": 1560,
+            "rss_bytes": 47906816,
+            "threads": 42
+          },
+          {
             "elapsed_seconds": 1620,
-            "rss_bytes": 52244480,
+            "rss_bytes": 61505536,
             "threads": 42
           },
           {
             "elapsed_seconds": 1680,
-            "rss_bytes": 52076544,
+            "rss_bytes": 58011648,
             "threads": 43
           },
           {
             "elapsed_seconds": 1740,
-            "rss_bytes": 52473856,
+            "rss_bytes": 53563392,
             "threads": 42
           },
           {
             "elapsed_seconds": 1800,
-            "rss_bytes": 52957184,
+            "rss_bytes": 49053696,
             "threads": 42
           }
         ],
@@ -664,6 +664,6 @@
     }
   },
   "schema_version": 2,
-  "spark_sha": "e2d26b11636f536bf6e5ead6c4a59a20372483c4",
+  "spark_sha": "8ba85ecb9d0da76100af5bc8d2ead086f370e74e",
   "state": "PASS"
 }
