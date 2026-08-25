@@ -27,14 +27,8 @@ jobs:
       fail-fast: false
       matrix:
         variant:
-          - tick0-predicted
-          - tick0-transition-fly
-          - tick0-camera-relative
-          - tick0-play-normal
-          - tick0-zero-delta
-          - tick0-client-ack
-          - tick0-no-climb
-          - tick0-server-driven
+          - tick1-predicted
+          - tick1-no-block
 
     steps:
       - name: Checkout test lab
