@@ -1,0 +1,90 @@
+name: BDS Bot Test
+
+on:
+  push:
+    paths:
+      - ".github/workflows/bot-test.yml"
+      - "controller/bot_validation.py"
+      - "providers/bot_provider.py"
+  pull_request:
+    paths:
+      - ".github/workflows/bot-test.yml"
+      - "controller/bot_validation.py"
+      - "providers/bot_provider.py"
+  workflow_dispatch:
+    inputs:
+      bot_ref:
+        description: "bds-test-bot branch containing a successful build"
+        required: false
+        default: "feat/minimal-client"
+      bot_sha:
+        description: "Optional exact bds-test-bot head SHA"
+        required: false
+        default: ""
+      soak_seconds:
+        description: "Seconds the bot must remain online"
+        required: false
+        default: "300"
+
+concurrency:
+  group: bds-bot-test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+  BOT_REF: ${{ github.event.inputs.bot_ref || 'feat/minimal-client' }}
+  BOT_SHA: ${{ github.event.inputs.bot_sha || '' }}
+  BOT_SOAK_SECONDS: ${{ github.event.inputs.soak_seconds || '300' }}
+
+jobs:
+  bot-test:
+    name: Bot E2E (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            os: ubuntu-24.04
+          - platform: windows
+            os: windows-2022
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Run bot integration test
+        run: >-
+          python -m controller.bot_validation
+          --platform ${{ matrix.platform }}
+          --bot-ref "${{ env.BOT_REF }}"
+          --bot-sha "${{ env.BOT_SHA }}"
+          --soak-seconds "${{ env.BOT_SOAK_SECONDS }}"
+
+      - name: Upload bot test evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bds-bot-test-${{ matrix.platform }}
+          path: |
+            metadata.json
+            bot-metadata.json
+            bds.log
+            bot.log
+            endstone.log
+            spark.log
+            test-results.json
+            failure-diagnostics.txt
+          if-no-files-found: warn
+          retention-days: 14
