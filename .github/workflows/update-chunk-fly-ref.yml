@@ -1,0 +1,47 @@
+name: Update Chunk-Fly Bot Ref
+
+on:
+  push:
+    branches:
+      - test/chunk-fly-spark
+    paths:
+      - ".github/workflows/update-chunk-fly-ref.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  update-ref:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout test lab with repository PAT
+        uses: actions/checkout@v7
+        with:
+          ref: test/chunk-fly-spark
+          token: ${{ secrets.REPO_PAT }}
+          persist-credentials: true
+
+      - name: Pin real BDS workflow to latest bot head
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('.github/workflows/chunk-fly-spark-test.yml')
+          text = path.read_text()
+          old = 'c44ea7fd92e0c02dbee06645e437d95d02dd227f'
+          new = 'cb329a123de56cb09e07466651d09a0ff06ab0d6'
+          if old in text:
+              text = text.replace(old, new)
+              path.write_text(text)
+          elif new not in text:
+              raise SystemExit('expected previous or new bot ref not found')
+          PY
+          if git diff --quiet; then
+            echo "Bot ref already pinned"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows/chunk-fly-spark-test.yml
+          git commit -m "test: validate client-predicted chunk-fly against BDS"
+          git push origin HEAD:test/chunk-fly-spark
