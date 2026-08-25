@@ -133,9 +133,22 @@ class FleetSparkValidation(IntegrationTest):
         super().check(name, status, detail, **extra)
         self._write_results()
 
+    def wait_post_start_initialization(self) -> None:
+        assert self.server is not None
+        self.server.wait_for(
+            lambda lines: any(
+                "[spark] endstone-spark v" in line.lower()
+                and "enabled. run /spark to get started." in line.lower()
+                for line in lines
+            ),
+            30,
+            "Spark post-start enable completion",
+        )
+
     def bootstrap_offline_server(self) -> None:
         self.start_server()
         assert self.server is not None
+        self.wait_post_start_initialization()
         if not self.server.graceful_stop(60):
             self.server.force_kill_tree()
             raise RuntimeError("BDS did not stop after server.properties bootstrap")
@@ -146,6 +159,7 @@ class FleetSparkValidation(IntegrationTest):
         set_server_property(properties, "max-players", "30")
         self.check("fleet-server-properties", "PASS", "offline mode, idle timeout disabled, max-players=30")
         self.start_server()
+        self.wait_post_start_initialization()
 
     def expected_names(self) -> list[str]:
         if self.count == 1:

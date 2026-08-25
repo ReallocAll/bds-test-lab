@@ -70,10 +70,13 @@ class ScenarioSparkValidation(FleetSparkValidation):
         count: int,
         scenario_file: pathlib.Path,
         profile_seconds: int,
+        min_action_packets_per_bot: int = 0,
     ):
         self.scenario_file = scenario_file.resolve()
+        self.min_action_packets_per_bot = min_action_packets_per_bot
         super().__init__(bot_binary, count, self.scenario_file.stem, profile_seconds)
         self.result["scenario_file"] = str(self.scenario_file)
+        self.result["min_action_packets_per_bot"] = self.min_action_packets_per_bot
         self._write_results()
 
     def start_fleet(self) -> None:
@@ -108,21 +111,25 @@ class ScenarioSparkValidation(FleetSparkValidation):
         stats: list[dict[str, Any]] = self.result.get("bot_stats") or []
         movement_total = 0
         auth_total = 0
+        action_total = 0
         bad: list[dict[str, Any]] = []
         min_ratio = 1.0
         expected_scenario = self.scenario_file.stem
         for event in stats:
             movement = int(event.get("movement_inputs_sent", 0))
             auth = int(event.get("auth_inputs_sent", 0))
+            action_packets = int(event.get("action_packets_sent", 0))
             ratio = movement / auth if auth else 0.0
             movement_total += movement
             auth_total += auth
+            action_total += action_packets
             min_ratio = min(min_ratio, ratio)
             if (
                 event.get("scenario") != expected_scenario
                 or movement < self.profile_seconds * 10
                 or auth <= 0
                 or ratio < 0.70
+                or action_packets < self.min_action_packets_per_bot
             ):
                 bad.append(event)
 
@@ -132,9 +139,11 @@ class ScenarioSparkValidation(FleetSparkValidation):
         self.check(
             "scenario-action-sequence",
             "PASS",
-            f"all {self.count} bots progressed through wait/look/jump into sustained movement",
+            f"all {self.count} bots progressed through configured actions into sustained movement",
             movement_inputs_sent=movement_total,
             auth_inputs_sent=auth_total,
+            action_packets_sent=action_total,
+            min_action_packets_per_bot=self.min_action_packets_per_bot,
             min_movement_ratio=round(min_ratio, 4),
         )
 
@@ -145,12 +154,14 @@ def main() -> int:
     parser.add_argument("--count", required=True, type=int, choices=[1, 5, 10, 20])
     parser.add_argument("--scenario-file", required=True)
     parser.add_argument("--profile-seconds", type=int, default=30)
+    parser.add_argument("--min-action-packets-per-bot", type=int, default=0)
     args = parser.parse_args()
     return ScenarioSparkValidation(
         pathlib.Path(args.bot),
         args.count,
         pathlib.Path(args.scenario_file),
         args.profile_seconds,
+        args.min_action_packets_per_bot,
     ).execute()
 
 

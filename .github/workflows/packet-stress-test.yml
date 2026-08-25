@@ -1,18 +1,20 @@
-name: Spark Idle Fleet Load Test
+name: Spark Packet Action Fleet Test
 
 on:
   push:
     branches:
-      - feat/fleet-spark-load
+      - test/packet-stress-actions
     paths:
-      - ".github/workflows/fleet-spark-test.yml"
+      - ".github/workflows/packet-stress-test.yml"
+      - "controller/scenario_validation.py"
       - "controller/fleet_spark_validation.py"
       - "controller/bot_validation.py"
       - "controller/run_test.py"
       - "providers/artifact_provider.py"
   pull_request:
     paths:
-      - ".github/workflows/fleet-spark-test.yml"
+      - ".github/workflows/packet-stress-test.yml"
+      - "controller/scenario_validation.py"
       - "controller/fleet_spark_validation.py"
       - "controller/bot_validation.py"
       - "controller/run_test.py"
@@ -20,16 +22,16 @@ on:
   workflow_dispatch:
     inputs:
       bot_ref:
-        description: "Exact bds-test-bot commit/ref to profile"
+        description: "Exact bds-test-bot commit/ref to validate"
         required: false
-        default: "f76477b0b88174c58cf533a7d37a464692dbf588"
+        default: "f2a021a5f7f1f040cd2c3390988d80983ec32685"
       profile_seconds:
         description: "Seconds per Spark execution profile"
         required: false
         default: "30"
 
 concurrency:
-  group: spark-idle-fleet-${{ github.ref }}
+  group: spark-packet-actions-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -39,12 +41,12 @@ permissions:
 env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
-  BOT_REF: ${{ github.event.inputs.bot_ref || 'f76477b0b88174c58cf533a7d37a464692dbf588' }}
+  BOT_REF: ${{ github.event.inputs.bot_ref || 'f2a021a5f7f1f040cd2c3390988d80983ec32685' }}
   PROFILE_SECONDS: ${{ github.event.inputs.profile_seconds || '30' }}
 
 jobs:
-  idle-fleet:
-    name: Idle fleet ${{ matrix.count }} bots
+  packet-action-fleet:
+    name: Packet actions ${{ matrix.count }} bots
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     strategy:
@@ -75,6 +77,7 @@ jobs:
         shell: bash
         run: |
           go mod tidy
+          git diff --exit-code -- go.mod go.sum
           unformatted="$(gofmt -l .)"
           if [[ -n "$unformatted" ]]; then
             echo "Unformatted files:"
@@ -95,13 +98,14 @@ jobs:
       - name: Install validation dependencies
         run: python -m pip install --disable-pip-version-check psutil
 
-      - name: Run real BDS idle fleet Spark load
+      - name: Run real BDS packet-action Spark load
         run: >-
-          python -m controller.fleet_spark_validation
+          python -m controller.scenario_validation
           --bot dist/bds-test-bot
           --count ${{ matrix.count }}
-          --scenario idle
+          --scenario-file bot-src/scenarios/packet-stress.yaml
           --profile-seconds ${{ env.PROFILE_SECONDS }}
+          --min-action-packets-per-bot 12
 
       - name: Add load metrics to summary
         if: always()
@@ -115,36 +119,34 @@ jobs:
           metrics = data.get("metrics") or {}
           mspt = metrics.get("mspt_10s") or {}
           tps = metrics.get("tps") or {}
-          pcpu = metrics.get("process_cpu_percent") or {}
-          scpu = metrics.get("system_cpu_percent") or {}
-          mem = metrics.get("memory_rss_bytes") or {}
-          print(f"## Idle fleet: {data.get('bot_count')} bots")
+          shutdown = data.get("fleet_shutdown_event") or {}
+          print(f"## Packet actions: {data.get('bot_count')} bots")
           print()
           print(f"Status: **{data.get('status')}**")
           print(f"BDS: `{data.get('bds_version')}`")
           print(f"Spark profile: {data.get('spark_profile_viewer_url')}")
           print(f"TPS 10s: {tps.get('10s')}")
           print(f"MSPT 10s mean/p95/max: {mspt.get('mean')} / {mspt.get('p95')} / {mspt.get('max')}")
-          print(f"Process CPU 10s: {pcpu.get('10s')}%")
-          print(f"System CPU 10s: {scpu.get('10s')}%")
-          print(f"RSS mean/p95/max: {mem.get('mean')} / {mem.get('p95')} / {mem.get('max')} bytes")
+          print(f"Action packets: {shutdown.get('action_packets_sent')}")
+          print(f"Movement PlayerAuthInput: {shutdown.get('movement_inputs_sent')}")
           PY
           fi >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload fleet evidence
+      - name: Upload packet-action evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: spark-idle-fleet-${{ matrix.count }}-${{ github.run_id }}
+          name: spark-packet-actions-${{ matrix.count }}-${{ github.run_id }}
           path: |
             metadata.json
             bds.log
             endstone.log
             spark.log
-            fleet-${{ matrix.count }}-idle.log
+            fleet-${{ matrix.count }}-packet-stress.log
             test-results.json
             fleet-spark-result.json
             failure-diagnostics.txt
+            bot-src/scenarios/packet-stress.yaml
             work/linux/bedrock_server/server.properties
             work/linux/bedrock_server/version.txt
           if-no-files-found: warn
