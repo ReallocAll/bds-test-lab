@@ -50,6 +50,15 @@ class SparkReleaseValidation(ExtendedIntegrationTest):
             )
         self.check("endstone-abi-version", "PASS", f"Endstone {installed} >= {MIN_ENDSTONE_VERSION}")
 
+    def start_server(self) -> None:
+        super().start_server()
+        assert self.server is not None
+        self.server.wait_for(
+            lambda lines: any("endstone-spark" in line.lower() and "enabled" in line.lower() for line in lines),
+            30,
+            "Spark fully enabled",
+        )
+
     def bootstrap_offline_server(self) -> None:
         self.start_server()
         assert self.server is not None
