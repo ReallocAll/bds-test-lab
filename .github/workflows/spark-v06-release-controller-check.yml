@@ -1,0 +1,37 @@
+name: Spark v0.6 Release Controller Check
+
+on:
+  push:
+    branches:
+      - test/spark-v0.6-release-validation
+    paths:
+      - "controller/release_validation.py"
+      - "controller/assert_spark_artifact.py"
+      - ".github/workflows/spark-v06-release-validation.yml"
+      - ".github/workflows/spark-v06-release-controller-check.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Compile release controller
+        run: >-
+          python -m py_compile
+          controller/release_validation.py
+          controller/assert_spark_artifact.py
+      - name: Verify module imports
+        run: |
+          python -m pip install --disable-pip-version-check psutil packaging
+          python - <<'PY'
+          import controller.assert_spark_artifact
+          import controller.release_validation
+          print("release controller imports: PASS")
+          PY
