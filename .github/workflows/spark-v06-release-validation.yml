@@ -1,9 +1,9 @@
-name: Spark v0.6 Release Validation
+name: Spark v0.6 Release Validation (Windows Retry)
 
 on:
   push:
     branches:
-      - test/spark-v0.6-release-validation
+      - test/spark-v0.6-release-windows-retry
     paths:
       - "release-trigger.json"
   workflow_dispatch:
@@ -16,7 +16,7 @@ on:
         required: false
         default: "a0a83240e9e8f12d4806ba31194fb1807d7b5dd1"
       soak_minutes:
-        description: "BDS soak duration per platform"
+        description: "BDS soak duration"
         required: false
         default: "30"
 
@@ -42,9 +42,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: linux
-            os: ubuntu-24.04
-            bot_name: bds-test-bot
           - platform: windows
             os: windows-2022
             bot_name: bds-test-bot.exe
