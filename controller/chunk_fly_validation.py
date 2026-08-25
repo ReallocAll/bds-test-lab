@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import pathlib
+import time
+from typing import Any
+
+from controller.fleet_spark_validation import FleetSparkValidation
+
+
+class ChunkFlySparkValidation(FleetSparkValidation):
+    def __init__(self, bot_binary: pathlib.Path, count: int, profile_seconds: int):
+        super().__init__(bot_binary, count, "chunk-fly", profile_seconds)
+        self.result["chunk_fly_evidence"] = None
+        self._write_results()
+
+    def start_fleet(self) -> None:
+        super().start_fleet()
+        assert self.bot is not None
+
+        expected = set(self.expected_names())
+        deadline = time.monotonic() + 30
+        confirmed: set[str] = set()
+        while time.monotonic() < deadline:
+            for event in self.bot.event_snapshot():
+                if event.get("event") == "flight_state" and event.get("flying") is True:
+                    bot = str(event.get("bot", ""))
+                    if bot in expected:
+                        confirmed.add(bot)
+            if confirmed == expected:
+                break
+            if not self.bot.is_alive():
+                raise RuntimeError("Bot fleet exited while waiting for BDS flight acknowledgement")
+            time.sleep(0.25)
+
+        missing = sorted(expected - confirmed)
+        if missing:
+            raise RuntimeError(f"BDS did not acknowledge creative flight for bots: {missing}")
+        self.check(
+            "chunk-fly-server-flight",
+            "PASS",
+            f"BDS acknowledged creative flying for all {self.count} bots",
+            confirmed=sorted(confirmed),
+        )
+
+    def stop_fleet(self) -> None:
+        super().stop_fleet()
+        assert self.bot is not None
+
+        stats: list[dict[str, Any]] = self.result.get("bot_stats") or []
+        if len(stats) != self.count:
+            raise RuntimeError(f"Expected {self.count} chunk-fly bot_stats events, got {len(stats)}")
+
+        events = self.bot.event_snapshot()
+        progress_by_bot: dict[str, list[dict[str, Any]]] = {name: [] for name in self.expected_names()}
+        for event in events:
+            if event.get("event") != "bot_progress":
+                continue
+            bot = str(event.get("bot", ""))
+            if bot in progress_by_bot:
+                progress_by_bot[bot].append(event)
+
+        evidence: list[dict[str, Any]] = []
+        bad: list[dict[str, Any]] = []
+        for event in stats:
+            bot = str(event.get("bot", ""))
+            samples = progress_by_bot.get(bot, [])
+            auth = int(event.get("auth_inputs_sent", 0))
+            movement = int(event.get("movement_inputs_sent", 0))
+            chunks = int(event.get("chunks_received", 0))
+            distance = float(event.get("horizontal_distance", 0.0))
+            flying = event.get("flying_confirmed") is True
+            span_x = int(event.get("chunk_span_x", 0))
+            span_z = int(event.get("chunk_span_z", 0))
+
+            entry: dict[str, Any] = {
+                "bot": bot,
+                "progress_samples": len(samples),
+                "auth_inputs_sent": auth,
+                "movement_inputs_sent": movement,
+                "chunks_received": chunks,
+                "horizontal_distance": distance,
+                "flying_confirmed": flying,
+                "chunk_span_x": span_x,
+                "chunk_span_z": span_z,
+            }
+
+            valid = (
+                event.get("scenario") == "chunk-fly"
+                and flying
+                and auth > 0
+                and movement > 0
+                and chunks > 0
+                and distance > 0
+                and len(samples) >= 4
+            )
+
+            if len(samples) >= 4:
+                late_index = min(len(samples) - 2, max(1, (len(samples) * 2) // 3))
+                late = samples[late_index]
+                final = samples[-1]
+                late_chunks = int(late.get("chunks_received", 0))
+                final_chunks = int(final.get("chunks_received", 0))
+                late_distance = float(late.get("horizontal_distance", 0.0))
+                final_distance = float(final.get("horizontal_distance", 0.0))
+                late_chunk_growth = final_chunks - late_chunks
+                late_distance_growth = final_distance - late_distance
+                entry.update(
+                    {
+                        "late_sample_index": late_index,
+                        "late_chunks_received": late_chunks,
+                        "final_progress_chunks_received": final_chunks,
+                        "late_chunk_growth": late_chunk_growth,
+                        "late_horizontal_distance": late_distance,
+                        "final_progress_horizontal_distance": final_distance,
+                        "late_horizontal_growth": late_distance_growth,
+                    }
+                )
+                valid = valid and late_chunk_growth > 0 and late_distance_growth > 0
+
+            if not valid:
+                bad.append(entry)
+            evidence.append(entry)
+
+        self.result["chunk_fly_evidence"] = evidence
+        self._write_results()
+        if bad:
+            raise RuntimeError(f"Chunk-fly traversal evidence failed for {len(bad)} bots: {bad[:3]}")
+
+        shutdown: dict[str, Any] = self.result.get("fleet_shutdown_event") or {}
+        if int(shutdown.get("flying_confirmed", -1)) != self.count:
+            raise RuntimeError(f"Fleet shutdown did not retain flight confirmation: {shutdown}")
+        min_distance = float(shutdown.get("min_horizontal_distance", 0.0))
+        if min_distance <= 0:
+            raise RuntimeError(f"Fleet minimum horizontal distance did not advance: {min_distance}")
+
+        self.check(
+            "chunk-fly-sustained-traversal",
+            "PASS",
+            f"all {self.count} bots remained airborne and continued chunk traversal in the late window",
+            min_horizontal_distance=min_distance,
+            evidence=evidence,
+        )
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--bot", required=True)
+    parser.add_argument("--count", required=True, type=int, choices=[1, 5, 10, 20])
+    parser.add_argument("--profile-seconds", type=int, default=30)
+    args = parser.parse_args()
+    return ChunkFlySparkValidation(pathlib.Path(args.bot), args.count, args.profile_seconds).execute()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
