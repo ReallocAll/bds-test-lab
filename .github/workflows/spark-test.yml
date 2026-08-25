@@ -4,9 +4,11 @@ on:
   push:
     branches:
       - bot-test
+      - agent/blocker2-windows-bot
     paths:
       - ".github/workflows/spark-test.yml"
       - "controller/spark_bot_validation.py"
+      - "controller/windows_sampler_shutdown_validation.py"
       - "controller/bot_validation.py"
       - "controller/run_test.py"
       - "providers/artifact_provider.py"
@@ -107,7 +109,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: spark-real-bot-${{ github.run_id }}
+          name: spark-real-bot-linux-${{ github.run_id }}
           path: |
             metadata.json
             bds.log
@@ -119,5 +121,92 @@ jobs:
             failure-diagnostics.txt
             work/linux/bedrock_server/server.properties
             work/linux/bedrock_server/version.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+  windows-blocker2-real-bot:
+    name: Windows sampler shutdown with real Bot
+    runs-on: windows-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout test lab
+        uses: actions/checkout@v7
+
+      - name: Checkout bot at exact ref
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/bds-test-bot
+          ref: ${{ env.BOT_REF }}
+          path: bot-src
+          persist-credentials: false
+
+      - name: Set up Go 1.25
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Build exact bot revision
+        working-directory: bot-src
+        shell: pwsh
+        run: |
+          go mod tidy
+          go test ./...
+          New-Item -ItemType Directory -Force -Path ../dist | Out-Null
+          go build -trimpath -o ../dist/bds-test-bot.exe ./cmd/bds-test-bot
+          "BOT_REF=$env:BOT_REF" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install validation dependencies
+        run: python -m pip install --disable-pip-version-check psutil
+
+      - name: Run Windows active-profiler shutdown validation
+        run: >-
+          python -m controller.windows_sampler_shutdown_validation
+          --bot dist/bds-test-bot.exe
+          --settle-seconds 15
+
+      - name: Add blocker 2 result to summary
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path test-results.json) {
+            @'
+          import json
+          from pathlib import Path
+          data = json.loads(Path("test-results.json").read_text())
+          metadata = json.loads(Path("metadata.json").read_text()) if Path("metadata.json").exists() else {}
+          spark = ((metadata.get("components") or {}).get("spark") or {})
+          print("## Windows sampler active-shutdown validation")
+          print()
+          print(f"Status: **{data.get('status')}**")
+          print(f"Spark SHA: `{spark.get('sha')}`")
+          print(f"Spark run: `{spark.get('run_id')}`")
+          print(f"BDS: `{data.get('bds_version')}`")
+          print(f"Shutdown status: `{data.get('shutdown_status')}`")
+          print(f"Active-profile shutdown: `{data.get('active_profile_shutdown_seconds')}` s")
+          '@ | python - | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
+
+      - name: Upload blocker 2 evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: spark-blocker2-windows-${{ github.run_id }}
+          path: |
+            metadata.json
+            bds.log
+            endstone.log
+            spark.log
+            bot-windows-sampler.log
+            test-results.json
+            failure-diagnostics.txt
+            work/windows/bedrock_server/server.properties
+            work/windows/bedrock_server/version.txt
           if-no-files-found: warn
           retention-days: 14
