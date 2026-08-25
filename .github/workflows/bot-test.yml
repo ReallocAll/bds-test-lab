@@ -9,7 +9,7 @@ on:
       bot_ref:
         description: "bds-test-bot commit/ref to validate"
         required: false
-        default: "fe3c2828147768c999db2af904647d2007d92c41"
+        default: "62826efad687fecd29ad512af4620baa76e6d66f"
       soak_seconds:
         description: "Bot soak duration (minimum 300 seconds)"
         required: false
@@ -25,7 +25,7 @@ permissions:
 env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
-  BOT_REF: ${{ github.event.inputs.bot_ref || 'fe3c2828147768c999db2af904647d2007d92c41' }}
+  BOT_REF: ${{ github.event.inputs.bot_ref || '62826efad687fecd29ad512af4620baa76e6d66f' }}
   BOT_SOAK_SECONDS: ${{ github.event.inputs.soak_seconds || '300' }}
 
 jobs:
@@ -69,8 +69,14 @@ jobs:
           gofmt -w .
           go mod tidy
           git diff -- . > ../bot-source-fixes.patch
-          echo "Resolved go.mod:"
+          echo "--- resolved go.mod ---"
           cat go.mod
+          if [[ "${{ matrix.platform }}" == "linux" ]]; then
+            echo "--- source fixes produced by gofmt/tidy ---"
+            cat ../bot-source-fixes.patch
+            echo "--- resolved go.sum ---"
+            cat go.sum
+          fi
 
       - name: Vet
         working-directory: bot-src
