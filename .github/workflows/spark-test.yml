@@ -1,5 +1,6 @@
 name: Spark Real Bot Load Test
 
+# Blocker #2 reruns must resolve the newest successful Spark develop artifact.
 on:
   push:
     branches:
