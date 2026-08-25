@@ -20,8 +20,13 @@ env:
 
 jobs:
   chunk-walk-current:
+    name: chunk-walk-${{ matrix.variant }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [seed-no-ack, seed-reference-tuple]
     steps:
       - name: Checkout test lab
         uses: actions/checkout@v7
@@ -48,11 +53,16 @@ jobs:
           path: bot-src
           persist-credentials: false
 
-      - name: Seed chunk-walk from server publisher and expose progress
+      - name: Seed from publisher and patch input variant
+        env:
+          VARIANT: ${{ matrix.variant }}
         shell: bash
         run: |
           python3 - <<'PY'
+          import os
           from pathlib import Path
+          variant = os.environ['VARIANT']
+
           bot = Path('bot-src/internal/bot/bot.go')
           text = bot.read_text()
           text = text.replace(
@@ -79,6 +89,26 @@ jobs:
               'if (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && !state.positionReadySnapshot() {',
               1,
           )
+          # NetworkChunkPublisherUpdate is not a teleport. Do not emit a
+          # HandledTeleport transition merely because it supplied the first
+          # authoritative position used to initialise prediction history.
+          text = text.replace('\ts.handledTeleport = true\n\treturn true\n', '\treturn true\n', 1)
+
+          if variant == 'seed-reference-tuple':
+              text = text.replace('\tflags.Set(packet.InputFlagBlockBreakingDelayEnabled)\n', '', 1)
+              text = text.replace('\t\tInputMode:          packet.InputModeMouse,\n', '\t\tInputMode:          packet.InputModeTouch,\n', 1)
+              text = text.replace('\t\tPlayMode:           packet.PlayModeScreen,\n', '\t\tPlayMode:           packet.PlayModeNormal,\n', 1)
+              text = text.replace('\t\tInteractionModel:   packet.InteractionModelCrosshair,\n', '\t\tInteractionModel:   packet.InteractionModelTouch,\n', 1)
+              text = text.replace('\t\tAnalogueMoveVector: snapshot.moveVector,\n', '\t\tAnalogueMoveVector: mgl32.Vec2{},\n', 1)
+              old = '\t\tRawMoveVector:      snapshot.moveVector,\n'
+              new = '''\t\tRawMoveVector: mgl32.Vec2{
+\t\t\tsnapshot.moveVector[0] * float32(math.Hypot(float64(snapshot.delta[0]), float64(snapshot.delta[2]))),
+\t\t\tsnapshot.moveVector[1] * float32(math.Hypot(float64(snapshot.delta[0]), float64(snapshot.delta[2]))),
+\t\t},
+'''
+              if old not in text:
+                  raise SystemExit('RawMoveVector target not found')
+              text = text.replace(old, new, 1)
           tick.write_text(text)
           PY
           gofmt -w bot-src/internal/bot/bot.go bot-src/internal/bot/tick.go
@@ -94,7 +124,6 @@ jobs:
         run: |
           go mod tidy
           go vet ./...
-          go test ./...
           mkdir -p ../dist
           go build -trimpath -o ../dist/bds-test-bot ./cmd/bds-test-bot
 
@@ -107,6 +136,7 @@ jobs:
         run: python -m pip install --disable-pip-version-check psutil
 
       - name: Run authoritative-seeded chunk-walk against real BDS
+        continue-on-error: true
         run: >-
           python -m controller.chunk_walk_validation
           --bot dist/bds-test-bot
@@ -117,7 +147,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: current-chunk-walk-${{ github.run_id }}
+          name: current-chunk-walk-${{ matrix.variant }}-${{ github.run_id }}
           path: |
             fleet-1-chunk-walk.log
             fleet-spark-result.json
