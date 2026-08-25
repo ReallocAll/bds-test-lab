@@ -224,13 +224,45 @@ def list_players(server: ServerProcess) -> list[str]:
     return server.wait_command_output(start, 8)
 
 
+def player_present(output: list[str]) -> bool:
+    return any("testbot" in line.lower() for line in output)
+
+
 def require_player(server: ServerProcess, present: bool) -> list[str]:
     output = list_players(server)
-    found = any("testbot" in line.lower() for line in output)
+    found = player_present(output)
     if found != present:
         state = "present" if present else "absent"
         raise RuntimeError(f"Expected TestBot to be {state} in BDS list output: {' | '.join(output[-20:])}")
     return output
+
+
+def wait_player_state(server: ServerProcess, present: bool, timeout: float = 20.0) -> tuple[list[str], float, int]:
+    """Wait for BDS to converge on the requested player-list state.
+
+    A client process can close its RakNet socket and exit before the BDS game
+    thread has consumed the disconnect and removed the player from `list`.
+    Treat that bounded server-side propagation delay as asynchronous state, not
+    as a failed client shutdown.
+    """
+    started = time.monotonic()
+    deadline = started + timeout
+    probes = 0
+    last_output: list[str] = []
+    while True:
+        if not server.is_alive():
+            raise RuntimeError("BDS exited while waiting for player-list state")
+        probes += 1
+        last_output = list_players(server)
+        if player_present(last_output) == present:
+            return last_output, time.monotonic() - started, probes
+        if time.monotonic() >= deadline:
+            state = "present" if present else "absent"
+            raise RuntimeError(
+                f"Timed out after {timeout:.0f}s waiting for TestBot to become {state} in BDS list output: "
+                f"{' | '.join(last_output[-20:])}"
+            )
+        time.sleep(0.5)
 
 
 def main() -> int:
@@ -325,9 +357,16 @@ def main() -> int:
         result["checks"].append({"name": "sigterm-clean-exit", "status": "PASS", "exit_code": code})
 
         stage = "bds-player-left"
-        time.sleep(2)
-        output = require_player(server, False)
-        result["checks"].append({"name": "bds-player-left", "status": "PASS", "output": output[-20:]})
+        output, propagation_seconds, probes = wait_player_state(server, False, timeout=20)
+        result["checks"].append(
+            {
+                "name": "bds-player-left",
+                "status": "PASS",
+                "output": output[-20:],
+                "propagation_seconds": round(propagation_seconds, 3),
+                "probes": probes,
+            }
+        )
 
         stage = "bds-stop"
         stop_server(server)
