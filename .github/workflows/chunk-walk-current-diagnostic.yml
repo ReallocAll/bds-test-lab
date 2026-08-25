@@ -2,8 +2,7 @@ name: Current Bot Chunk-Walk Diagnostic
 
 on:
   push:
-    branches:
-      - test/chunk-fly-spark
+    branches: [test/chunk-fly-spark]
     paths:
       - ".github/workflows/chunk-walk-current-diagnostic.yml"
       - "controller/chunk_fly_bot_ref.txt"
@@ -31,12 +30,8 @@ jobs:
         run: |
           set -euo pipefail
           ref="$(tr -d '[:space:]' < controller/chunk_fly_bot_ref.txt)"
-          if [[ ! "$ref" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "Invalid exact bot ref: $ref" >&2
-            exit 1
-          fi
+          [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid exact bot ref: $ref" >&2; exit 1; }
           echo "BOT_REF=$ref" >> "$GITHUB_ENV"
-          echo "Resolved bot ref: $ref" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Pin known-good Endstone artifact run
         shell: bash
@@ -45,8 +40,18 @@ jobs:
           from pathlib import Path
           path = Path("providers/artifact_provider.py")
           text = path.read_text()
-          needle = "    branch = config[\"branch\"]\n"
-          injected = "    branch = config[\"branch\"]\n    override_run_id = os.environ.get(f\"{component.upper()}_RUN_ID\", \"\").strip()\n    if override_run_id:\n        run = _get_json(f\"/repos/{repo}/actions/runs/{override_run_id}\")\n        if run.get(\"head_branch\") != branch or run.get(\"conclusion\") != \"success\":\n            raise ArtifactResolutionError(f\"Pinned {component} run {override_run_id} is not a successful {repo}@{branch} run\")\n        artifact = _select_from_run(component, platform_name, repo, run)\n        if artifact is None:\n            raise ArtifactResolutionError(f\"Pinned {component} run {override_run_id} has no compatible {platform_name} artifact\")\n        return run, artifact\n"
+          needle = '    branch = config["branch"]\n'
+          injected = '''    branch = config["branch"]
+    override_run_id = os.environ.get(f"{component.upper()}_RUN_ID", "").strip()
+    if override_run_id:
+        run = _get_json(f"/repos/{repo}/actions/runs/{override_run_id}")
+        if run.get("head_branch") != branch or run.get("conclusion") != "success":
+            raise ArtifactResolutionError(f"Pinned {component} run {override_run_id} is not a successful {repo}@{branch} run")
+        artifact = _select_from_run(component, platform_name, repo, run)
+        if artifact is None:
+            raise ArtifactResolutionError(f"Pinned {component} run {override_run_id} has no compatible {platform_name} artifact")
+        return run, artifact
+'''
           if needle not in text:
               raise SystemExit("artifact provider discover target not found")
           path.write_text(text.replace(needle, injected, 1))
@@ -60,6 +65,21 @@ jobs:
           path: bot-src
           persist-credentials: false
 
+      - name: Set up Go 1.25
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Verify exact bot before diagnostic patch
+        working-directory: bot-src
+        shell: bash
+        run: |
+          set -euo pipefail
+          go mod tidy
+          go vet ./...
+          go test ./...
+
       - name: Apply authoritative telemetry and reference input tuple
         shell: bash
         run: |
@@ -69,18 +89,12 @@ jobs:
           bot = Path("bot-src/internal/bot/bot.go")
           text = bot.read_text()
           replacements = [
-              (
-                  "if cfg.Scenario == ScenarioChunkFly && samePublisher {",
-                  "if (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && samePublisher {",
-              ),
-              (
-                  "if cfg.Scenario == ScenarioChunkFly && changedChunk {",
-                  "if (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && changedChunk {",
-              ),
-              (
-                  "if onlineState && cfg.Scenario == ScenarioChunkFly && !time.Now().Before(nextProgress) {",
-                  "if onlineState && (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && !time.Now().Before(nextProgress) {",
-              ),
+              ("if cfg.Scenario == ScenarioChunkFly && samePublisher {",
+               "if (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && samePublisher {"),
+              ("if cfg.Scenario == ScenarioChunkFly && changedChunk {",
+               "if (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && changedChunk {"),
+              ("if onlineState && cfg.Scenario == ScenarioChunkFly && !time.Now().Before(nextProgress) {",
+               "if onlineState && (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && !time.Now().Before(nextProgress) {"),
           ]
           for old, new in replacements:
               if old not in text:
@@ -91,10 +105,8 @@ jobs:
           tick = Path("bot-src/internal/bot/tick.go")
           text = tick.read_text()
           replacements = [
-              (
-                  "if cfg.Scenario == ScenarioChunkFly && !state.positionReadySnapshot() {",
-                  "if (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && !state.positionReadySnapshot() {",
-              ),
+              ("if cfg.Scenario == ScenarioChunkFly && !state.positionReadySnapshot() {",
+               "if (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && !state.positionReadySnapshot() {"),
               ("\tflags.Set(packet.InputFlagBlockBreakingDelayEnabled)\n", ""),
               ("\t\tInputMode:          packet.InputModeMouse,\n", "\t\tInputMode:          packet.InputModeTouch,\n"),
               ("\t\tPlayMode:           packet.PlayModeScreen,\n", "\t\tPlayMode:           packet.PlayModeNormal,\n"),
@@ -113,20 +125,12 @@ jobs:
           PY
           gofmt -w bot-src/internal/bot/bot.go bot-src/internal/bot/tick.go
 
-      - name: Set up Go 1.25
-        uses: actions/setup-go@v6
-        with:
-          go-version: "1.25.x"
-          cache: false
-
-      - name: Build current bot
+      - name: Build diagnostic bot
         working-directory: bot-src
         shell: bash
         run: |
           set -euo pipefail
-          go mod tidy
           go vet ./...
-          go test ./...
           mkdir -p ../dist
           go build -trimpath -o ../dist/bds-test-bot ./cmd/bds-test-bot
 
