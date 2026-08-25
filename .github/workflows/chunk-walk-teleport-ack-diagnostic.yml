@@ -1,4 +1,4 @@
-name: Raw Spawn Movement BDS Diagnostic
+name: Ground Physics Delta BDS Diagnostic
 
 on:
   push:
@@ -67,7 +67,7 @@ jobs:
           go vet ./...
           go test ./...
 
-      - name: Patch raw movement tracing and authoritative telemetry
+      - name: Patch grounded physics delta and authoritative telemetry
         shell: bash
         run: |
           python3 - <<'PY'
@@ -79,25 +79,15 @@ jobs:
           new = "if (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && !state.positionReadySnapshot() {"
           if old not in text:
               raise SystemExit("tick readiness target not found")
+          text = text.replace(old, new, 1)
+          old = "\tflags.Set(packet.InputFlagBlockBreakingDelayEnabled)\n"
+          new = "\tflags.Set(packet.InputFlagBlockBreakingDelayEnabled)\n\tif snapshot.moveVector != (mgl32.Vec2{}) {\n\t\tflags.Set(packet.InputFlagVerticalCollision)\n\t\tif snapshot.delta[1] == 0 {\n\t\t\tsnapshot.delta[1] = -0.08\n\t\t}\n\t}\n"
+          if old not in text:
+              raise SystemExit("ground physics insertion target not found")
           tick.write_text(text.replace(old, new, 1))
 
           bot = Path("bot-src/internal/bot/bot.go")
           text = bot.read_text()
-          old = "\tstartGameSeen := make(chan struct{})\n\tvar startGameOnce sync.Once\n\tdialer := minecraft.Dialer{"
-          new = "\tstartGameSeen := make(chan struct{})\n\tvar startGameOnce sync.Once\n\tvar rawMovePlayer atomic.Uint64\n\tvar rawCorrection atomic.Uint64\n\tvar rawPostMove atomic.Uint64\n\tdialer := minecraft.Dialer{"
-          if old not in text:
-              raise SystemExit("raw counter declaration target not found")
-          text = text.replace(old, new, 1)
-          old = "\t\tPacketFunc: func(header packet.Header, _ []byte, _, _ net.Addr) {\n\t\t\tif header.PacketID == packet.IDStartGame {\n\t\t\t\tstartGameOnce.Do(func() { close(startGameSeen) })\n\t\t\t}\n\t\t},"
-          new = "\t\tPacketFunc: func(header packet.Header, _ []byte, _, _ net.Addr) {\n\t\t\tswitch header.PacketID {\n\t\t\tcase packet.IDStartGame:\n\t\t\t\tstartGameOnce.Do(func() { close(startGameSeen) })\n\t\t\tcase packet.IDMovePlayer:\n\t\t\t\trawMovePlayer.Add(1)\n\t\t\tcase packet.IDCorrectPlayerMovePrediction:\n\t\t\t\trawCorrection.Add(1)\n\t\t\tcase packet.IDServerPlayerPostMovePosition:\n\t\t\t\trawPostMove.Add(1)\n\t\t\t}\n\t\t},"
-          if old not in text:
-              raise SystemExit("PacketFunc tracing target not found")
-          text = text.replace(old, new, 1)
-          old = "\tgame := conn.GameData()\n"
-          new = "\tif err := out.Emit(\"raw_spawn_movement\", map[string]any{\"move_player\": rawMovePlayer.Load(), \"corrections\": rawCorrection.Load(), \"post_move\": rawPostMove.Load()}); err != nil {\n\t\treturn stageError(ExitRuntime, \"output\", err)\n\t}\n\n\tgame := conn.GameData()\n"
-          if old not in text:
-              raise SystemExit("spawn raw summary target not found")
-          text = text.replace(old, new, 1)
           for old, new in [
               ("if cfg.Scenario == ScenarioChunkFly && samePublisher {", "if (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && samePublisher {"),
               ("if cfg.Scenario == ScenarioChunkFly && changedChunk {", "if (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && changedChunk {"),
@@ -106,11 +96,7 @@ jobs:
               if old not in text:
                   raise SystemExit(f"telemetry target not found: {old}")
               text = text.replace(old, new, 1)
-          old = "\t\t\t\t\"server_post_move_updates\": postMoveUpdates,\n"
-          new = "\t\t\t\t\"server_post_move_updates\": postMoveUpdates,\n\t\t\t\t\"raw_move_player\":          rawMovePlayer.Load(),\n\t\t\t\t\"raw_corrections\":          rawCorrection.Load(),\n\t\t\t\t\"raw_post_move\":            rawPostMove.Load(),\n"
-          if old not in text:
-              raise SystemExit("progress raw counters target not found")
-          bot.write_text(text.replace(old, new, 1))
+          bot.write_text(text)
           PY
           gofmt -w bot-src/internal/bot/bot.go bot-src/internal/bot/tick.go
 
@@ -129,11 +115,11 @@ jobs:
 
       - run: python -m pip install --disable-pip-version-check psutil
 
-      - name: Run real BDS raw-packet diagnostic
+      - name: Run real BDS grounded-physics diagnostic
         continue-on-error: true
         run: python -m controller.chunk_walk_validation --bot dist/bds-test-bot --count 1 --profile-seconds 10
 
-      - name: Summarize raw server evidence
+      - name: Summarize server evidence
         if: always()
         shell: bash
         run: |
@@ -141,29 +127,28 @@ jobs:
           import json
           from pathlib import Path
           p = Path("fleet-1-chunk-walk.log")
-          print("## Raw spawn movement packet evidence")
+          print("## Ground physics delta server evidence")
           if not p.exists():
               print("No fleet log")
               raise SystemExit
-          spawn=[]
           rows=[]
+          pubs=[]
           for line in p.read_text(errors="replace").splitlines():
               try: e=json.loads(line)
               except json.JSONDecodeError: continue
-              if e.get("event") == "raw_spawn_movement": spawn.append(e)
               if e.get("event") == "bot_progress": rows.append(e)
-          print(f"spawn_raw={spawn}")
-          print(f"progress_samples={len(rows)}")
+              if e.get("event") == "chunk_publisher": pubs.append(e)
+          print(f"progress_samples={len(rows)} publisher_changes={len(pubs)}")
           if rows:
               a,b=rows[0],rows[-1]
-              for k in ("raw_move_player","raw_corrections","raw_post_move","publisher_position","publisher_chunk","chunks_received","horizontal_distance"):
+              for k in ("publisher_position","publisher_chunk","publisher_updates","chunks_received","server_post_move_updates","server_corrections","horizontal_distance","tick_synced"):
                   print(f"{k}: {a.get(k)} -> {b.get(k)}")
           PY
 
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: raw-spawn-movement-${{ github.run_id }}
+          name: ground-physics-delta-${{ github.run_id }}
           path: |
             fleet-1-chunk-walk.log
             fleet-spark-result.json
