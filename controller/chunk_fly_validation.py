@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import pathlib
 import time
 from typing import Any
@@ -68,6 +69,12 @@ class ChunkFlySparkValidation(FleetSparkValidation):
             confirmed=sorted(confirmed),
         )
 
+    @staticmethod
+    def _horizontal_between(a: Any, b: Any) -> float | None:
+        if not isinstance(a, list) or not isinstance(b, list) or len(a) < 3 or len(b) < 3:
+            return None
+        return math.hypot(float(b[0]) - float(a[0]), float(b[2]) - float(a[2]))
+
     def stop_fleet(self) -> None:
         super().stop_fleet()
         assert self.bot is not None
@@ -78,18 +85,22 @@ class ChunkFlySparkValidation(FleetSparkValidation):
 
         events = self.bot.event_snapshot()
         progress_by_bot: dict[str, list[dict[str, Any]]] = {name: [] for name in self.expected_names()}
+        post_move_by_bot: dict[str, list[dict[str, Any]]] = {name: [] for name in self.expected_names()}
         for event in events:
-            if event.get("event") != "bot_progress":
-                continue
             bot = str(event.get("bot", ""))
-            if bot in progress_by_bot:
+            if bot not in progress_by_bot:
+                continue
+            if event.get("event") == "bot_progress":
                 progress_by_bot[bot].append(event)
+            elif event.get("event") == "server_post_move":
+                post_move_by_bot[bot].append(event)
 
         evidence: list[dict[str, Any]] = []
         bad: list[dict[str, Any]] = []
         for event in stats:
             bot = str(event.get("bot", ""))
             samples = progress_by_bot.get(bot, [])
+            post_moves = post_move_by_bot.get(bot, [])
             auth = int(event.get("auth_inputs_sent", 0))
             movement = int(event.get("movement_inputs_sent", 0))
             chunks = int(event.get("chunks_received", 0))
@@ -108,7 +119,14 @@ class ChunkFlySparkValidation(FleetSparkValidation):
                 "flying_confirmed": flying,
                 "chunk_span_x": span_x,
                 "chunk_span_z": span_z,
+                "server_post_move_events": len(post_moves),
             }
+            if post_moves:
+                first_post = post_moves[0].get("position")
+                final_post = post_moves[-1].get("position")
+                entry["server_post_move_first_position"] = first_post
+                entry["server_post_move_final_position"] = final_post
+                entry["server_post_move_horizontal_distance"] = self._horizontal_between(first_post, final_post)
 
             valid = (
                 event.get("scenario") == "chunk-fly"
@@ -130,6 +148,9 @@ class ChunkFlySparkValidation(FleetSparkValidation):
                 final_distance = float(final.get("horizontal_distance", 0.0))
                 late_chunk_growth = final_chunks - late_chunks
                 late_distance_growth = final_distance - late_distance
+                late_post = late.get("server_post_move_position")
+                final_post = final.get("server_post_move_position")
+                post_move_late_growth = self._horizontal_between(late_post, final_post)
                 entry.update(
                     {
                         "late_sample_index": late_index,
@@ -139,6 +160,10 @@ class ChunkFlySparkValidation(FleetSparkValidation):
                         "late_horizontal_distance": late_distance,
                         "final_progress_horizontal_distance": final_distance,
                         "late_horizontal_growth": late_distance_growth,
+                        "late_server_post_move_position": late_post,
+                        "final_server_post_move_position": final_post,
+                        "late_server_post_move_horizontal_growth": post_move_late_growth,
+                        "server_post_move_updates": int(final.get("server_post_move_updates", 0)),
                     }
                 )
                 valid = valid and late_chunk_growth > 0 and late_distance_growth > 0
