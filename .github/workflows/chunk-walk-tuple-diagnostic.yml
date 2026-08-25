@@ -1,4 +1,4 @@
-name: InternalUpdate BDS Diagnostic
+name: First Tick One BDS Diagnostic
 
 on:
   push:
@@ -67,7 +67,7 @@ jobs:
           go vet ./...
           go test ./...
 
-      - name: Patch reference tuple, InternalUpdate and telemetry
+      - name: Patch reference tuple, first tick one and telemetry
         shell: bash
         run: |
           python3 - <<'PY'
@@ -97,10 +97,10 @@ jobs:
               if old not in text:
                   raise SystemExit(f"missing tick target: {old!r}")
               text = text.replace(old, new, 1)
-          old = "\tflags := protocol.NewInputFlags(packet.InputFlagCount)\n"
-          new = old + "\tflags.Set(packet.InputFlagInternalUpdate)\n"
+          old = "\treturn &playerState{\n\t\tposition:      position,\n"
+          new = "\treturn &playerState{\n\t\tserverTick:    1,\n\t\tposition:      position,\n"
           if old not in text:
-              raise SystemExit("missing input flags target")
+              raise SystemExit("missing state constructor target")
           text = text.replace(old, new, 1)
           old = "\t\tRawMoveVector:      snapshot.moveVector,\n"
           new = "\t\tRawMoveVector: mgl32.Vec2{snapshot.moveVector[0] * float32(math.Hypot(float64(snapshot.delta[0]), float64(snapshot.delta[2]))), snapshot.moveVector[1] * float32(math.Hypot(float64(snapshot.delta[0]), float64(snapshot.delta[2])))},\n"
@@ -137,7 +137,7 @@ jobs:
           import json
           from pathlib import Path
           p = Path("fleet-1-chunk-walk.log")
-          print("## Reference tuple + InternalUpdate server evidence")
+          print("## Reference tuple + first input tick 1 server evidence")
           if not p.exists():
               print("No fleet log")
               raise SystemExit
@@ -149,14 +149,14 @@ jobs:
           print(f"samples={len(rows)}")
           if rows:
               a,b=rows[0],rows[-1]
-              for k in ("publisher_position","publisher_chunk","chunks_received","server_post_move_updates","horizontal_distance","tick_synced"):
+              for k in ("publisher_position","publisher_chunk","chunks_received","server_post_move_updates","horizontal_distance","tick_synced","next_input_tick"):
                   print(f"{k}: {a.get(k)} -> {b.get(k)}")
           PY
 
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: internal-update-${{ github.run_id }}
+          name: first-tick-one-${{ github.run_id }}
           path: |
             fleet-1-chunk-walk.log
             fleet-spark-result.json
