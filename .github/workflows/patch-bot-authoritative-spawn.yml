@@ -1,0 +1,103 @@
+name: Patch Chunk-Fly Authoritative Spawn Seed
+
+on:
+  push:
+    branches:
+      - test/chunk-fly-spark
+    paths:
+      - ".github/workflows/patch-bot-authoritative-spawn.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  patch-bot:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout bot feature branch
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/bds-test-bot
+          ref: feat/chunk-fly-scenario
+          token: ${{ secrets.REPO_PAT }}
+          persist-credentials: true
+
+      - name: Patch authoritative publisher seed
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          bot = Path("internal/bot/bot.go")
+          text = bot.read_text()
+          old = '''\t\t\t\t// without trusting StartGame's Y≈32768 placeholder. StartGame X/Z
+\t\t\t\t// remain precise, while the publisher block Y is converted back to
+\t\t\t\t// PlayerAuthInput eye-height coordinates.
+\t\t\t\tcandidate := mgl32.Vec3{game.PlayerPosition[0], float32(y) + playerEyeHeight, game.PlayerPosition[2]}
+'''
+          new = '''\t\t\t\t// without trusting StartGame's Y≈32768 placeholder. The publisher
+\t\t\t\t// is a server-owned BlockPos and may differ in X/Z after BDS resolves
+\t\t\t\t// the real spawn. Seed all three axes from it; use block centres for
+\t\t\t\t// X/Z and eye height for PlayerAuthInput Y.
+\t\t\t\tcandidate := publisherEyePosition(p.Position)
+'''
+          if old not in text:
+              raise SystemExit("bot.go publisher seed target not found")
+          bot.write_text(text.replace(old, new, 1))
+
+          flight = Path("internal/bot/flight.go")
+          text = flight.read_text()
+          marker = '''func horizontalDistance(start, end mgl32.Vec3) float64 {
+\treturn math.Hypot(float64(end[0]-start[0]), float64(end[2]-start[2]))
+}
+'''
+          replacement = '''func publisherEyePosition(position protocol.BlockPos) mgl32.Vec3 {
+\treturn mgl32.Vec3{
+\t\tfloat32(position[0]) + 0.5,
+\t\tfloat32(position[1]) + playerEyeHeight,
+\t\tfloat32(position[2]) + 0.5,
+\t}
+}
+
+func horizontalDistance(start, end mgl32.Vec3) float64 {
+\treturn math.Hypot(float64(end[0]-start[0]), float64(end[2]-start[2]))
+}
+'''
+          if marker not in text:
+              raise SystemExit("flight.go insertion target not found")
+          flight.write_text(text.replace(marker, replacement, 1))
+
+          test = Path("internal/bot/flight_test.go")
+          text = test.read_text()
+          marker = '''func TestChunkFlyClimbsThenTraversesAtSafeAltitude(t *testing.T) {
+'''
+          addition = '''func TestPublisherEyePositionUsesAuthoritativeBlockPosition(t *testing.T) {
+\tgot := publisherEyePosition(protocol.BlockPos{266, 70, 159})
+\twant := mgl32.Vec3{266.5, 70 + playerEyeHeight, 159.5}
+\tif got != want {
+\t\tt.Fatalf("publisher eye position = %v, want %v", got, want)
+\t}
+}
+
+func TestChunkFlyClimbsThenTraversesAtSafeAltitude(t *testing.T) {
+'''
+          if marker not in text:
+              raise SystemExit("flight_test.go insertion target not found")
+          test.write_text(text.replace(marker, addition, 1))
+          PY
+
+          gofmt -w internal/bot/bot.go internal/bot/flight.go internal/bot/flight_test.go
+          go test ./...
+
+      - name: Commit and push bot branch
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add internal/bot/bot.go internal/bot/flight.go internal/bot/flight_test.go
+          git commit -m "fix: seed chunk-fly from authoritative publisher position"
+          git push origin HEAD:feat/chunk-fly-scenario
