@@ -49,86 +49,7 @@ jobs:
           persist-credentials: false
 
       - name: Patch diagnostic input variant
-        env:
-          VARIANT: ${{ matrix.variant }}
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
-
-          variant = os.environ['VARIANT']
-          tick = Path('bot-src/internal/bot/tick.go')
-          text = tick.read_text()
-
-          # All diagnostic variants hold PlayerAuthInput.Tick at zero. This is
-          # intentionally isolated from the production branch to test whether
-          # BDS is discarding the movement stream because of the movement tick.
-          old = '\t\tTick:               tick,\n'
-          if old not in text:
-              raise SystemExit('Tick field target not found')
-          text = text.replace(old, '\t\tTick:               0,\n', 1)
-
-          if variant == 'tick0-transition-fly':
-              old = '\t\tflightRequested: s.control.fly,\n'
-              if old not in text:
-                  raise SystemExit('flightRequested target not found')
-              text = text.replace(old, '\t\tflightRequested: s.control.fly && !s.flyingConfirmed,\n', 1)
-          elif variant == 'tick0-camera-relative':
-              old = '\tflags.Set(packet.InputFlagBlockBreakingDelayEnabled)\n'
-              if old not in text:
-                  raise SystemExit('baseline flags target not found')
-              text = text.replace(old, old + '\tflags.Set(packet.InputFlagCameraRelativeMovementEnabled)\n', 1)
-          elif variant == 'tick0-play-normal':
-              old = '\t\tPlayMode:           packet.PlayModeScreen,\n'
-              if old not in text:
-                  raise SystemExit('PlayMode target not found')
-              text = text.replace(old, '\t\tPlayMode:           packet.PlayModeNormal,\n', 1)
-          elif variant == 'tick0-zero-delta':
-              old = '\t\tDelta:              snapshot.delta,\n'
-              if old not in text:
-                  raise SystemExit('Delta target not found')
-              text = text.replace(old, '\t\tDelta:              mgl32.Vec3{},\n', 1)
-          elif variant == 'tick0-client-ack':
-              old = '\tflags.Set(packet.InputFlagBlockBreakingDelayEnabled)\n'
-              if old not in text:
-                  raise SystemExit('baseline flags target not found')
-              text = text.replace(old, old + '\tflags.Set(packet.InputFlagClientAckServerData)\n', 1)
-          elif variant == 'tick0-no-climb':
-              old = '\t\t\tdiff := s.control.flightTargetY - s.position[1]\n'
-              if old not in text:
-                  raise SystemExit('flight diff target not found')
-              text = text.replace(old, '\t\t\tdiff := float32(0) // diagnostic: begin horizontal flight at authoritative spawn height\n', 1)
-          elif variant == 'tick0-server-driven':
-              start = text.index('\t} else if s.control.fly {\n')
-              end = text.index('\t} else if snapshot.moveVector != (mgl32.Vec2{})', start)
-              replacement = '''\t} else if s.control.fly {
-\t\tif !s.flyingConfirmed || !s.positionReady {
-\t\t\tsnapshot.moveVector = mgl32.Vec2{}
-\t\t} else if s.position[1] < s.control.flightTargetY-0.75 {
-\t\t\tsnapshot.moveVector = mgl32.Vec2{}
-\t\t\tsnapshot.verticalDirection = 1
-\t\t}
-'''
-              text = text[:start] + replacement + text[end:]
-
-          tick.write_text(text)
-
-          if variant == 'tick0-server-driven':
-              bot = Path('bot-src/internal/bot/bot.go')
-              b = bot.read_text()
-              needle = '''\t\t\tpublisherX, publisherY, publisherZ = x, y, z
-'''
-              if needle not in b:
-                  raise SystemExit('publisher observation target not found')
-              b = b.replace(needle, '''\t\t\tif cfg.Scenario == ScenarioChunkFly && state.positionReadySnapshot() {
-\t\t\t\tstate.observePublisherPosition(publisherEyePosition(p.Position))
-\t\t\t}
-''' + needle, 1)
-              bot.write_text(b)
-          PY
-          cd bot-src
-          gofmt -w internal/bot/tick.go internal/bot/bot.go
+        run: python3 controller/patch_chunk_fly_matrix_variant.py bot-src "${{ matrix.variant }}"
 
       - name: Set up Go 1.25
         uses: actions/setup-go@v6
@@ -138,8 +59,10 @@ jobs:
 
       - name: Build diagnostic bot
         working-directory: bot-src
+        shell: bash
         run: |
           go mod tidy
+          gofmt -w internal/bot/tick.go internal/bot/bot.go
           go vet ./...
           mkdir -p ../dist
           go build -trimpath -o ../dist/bds-test-bot ./cmd/bds-test-bot
