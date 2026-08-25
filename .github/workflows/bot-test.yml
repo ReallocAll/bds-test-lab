@@ -9,7 +9,7 @@ on:
       bot_ref:
         description: "bds-test-bot commit/ref to validate"
         required: false
-        default: "4fa0f21e7215c2eb74884b0491fb2c296f024176"
+        default: "dc0bfc81fbebea45384928051f77728d50072be2"
       soak_seconds:
         description: "Bot soak duration (minimum 300 seconds)"
         required: false
@@ -25,7 +25,7 @@ permissions:
 env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
-  BOT_REF: ${{ github.event.inputs.bot_ref || '4fa0f21e7215c2eb74884b0491fb2c296f024176' }}
+  BOT_REF: ${{ github.event.inputs.bot_ref || 'dc0bfc81fbebea45384928051f77728d50072be2' }}
   BOT_SOAK_SECONDS: ${{ github.event.inputs.soak_seconds || '300' }}
 
 jobs:
