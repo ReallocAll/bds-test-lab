@@ -17,6 +17,8 @@ def main() -> int:
     root = pathlib.Path(sys.argv[1]).resolve()
     variant = sys.argv[2]
     allowed = {
+        "tick1-predicted",
+        "tick1-no-block",
         "tick0-predicted",
         "tick0-transition-fly",
         "tick0-camera-relative",
@@ -31,7 +33,12 @@ def main() -> int:
 
     tick = root / "internal/bot/tick.go"
     text = tick.read_text()
-    text = replace_once(text, "\t\tTick:               tick,\n", "\t\tTick:               0,\n", "Tick field")
+    if variant.startswith("tick1-"):
+        text = replace_once(text, "\t\tTick:               tick,\n", "\t\tTick:               tick + 1,\n", "Tick field")
+        if variant == "tick1-no-block":
+            text = replace_once(text, "\tflags.Set(packet.InputFlagBlockBreakingDelayEnabled)\n", "", "block-breaking-delay flag")
+    else:
+        text = replace_once(text, "\t\tTick:               tick,\n", "\t\tTick:               0,\n", "Tick field")
 
     if variant == "tick0-transition-fly":
         text = replace_once(
