@@ -1,0 +1,155 @@
+name: BDS Test Bot Validation
+
+on:
+  push:
+    branches:
+      - bot-test
+  workflow_dispatch:
+    inputs:
+      bot_ref:
+        description: "bds-test-bot commit/ref to validate"
+        required: false
+        default: "4fa0f21e7215c2eb74884b0491fb2c296f024176"
+      soak_seconds:
+        description: "Bot soak duration (minimum 300 seconds)"
+        required: false
+        default: "300"
+
+concurrency:
+  group: bds-test-bot-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+  BOT_REF: ${{ github.event.inputs.bot_ref || '4fa0f21e7215c2eb74884b0491fb2c296f024176' }}
+  BOT_SOAK_SECONDS: ${{ github.event.inputs.soak_seconds || '300' }}
+
+jobs:
+  build:
+    name: Bot build (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            os: ubuntu-24.04
+            binary: bds-test-bot
+          - platform: windows
+            os: windows-2022
+            binary: bds-test-bot.exe
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout test lab
+        uses: actions/checkout@v7
+
+      - name: Checkout bot at exact ref
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/bds-test-bot
+          ref: ${{ env.BOT_REF }}
+          path: bot-src
+          persist-credentials: false
+
+      - name: Set up Go 1.25
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Normalize source and module graph for validation
+        working-directory: bot-src
+        shell: bash
+        run: |
+          gofmt -w .
+          go mod tidy
+          git diff -- . > ../bot-source-fixes.patch
+          echo "--- resolved go.mod ---"
+          cat go.mod
+          if [[ "${{ matrix.platform }}" == "linux" ]]; then
+            echo "--- source fixes produced by gofmt/tidy ---"
+            cat ../bot-source-fixes.patch
+            echo "--- resolved go.sum ---"
+            cat go.sum
+          fi
+
+      - name: Vet
+        working-directory: bot-src
+        run: go vet ./...
+
+      - name: Test
+        working-directory: bot-src
+        run: go test ./...
+
+      - name: Build
+        working-directory: bot-src
+        shell: bash
+        run: |
+          mkdir -p ../dist
+          go build -trimpath -o "../dist/${{ matrix.binary }}" ./cmd/bds-test-bot
+
+      - name: Upload build evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bot-build-${{ matrix.platform }}
+          path: |
+            dist/${{ matrix.binary }}
+            bot-source-fixes.patch
+            bot-src/go.mod
+            bot-src/go.sum
+          if-no-files-found: warn
+          retention-days: 14
+
+  e2e:
+    name: Bot BDS E2E (linux)
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout test lab
+        uses: actions/checkout@v7
+
+      - name: Download Linux bot build
+        uses: actions/download-artifact@v8
+        with:
+          name: bot-build-linux
+          path: bot-build
+
+      - name: Prepare bot binary
+        shell: bash
+        run: |
+          chmod +x bot-build/dist/bds-test-bot
+          ./bot-build/dist/bds-test-bot --connect-timeout 1ms --json || true
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Run clean BDS bot validation
+        run: >-
+          python -m controller.bot_validation
+          --bot bot-build/dist/bds-test-bot
+          --soak-seconds ${{ env.BOT_SOAK_SECONDS }}
+
+      - name: Upload E2E evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bot-e2e-linux
+          path: |
+            bot-test-result.json
+            bot.log
+            bot-bds.log
+            bot-failure-diagnostics.txt
+            work/bot/bedrock_server/server.properties
+            work/bot/bedrock_server/version.txt
+          if-no-files-found: warn
+          retention-days: 14
