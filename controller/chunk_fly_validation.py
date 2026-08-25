@@ -7,7 +7,7 @@ import pathlib
 import time
 from typing import Any
 
-from controller.fleet_spark_validation import FleetSparkValidation, set_server_property
+from controller.fleet_spark_validation import FleetSparkValidation
 
 
 class ChunkFlySparkValidation(FleetSparkValidation):
@@ -15,30 +15,6 @@ class ChunkFlySparkValidation(FleetSparkValidation):
         super().__init__(bot_binary, count, "chunk-fly", profile_seconds)
         self.result["chunk_fly_evidence"] = None
         self._write_results()
-
-    def bootstrap_offline_server(self) -> None:
-        # Diagnostic: force the current BDS server-authoritative movement checker
-        # to its strictest useful settings. If PlayerAuthInput is being simulated,
-        # a bad client prediction should now produce corrections instead of being
-        # silently tolerated. This distinguishes invalid input-state replay from
-        # merely inaccurate local prediction.
-        super().bootstrap_offline_server()
-        assert self.server is not None
-        if not self.server.graceful_stop(60):
-            self.server.force_kill_tree()
-            raise RuntimeError("BDS did not stop before strict movement diagnostic")
-        self.server.close()
-        self.server = None
-        properties = self.server_dir / "server.properties"
-        set_server_property(properties, "server-authoritative-movement-strict", "true")
-        set_server_property(properties, "player-position-acceptance-threshold", "0.01")
-        self.check(
-            "chunk-fly-strict-movement-diagnostic",
-            "PASS",
-            "server-authoritative-movement-strict=true, player-position-acceptance-threshold=0.01",
-        )
-        self.start_server()
-        self.wait_post_start_initialization()
 
     def start_fleet(self) -> None:
         super().start_fleet()
