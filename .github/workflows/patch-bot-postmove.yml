@@ -37,6 +37,33 @@ jobs:
         shell: bash
         run: |
           python3 controller/patch_chunk_fly_client_prediction.py bot-src
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("bot-src/internal/bot/flight_test.go")
+          text = path.read_text()
+          old = '''\tinput := authInputPacket(state, 7)
+          \tif input.Position != serverPos {
+          \t\tt.Fatalf("auth input position = %v, want server position %v", input.Position, serverPos)
+          \t}
+          \tif input.MoveVector != (mgl32.Vec2{0, 1}) || input.Delta != (mgl32.Vec3{}) {
+          \t\tt.Fatalf("server-driven cruise = move %v delta %v", input.MoveVector, input.Delta)
+          \t}
+          '''
+          new = '''\tinput := authInputPacket(state, 7)
+          \twantPosition := serverPos
+          \twantPosition[2] += chunkFlyStepPerTick
+          \tif input.Position != wantPosition {
+          \t\tt.Fatalf("auth input position = %v, want predicted position %v", input.Position, wantPosition)
+          \t}
+          \tif input.MoveVector != (mgl32.Vec2{0, 1}) || math.Abs(float64(input.Delta[2]-chunkFlyStepPerTick)) > 1e-5 {
+          \t\tt.Fatalf("client-predicted cruise = move %v delta %v", input.MoveVector, input.Delta)
+          \t}
+          '''
+          if old in text:
+              path.write_text(text.replace(old, new, 1))
+          elif "want predicted position" not in text:
+              raise SystemExit("publisher prediction test target not found")
+          PY
           cd bot-src
           gofmt -w internal/bot/bot.go internal/bot/tick.go internal/bot/flight_test.go
           go test ./...
