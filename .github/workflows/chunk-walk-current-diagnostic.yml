@@ -6,6 +6,7 @@ on:
       - test/chunk-fly-spark
     paths:
       - ".github/workflows/chunk-walk-current-diagnostic.yml"
+      - "controller/chunk_fly_bot_ref.txt"
   workflow_dispatch:
 
 permissions:
@@ -15,21 +16,27 @@ permissions:
 env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
-  BOT_REF: "cb329a123de56cb09e07466651d09a0ff06ab0d6"
   ENDSTONE_RUN_ID: "32770415029"
 
 jobs:
   chunk-walk-current:
-    name: chunk-walk-${{ matrix.variant }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        variant: [seed-no-ack, seed-reference-tuple]
+    timeout-minutes: 20
     steps:
       - name: Checkout test lab
         uses: actions/checkout@v7
+
+      - name: Resolve exact current bot revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          ref="$(tr -d '[:space:]' < controller/chunk_fly_bot_ref.txt)"
+          if [[ ! "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid exact bot ref: $ref" >&2
+            exit 1
+          fi
+          echo "BOT_REF=$ref" >> "$GITHUB_ENV"
+          echo "Resolved bot ref: $ref" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Pin known-good Endstone artifact run
         shell: bash
@@ -53,63 +60,41 @@ jobs:
           path: bot-src
           persist-credentials: false
 
-      - name: Seed from publisher and patch input variant
-        env:
-          VARIANT: ${{ matrix.variant }}
+      - name: Enable authoritative chunk-walk telemetry
         shell: bash
         run: |
           python3 - <<'PY'
-          import os
           from pathlib import Path
-          variant = os.environ['VARIANT']
 
-          bot = Path('bot-src/internal/bot/bot.go')
+          bot = Path("bot-src/internal/bot/bot.go")
           text = bot.read_text()
-          text = text.replace(
-              'if cfg.Scenario == ScenarioChunkFly && samePublisher {',
-              'if (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && samePublisher {',
-              1,
-          )
-          text = text.replace(
-              'if cfg.Scenario == ScenarioChunkFly && changedChunk {',
-              'if (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && changedChunk {',
-              1,
-          )
-          text = text.replace(
-              'if onlineState && cfg.Scenario == ScenarioChunkFly && !time.Now().Before(nextProgress) {',
-              'if onlineState && (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && !time.Now().Before(nextProgress) {',
-              1,
-          )
+          replacements = [
+              (
+                  "if cfg.Scenario == ScenarioChunkFly && samePublisher {",
+                  "if (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && samePublisher {",
+              ),
+              (
+                  "if cfg.Scenario == ScenarioChunkFly && changedChunk {",
+                  "if (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && changedChunk {",
+              ),
+              (
+                  "if onlineState && cfg.Scenario == ScenarioChunkFly && !time.Now().Before(nextProgress) {",
+                  "if onlineState && (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && !time.Now().Before(nextProgress) {",
+              ),
+          ]
+          for old, new in replacements:
+              if old not in text:
+                  raise SystemExit(f"bot.go diagnostic target not found: {old}")
+              text = text.replace(old, new, 1)
           bot.write_text(text)
 
-          tick = Path('bot-src/internal/bot/tick.go')
+          tick = Path("bot-src/internal/bot/tick.go")
           text = tick.read_text()
-          text = text.replace(
-              'if cfg.Scenario == ScenarioChunkFly && !state.positionReadySnapshot() {',
-              'if (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && !state.positionReadySnapshot() {',
-              1,
-          )
-          # NetworkChunkPublisherUpdate is not a teleport. Do not emit a
-          # HandledTeleport transition merely because it supplied the first
-          # authoritative position used to initialise prediction history.
-          text = text.replace('\ts.handledTeleport = true\n\treturn true\n', '\treturn true\n', 1)
-
-          if variant == 'seed-reference-tuple':
-              text = text.replace('\tflags.Set(packet.InputFlagBlockBreakingDelayEnabled)\n', '', 1)
-              text = text.replace('\t\tInputMode:          packet.InputModeMouse,\n', '\t\tInputMode:          packet.InputModeTouch,\n', 1)
-              text = text.replace('\t\tPlayMode:           packet.PlayModeScreen,\n', '\t\tPlayMode:           packet.PlayModeNormal,\n', 1)
-              text = text.replace('\t\tInteractionModel:   packet.InteractionModelCrosshair,\n', '\t\tInteractionModel:   packet.InteractionModelTouch,\n', 1)
-              text = text.replace('\t\tAnalogueMoveVector: snapshot.moveVector,\n', '\t\tAnalogueMoveVector: mgl32.Vec2{},\n', 1)
-              old = '\t\tRawMoveVector:      snapshot.moveVector,\n'
-              new = '''\t\tRawMoveVector: mgl32.Vec2{
-\t\t\tsnapshot.moveVector[0] * float32(math.Hypot(float64(snapshot.delta[0]), float64(snapshot.delta[2]))),
-\t\t\tsnapshot.moveVector[1] * float32(math.Hypot(float64(snapshot.delta[0]), float64(snapshot.delta[2]))),
-\t\t},
-'''
-              if old not in text:
-                  raise SystemExit('RawMoveVector target not found')
-              text = text.replace(old, new, 1)
-          tick.write_text(text)
+          old = "if cfg.Scenario == ScenarioChunkFly && !state.positionReadySnapshot() {"
+          new = "if (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && !state.positionReadySnapshot() {"
+          if old not in text:
+              raise SystemExit("tick.go diagnostic target not found")
+          tick.write_text(text.replace(old, new, 1))
           PY
           gofmt -w bot-src/internal/bot/bot.go bot-src/internal/bot/tick.go
 
@@ -121,9 +106,12 @@ jobs:
 
       - name: Build current bot
         working-directory: bot-src
+        shell: bash
         run: |
+          set -euo pipefail
           go mod tidy
           go vet ./...
+          go test ./...
           mkdir -p ../dist
           go build -trimpath -o ../dist/bds-test-bot ./cmd/bds-test-bot
 
@@ -135,24 +123,58 @@ jobs:
       - name: Install validation dependencies
         run: python -m pip install --disable-pip-version-check psutil
 
-      - name: Run authoritative-seeded chunk-walk against real BDS
+      - name: Run current chunk-walk against real BDS
         continue-on-error: true
         run: >-
           python -m controller.chunk_walk_validation
           --bot dist/bds-test-bot
           --count 1
-          --profile-seconds 5
+          --profile-seconds 10
+
+      - name: Summarize authoritative movement evidence
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          path = Path("fleet-1-chunk-walk.log")
+          print("## Current chunk-walk authoritative diagnostic")
+          if not path.exists():
+              print("No fleet log produced.")
+              raise SystemExit(0)
+          progress = []
+          for line in path.read_text(errors="replace").splitlines():
+              try:
+                  event = json.loads(line)
+              except json.JSONDecodeError:
+                  continue
+              if event.get("event") == "bot_progress":
+                  progress.append(event)
+          print(f"Progress samples: {len(progress)}")
+          if progress:
+              first, last = progress[0], progress[-1]
+              print(f"Publisher first/last: {first.get('publisher_position')} -> {last.get('publisher_position')}")
+              print(f"Publisher chunk first/last: {first.get('publisher_chunk')} -> {last.get('publisher_chunk')}")
+              print(f"Chunks first/last: {first.get('chunks_received')} -> {last.get('chunks_received')}")
+              print(f"Server post-move first/last: {first.get('server_post_move_updates')} -> {last.get('server_post_move_updates')}")
+              print(f"Client distance first/last: {first.get('horizontal_distance')} -> {last.get('horizontal_distance')}")
+              print(f"Tick synced last: {last.get('tick_synced')}")
+          PY
 
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: current-chunk-walk-${{ matrix.variant }}-${{ github.run_id }}
+          name: current-chunk-walk-${{ github.run_id }}
           path: |
             fleet-1-chunk-walk.log
             fleet-spark-result.json
+            test-results.json
             failure-diagnostics.txt
             bds.log
+            endstone.log
+            spark.log
             work/linux/bedrock_server/server.properties
           if-no-files-found: warn
           retention-days: 7
