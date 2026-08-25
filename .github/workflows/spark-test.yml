@@ -1,57 +1,123 @@
-name: Spark Endstone Headless Test
+name: Spark Real Bot Load Test
 
 on:
+  push:
+    branches:
+      - bot-test
+    paths:
+      - ".github/workflows/spark-test.yml"
+      - "controller/spark_bot_validation.py"
+      - "controller/bot_validation.py"
+      - "controller/run_test.py"
+      - "providers/artifact_provider.py"
   workflow_dispatch:
     inputs:
-      spark_ref:
-        description: Spark git ref
+      bot_ref:
+        description: "bds-test-bot commit/ref to profile"
         required: false
-        default: develop
-      endstone_ref:
-        description: Endstone git ref
+        default: "7339a079e9f25c09e40bdec41ae2586475598ac3"
+      profile_seconds:
+        description: "Seconds per Spark execution profile"
         required: false
-        default: develop
-      platform:
-        description: Runner platform
-        required: false
-        default: ubuntu
-        type: choice
-        options:
-          - ubuntu
-          - windows
+        default: "30"
+
+concurrency:
+  group: spark-real-bot-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
   actions: read
 
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+  BOT_REF: ${{ github.event.inputs.bot_ref || '7339a079e9f25c09e40bdec41ae2586475598ac3' }}
+  PROFILE_SECONDS: ${{ github.event.inputs.profile_seconds || '30' }}
+
 jobs:
-  test:
-    runs-on: ${{ inputs.platform == 'windows' && 'windows-latest' || 'ubuntu-24.04' }}
+  linux-real-bot:
+    name: Spark profile with real Bot (linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
     steps:
-      - name: Checkout harness
-        uses: actions/checkout@v6
+      - name: Checkout test lab
+        uses: actions/checkout@v7
 
-      - name: Checkout Spark source reference
-        uses: actions/checkout@v6
+      - name: Checkout bot at exact ref
+        uses: actions/checkout@v7
         with:
-          repository: ReallocAll/spark
-          ref: ${{ inputs.spark_ref }}
-          path: spark-src
+          repository: ReallocAll/bds-test-bot
+          ref: ${{ env.BOT_REF }}
+          path: bot-src
+          persist-credentials: false
 
-      - name: Resolve metadata
+      - name: Set up Go 1.25
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Build exact bot revision
+        working-directory: bot-src
         shell: bash
         run: |
-          echo "spark_ref=${{ inputs.spark_ref }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "platform=${{ inputs.platform }}" >> "$GITHUB_STEP_SUMMARY"
+          go mod tidy
+          go test ./...
+          mkdir -p ../dist
+          go build -trimpath -o ../dist/bds-test-bot ./cmd/bds-test-bot
+          echo "BOT_REF=${BOT_REF}" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Prepare test workspace
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install validation dependencies
+        run: python -m pip install --disable-pip-version-check psutil
+
+      - name: Run real BDS Spark comparison
+        run: >-
+          python -m controller.spark_bot_validation
+          --bot dist/bds-test-bot
+          --profile-seconds ${{ env.PROFILE_SECONDS }}
+
+      - name: Add profile URLs to summary
+        if: always()
         shell: bash
         run: |
-          mkdir -p workspace/plugins workspace/logs
-          echo "workspace ready"
+          if [[ -f spark-bot-result.json ]]; then
+            python3 - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path("spark-bot-result.json").read_text())
+          print("## Spark real-bot validation")
+          print()
+          print(f"Status: **{data.get('status')}**")
+          print(f"Spark SHA: `{((data.get('metadata') or {}).get('components') or {}).get('spark', {}).get('sha', 'see metadata.json')}`")
+          print(f"BDS: `{data.get('bds_version')}`")
+          print(f"Baseline: {data.get('baseline_profile_viewer_url')}")
+          print(f"Real bot: {data.get('bot_profile_viewer_url')}")
+          print(f"Bot disconnect propagation: {data.get('bot_disconnect_propagation_seconds')} s")
+          PY
+          fi >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload result skeleton
+      - name: Upload Spark bot evidence
+        if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: bds-test-result-${{ github.run_id }}
-          path: test-results.schema.json
+          name: spark-real-bot-${{ github.run_id }}
+          path: |
+            metadata.json
+            bds.log
+            endstone.log
+            spark.log
+            bot-spark.log
+            test-results.json
+            spark-bot-result.json
+            failure-diagnostics.txt
+            work/linux/bedrock_server/server.properties
+            work/linux/bedrock_server/version.txt
+          if-no-files-found: warn
+          retention-days: 14
