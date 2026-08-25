@@ -22,9 +22,9 @@ on:
   workflow_dispatch:
     inputs:
       bot_ref:
-        description: "bds-test-bot commit/ref to profile"
+        description: "Exact bds-test-bot commit/ref to profile"
         required: false
-        default: "feat/chunk-fly-scenario"
+        default: "7d13f2ba5ee757818622e3d5c728be472eb8877c"
       profile_seconds:
         description: "Seconds per Spark execution profile"
         required: false
@@ -41,7 +41,7 @@ permissions:
 env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
-  BOT_REF: ${{ github.event.inputs.bot_ref || 'feat/chunk-fly-scenario' }}
+  BOT_REF: ${{ github.event.inputs.bot_ref || '7d13f2ba5ee757818622e3d5c728be472eb8877c' }}
   PROFILE_SECONDS: ${{ github.event.inputs.profile_seconds || '30' }}
 
 jobs:
@@ -58,64 +58,13 @@ jobs:
       - name: Checkout test lab
         uses: actions/checkout@v7
 
-      - name: Checkout bot diagnostic ref
+      - name: Checkout bot at exact ref
         uses: actions/checkout@v7
         with:
           repository: ReallocAll/bds-test-bot
           ref: ${{ env.BOT_REF }}
           path: bot-src
-          token: ${{ secrets.REPO_PAT }}
-          persist-credentials: true
-
-      - name: Patch authoritative publisher spawn seed
-        working-directory: bot-src
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          bot = Path("internal/bot/bot.go")
-          text = bot.read_text()
-          old_line = "candidate := mgl32.Vec3{game.PlayerPosition[0], float32(y) + playerEyeHeight, game.PlayerPosition[2]}"
-          new_line = "candidate := publisherEyePosition(p.Position)"
-          if old_line in text:
-              text = text.replace(old_line, new_line, 1)
-              text = text.replace("\n\t\"github.com/go-gl/mathgl/mgl32\"", "", 1)
-              text = text.replace("// without trusting StartGame's Y≈32768 placeholder. StartGame X/Z\n\t\t\t\t// remain precise, while the publisher block Y is converted back to\n\t\t\t\t// PlayerAuthInput eye-height coordinates.", "// without trusting StartGame's Y≈32768 placeholder. The publisher\n\t\t\t\t// is a server-owned BlockPos and may differ in X/Z after BDS resolves\n\t\t\t\t// the real spawn. Seed all axes from it: block centres for X/Z and\n\t\t\t\t// eye height for the PlayerAuthInput Y coordinate.", 1)
-              bot.write_text(text)
-          elif new_line not in text:
-              raise SystemExit("bot.go publisher seed target not found")
-
-          flight = Path("internal/bot/flight.go")
-          text = flight.read_text()
-          marker = "func horizontalDistance(start, end mgl32.Vec3) float64 {\n\treturn math.Hypot(float64(end[0]-start[0]), float64(end[2]-start[2]))\n}\n"
-          helper = "func publisherEyePosition(position protocol.BlockPos) mgl32.Vec3 {\n\treturn mgl32.Vec3{\n\t\tfloat32(position[0]) + 0.5,\n\t\tfloat32(position[1]) + playerEyeHeight,\n\t\tfloat32(position[2]) + 0.5,\n\t}\n}\n\n" + marker
-          if "func publisherEyePosition(" not in text:
-              if marker not in text:
-                  raise SystemExit("flight.go insertion target not found")
-              flight.write_text(text.replace(marker, helper, 1))
-
-          test = Path("internal/bot/flight_test.go")
-          text = test.read_text()
-          marker = "func TestChunkFlyClimbsThenTraversesAtSafeAltitude(t *testing.T) {\n"
-          addition = "func TestPublisherEyePositionUsesAuthoritativeBlockPosition(t *testing.T) {\n\tgot := publisherEyePosition(protocol.BlockPos{266, 70, 159})\n\twant := mgl32.Vec3{266.5, 70 + playerEyeHeight, 159.5}\n\tif got != want {\n\t\tt.Fatalf(\"publisher eye position = %v, want %v\", got, want)\n\t}\n}\n\n" + marker
-          if "TestPublisherEyePositionUsesAuthoritativeBlockPosition" not in text:
-              if marker not in text:
-                  raise SystemExit("flight_test.go insertion target not found")
-              test.write_text(text.replace(marker, addition, 1))
-          PY
-
-          gofmt -w internal/bot/bot.go internal/bot/flight.go internal/bot/flight_test.go
-          go test ./...
-
-          if ! git diff --quiet; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add internal/bot/bot.go internal/bot/flight.go internal/bot/flight_test.go
-            git commit -m "fix: seed chunk-fly from authoritative publisher position"
-            git push origin HEAD:feat/chunk-fly-scenario
-          fi
-          echo "BOT_TESTED_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          persist-credentials: false
 
       - name: Set up Go 1.25
         uses: actions/setup-go@v6
@@ -123,7 +72,7 @@ jobs:
           go-version: "1.25.x"
           cache: false
 
-      - name: Build tested bot revision
+      - name: Build exact bot revision
         working-directory: bot-src
         shell: bash
         run: |
@@ -138,7 +87,7 @@ jobs:
           go test ./...
           mkdir -p ../dist
           go build -trimpath -o ../dist/bds-test-bot ./cmd/bds-test-bot
-          echo "Bot tested SHA: \`${BOT_TESTED_SHA}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Bot ref: \`${BOT_REF}\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set up Python 3.13
         uses: actions/setup-python@v6
