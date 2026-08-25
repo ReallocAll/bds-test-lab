@@ -37,6 +37,63 @@ jobs:
         shell: bash
         run: |
           python3 controller/patch_chunk_fly_postmove.py bot-src
+          python3 - <<'PY'
+          from pathlib import Path
+
+          tick = Path("bot-src/internal/bot/tick.go")
+          text = tick.read_text()
+          old = '''func (s *playerState) nextInputTick() uint64 {
+          \ts.mu.Lock()
+          \tdefer s.mu.Unlock()
+          \ttick := s.serverTick
+          \ts.serverTick++
+          \treturn tick
+          }
+          '''
+          new = '''func (s *playerState) nextInputTick() uint64 {
+          \ts.mu.Lock()
+          \tdefer s.mu.Unlock()
+          \t// PlayerAuthInput.Tick is a server tick, not a client-local frame
+          \t// counter. Until a packet carrying a server tick establishes the
+          \t// clock, keep the protocol's neutral zero value rather than sending
+          \t// an ever-growing unrelated tick sequence.
+          \tif !s.tickSynced {
+          \t\treturn 0
+          \t}
+          \ttick := s.serverTick
+          \ts.serverTick++
+          \treturn tick
+          }
+          '''
+          if old in text:
+              tick.write_text(text.replace(old, new, 1))
+          elif "if !s.tickSynced" not in text:
+              raise SystemExit("nextInputTick target not found")
+
+          test = Path("bot-src/internal/bot/flight_test.go")
+          text = test.read_text()
+          old = '''func TestServerTickSyncDrivesNextAuthInputTick(t *testing.T) {
+          \tstate := newPlayerState(mgl32.Vec3{}, 0, 0)
+          \tif got := state.nextInputTick(); got != 0 {
+          \t\tt.Fatalf("initial input tick = %d, want 0", got)
+          \t}
+          \tstate.syncServerTick(240)
+          '''
+          new = '''func TestServerTickSyncDrivesNextAuthInputTick(t *testing.T) {
+          \tstate := newPlayerState(mgl32.Vec3{}, 0, 0)
+          \tif got := state.nextInputTick(); got != 0 {
+          \t\tt.Fatalf("initial input tick = %d, want 0", got)
+          \t}
+          \tif got := state.nextInputTick(); got != 0 {
+          \t\tt.Fatalf("unsynced input tick = %d, want neutral 0", got)
+          \t}
+          \tstate.syncServerTick(240)
+          '''
+          if old in text:
+              test.write_text(text.replace(old, new, 1))
+          elif "unsynced input tick" not in text:
+              raise SystemExit("server tick test target not found")
+          PY
           cd bot-src
           gofmt -w internal/bot/bot.go internal/bot/tick.go internal/bot/flight_test.go
           go test ./...
@@ -47,5 +104,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add internal/bot/bot.go internal/bot/tick.go internal/bot/flight_test.go
-          git commit -m "fix: drive chunk-fly from server movement state"
+          git commit -m "fix: keep unsynced auth input tick neutral"
           git push origin HEAD:feat/chunk-fly-scenario
