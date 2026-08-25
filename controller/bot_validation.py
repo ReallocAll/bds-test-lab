@@ -60,6 +60,7 @@ class BotProcess:
         ]
         print("+", " ".join(cmd), flush=True)
         self._log = self.log_path.open("w", encoding="utf-8")
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
         self.process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -68,6 +69,7 @@ class BotProcess:
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+            creationflags=creationflags,
         )
         self._reader = threading.Thread(target=self._read_loop, name="bot-log-reader", daemon=True)
         self._reader.start()
@@ -115,13 +117,14 @@ class BotProcess:
         if self.process is None:
             return 0
         if self.process.poll() is None:
-            self.process.send_signal(signal.SIGTERM)
+            termination_signal = signal.CTRL_BREAK_EVENT if sys.platform == "win32" else signal.SIGTERM
+            self.process.send_signal(termination_signal)
             try:
                 self.process.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 self.process.kill()
                 self.process.wait(timeout=5)
-                raise RuntimeError("Bot did not exit after SIGTERM")
+                raise RuntimeError("Bot did not exit after graceful termination signal")
         code = int(self.process.returncode or 0)
         if self._reader is not None:
             self._reader.join(timeout=3)

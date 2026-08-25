@@ -1,0 +1,183 @@
+name: Spark v0.6 Release Validation
+
+on:
+  push:
+    branches:
+      - test/spark-v0.6-release-validation
+    paths:
+      - "release-trigger.json"
+  workflow_dispatch:
+    inputs:
+      spark_sha:
+        description: "Exact ReallocAll/spark develop SHA to validate"
+        required: true
+      bot_ref:
+        description: "Exact ReallocAll/bds-test-bot ref"
+        required: false
+        default: "a0a83240e9e8f12d4806ba31194fb1807d7b5dd1"
+      soak_minutes:
+        description: "BDS soak duration per platform"
+        required: false
+        default: "30"
+
+concurrency:
+  group: spark-v06-release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+  EXPECTED_SPARK_SHA: ${{ github.event.inputs.spark_sha || '' }}
+  BOT_REF: ${{ github.event.inputs.bot_ref || 'a0a83240e9e8f12d4806ba31194fb1807d7b5dd1' }}
+  SOAK_MINUTES: ${{ github.event.inputs.soak_minutes || '30' }}
+
+jobs:
+  release-validation:
+    name: Spark v0.6 release validation (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            os: ubuntu-24.04
+            bot_name: bds-test-bot
+          - platform: windows
+            os: windows-2022
+            bot_name: bds-test-bot.exe
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout test lab
+        uses: actions/checkout@v7
+
+      - name: Resolve exact release trigger
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          expected = os.environ.get("EXPECTED_SPARK_SHA", "").strip()
+          bot_ref = os.environ.get("BOT_REF", "").strip()
+          soak = os.environ.get("SOAK_MINUTES", "30").strip()
+          trigger = Path("release-trigger.json")
+          if not expected:
+              if not trigger.is_file():
+                  raise SystemExit("release-trigger.json is required for push-triggered validation")
+              data = json.loads(trigger.read_text(encoding="utf-8"))
+              expected = str(data.get("spark_sha", "")).strip()
+              bot_ref = str(data.get("bot_ref", bot_ref)).strip()
+              soak = str(data.get("soak_minutes", soak)).strip()
+          if len(expected) != 40 or any(ch not in "0123456789abcdefABCDEF" for ch in expected):
+              raise SystemExit(f"Invalid exact Spark SHA: {expected!r}")
+          if not bot_ref:
+              raise SystemExit("Bot ref must not be empty")
+          if not soak.isdigit() or int(soak) < 30:
+              raise SystemExit(f"Soak duration must be at least 30 minutes: {soak!r}")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write(f"EXPECTED_SPARK_SHA={expected}\n")
+              env.write(f"BOT_REF={bot_ref}\n")
+              env.write(f"SOAK_MINUTES={soak}\n")
+          print(f"Spark SHA: {expected}")
+          print(f"Bot ref: {bot_ref}")
+          print(f"Soak minutes: {soak}")
+          PY
+
+      - name: Checkout Bot at exact ref
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/bds-test-bot
+          ref: ${{ env.BOT_REF }}
+          path: bot-src
+          persist-credentials: false
+
+      - name: Set up Go 1.25
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Build exact Bot revision
+        shell: bash
+        env:
+          BOT_NAME: ${{ matrix.bot_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cd bot-src
+          go mod download
+          go test ./...
+          go build -trimpath -o "../dist/${BOT_NAME}" ./cmd/bds-test-bot
+          echo "Bot ref: ${BOT_REF}"
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install validation dependencies
+        run: python -m pip install --disable-pip-version-check psutil packaging
+
+      - name: Require exact Spark develop artifact
+        run: >-
+          python -m controller.assert_spark_artifact
+          --platform ${{ matrix.platform }}
+          --expected-sha ${{ env.EXPECTED_SPARK_SHA }}
+
+      - name: Run Spark v0.6 release validation
+        run: >-
+          python -m controller.release_validation
+          --platform ${{ matrix.platform }}
+          --bot dist/${{ matrix.bot_name }}
+          --soak-minutes ${{ env.SOAK_MINUTES }}
+
+      - name: Add release evidence to summary
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f test-results.json ]]; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path("test-results.json").read_text())
+          metadata = json.loads(Path("metadata.json").read_text()) if Path("metadata.json").is_file() else {}
+          spark_sha = (((metadata.get("components") or {}).get("spark") or {}).get("sha"))
+          print("## Spark v0.6 release validation")
+          print()
+          print(f"Platform: **{data.get('platform')}**")
+          print(f"Status: **{data.get('status')}**")
+          print(f"Spark SHA: `{spark_sha}`")
+          print(f"BDS: `{data.get('bds_version')}`")
+          print(f"Endstone: `{data.get('installed_endstone_version')}`")
+          print(f"Execution profile: {data.get('execution_profile_viewer_url')}")
+          print(f"Allocation profile: {data.get('allocation_profile_viewer_url')}")
+          print(f"Health upload: {data.get('health_upload_viewer_url')}")
+          print(f"Health dashboard: {data.get('health_dashboard_viewer_url')}")
+          print(f"Shutdown: `{data.get('shutdown_status')}`")
+          PY
+          fi >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload release evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: spark-v06-release-${{ matrix.platform }}-${{ github.run_id }}
+          path: |
+            metadata.json
+            bds.log
+            endstone.log
+            spark.log
+            release-bot-${{ matrix.platform }}.log
+            test-results.json
+            failure-diagnostics.txt
+            work/${{ matrix.platform }}/bedrock_server/server.properties
+            work/${{ matrix.platform }}/bedrock_server/version.txt
+          if-no-files-found: warn
+          retention-days: 30
