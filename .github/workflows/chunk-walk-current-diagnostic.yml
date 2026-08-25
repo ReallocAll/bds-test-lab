@@ -48,6 +48,41 @@ jobs:
           path: bot-src
           persist-credentials: false
 
+      - name: Seed chunk-walk from server publisher and expose progress
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          bot = Path('bot-src/internal/bot/bot.go')
+          text = bot.read_text()
+          text = text.replace(
+              'if cfg.Scenario == ScenarioChunkFly && samePublisher {',
+              'if (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && samePublisher {',
+              1,
+          )
+          text = text.replace(
+              'if cfg.Scenario == ScenarioChunkFly && changedChunk {',
+              'if (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && changedChunk {',
+              1,
+          )
+          text = text.replace(
+              'if onlineState && cfg.Scenario == ScenarioChunkFly && !time.Now().Before(nextProgress) {',
+              'if onlineState && (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && !time.Now().Before(nextProgress) {',
+              1,
+          )
+          bot.write_text(text)
+
+          tick = Path('bot-src/internal/bot/tick.go')
+          text = tick.read_text()
+          text = text.replace(
+              'if cfg.Scenario == ScenarioChunkFly && !state.positionReadySnapshot() {',
+              'if (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && !state.positionReadySnapshot() {',
+              1,
+          )
+          tick.write_text(text)
+          PY
+          gofmt -w bot-src/internal/bot/bot.go bot-src/internal/bot/tick.go
+
       - name: Set up Go 1.25
         uses: actions/setup-go@v6
         with:
@@ -71,7 +106,7 @@ jobs:
       - name: Install validation dependencies
         run: python -m pip install --disable-pip-version-check psutil
 
-      - name: Run current chunk-walk against real BDS
+      - name: Run authoritative-seeded chunk-walk against real BDS
         run: >-
           python -m controller.chunk_walk_validation
           --bot dist/bds-test-bot
