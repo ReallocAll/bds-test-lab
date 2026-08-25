@@ -37,25 +37,6 @@ jobs:
         shell: bash
         run: |
           python3 controller/patch_chunk_fly_client_prediction.py bot-src
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path("bot-src/internal/bot/flight_test.go")
-          text = path.read_text()
-          old = '''\tif !input.InputData.Load(packet.InputFlagBlockBreakingDelayEnabled) {
-          \t\tt.Fatal("auth input must include the normal Bedrock block-breaking-delay baseline flag")
-          \t}
-          '''
-          new = '''\tif input.InputData.Load(packet.InputFlagBlockBreakingDelayEnabled) {
-          \t\tt.Fatal("flight heartbeat must not include the block-breaking-delay baseline flag")
-          \t}
-          '''
-          if old in text:
-              text = text.replace(old, new, 1)
-          elif "flight heartbeat must not include the block-breaking-delay baseline flag" not in text:
-              raise SystemExit("flight baseline test target not found")
-          path.write_text(text)
-          PY
-          sed -i '/^[[:space:]]*"math"$/d' bot-src/internal/bot/flight_test.go
           cd bot-src
           gofmt -w internal/bot/bot.go internal/bot/tick.go internal/bot/flight_test.go
           go test ./...
@@ -67,5 +48,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add internal/bot/bot.go internal/bot/tick.go internal/bot/flight_test.go
-          git commit -m "fix: drive chunk-fly with Bedrock heartbeat semantics"
+          git commit -m "test: isolate horizontal client-predicted flight"
           git push origin HEAD:feat/chunk-fly-scenario
