@@ -136,9 +136,13 @@ class FleetSparkValidation(IntegrationTest):
     def wait_post_start_initialization(self) -> None:
         assert self.server is not None
         self.server.wait_for(
-            lambda lines: any("packet limit config updated" in line.lower() for line in lines),
-            15,
-            "BDS post-start packet-limit initialization",
+            lambda lines: any(
+                "[spark] endstone-spark v" in line.lower()
+                and "enabled. run /spark to get started." in line.lower()
+                for line in lines
+            ),
+            30,
+            "Spark post-start enable completion",
         )
 
     def bootstrap_offline_server(self) -> None:
