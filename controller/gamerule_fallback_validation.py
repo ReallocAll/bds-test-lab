@@ -11,15 +11,21 @@ from controller.block_actor_validation import BytebinCapture, ProtoDecodeError, 
 from controller.run_test import IntegrationTest, now_iso, write_json
 
 
-# Fresh BDS 1.26.44.3 current defaults. playerWaypoints is an enum-style
-# Gamerule whose Endstone runtime value is the integer 1 on a fresh world.
-EXPECTED_DEFAULTS = {
+# Fresh BDS 1.26.44.3 current defaults which Spark may safely provide from
+# its current-version fallback table when no runtime/API default is available.
+EXPECTED_KNOWN_DEFAULTS = {
     "spawnradius": "10",
-    "maxcommandchainlength": "65535",
+    "maxcommandchainlength": "65536",
     "recipesunlock": "true",
     "randomtickspeed": "1",
-    "playerwaypoints": "1",
 }
+
+# playerWaypoints replaced the old boolean locatorBar rule with enum/integer
+# semantics. Its effective fresh-world value is observable through Endstone,
+# but no authoritative default API is currently exposed, so Spark must not
+# guess a default for it.
+EXPECTED_UNKNOWN_DEFAULTS = {"playerwaypoints"}
+EXPECTED_WORLD_VALUES = {"playerwaypoints": "1"}
 
 
 def _optional_text_field(data: bytes, field_number: int) -> str | None:
@@ -92,7 +98,7 @@ class GameruleFallbackValidation(IntegrationTest):
         self.result["gamerules"] = rules
         write_json(self.result_path, self.result)
 
-        for name, expected in EXPECTED_DEFAULTS.items():
+        for name, expected in EXPECTED_KNOWN_DEFAULTS.items():
             actual = rules.get(name)
             if actual is None:
                 raise RuntimeError(f"expected gamerule {name!r} is absent from Spark metadata")
@@ -108,10 +114,42 @@ class GameruleFallbackValidation(IntegrationTest):
                 actual=actual["default"],
             )
 
+        for name in EXPECTED_UNKNOWN_DEFAULTS:
+            actual = rules.get(name)
+            if actual is None:
+                raise RuntimeError(f"expected gamerule {name!r} is absent from Spark metadata")
+            if actual["default_present"]:
+                raise RuntimeError(
+                    f"gamerule {name!r} default must remain unknown, got {actual['default']!r}"
+                )
+            self.check(
+                "gamerule-default-unknown",
+                "PASS",
+                rule=name,
+                actual=actual["default"],
+            )
+
+        for name, expected in EXPECTED_WORLD_VALUES.items():
+            actual = rules.get(name)
+            if actual is None:
+                raise RuntimeError(f"expected gamerule {name!r} is absent from Spark metadata")
+            values = set(actual["world_values"].values())
+            if expected not in values:
+                raise RuntimeError(
+                    f"gamerule {name!r} effective world value mismatch: expected {expected!r}, got {sorted(values)!r}"
+                )
+            self.check(
+                "gamerule-effective-world-value",
+                "PASS",
+                rule=name,
+                expected=expected,
+                actual=sorted(values),
+            )
+
         self.check(
             "gamerule-fallback-metadata",
             "PASS",
-            "fresh-BDS current defaults were serialized for representative boolean, integer, and enum rules",
+            "fresh-BDS known defaults were serialized while migration/type-change defaults remained unknown",
         )
 
     def execute_validation(self) -> int:
