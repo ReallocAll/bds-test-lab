@@ -276,20 +276,6 @@ class IntegrationTest:
         mode = "allocation" if allocation else "execution"
         command = "spark profiler start --timeout 12" + (" --alloc" if allocation else "")
         start = self.server.command(command)
-        if allocation and self.platform == "windows":
-            output = self.server.wait_command_output(start, 8)
-            joined = "\n".join(output).lower()
-            disabled_hints = ("not supported", "unsupported", "disabled", "unavailable", "windows")
-            if not self.server.is_alive():
-                raise RuntimeError("Windows allocation profiler crashed the server")
-            if not any(hint in joined for hint in disabled_hints):
-                try:
-                    self.server.command("spark profiler cancel")
-                except Exception:
-                    pass
-                raise RuntimeError("Windows allocation profiler did not return an explicit disabled/unsupported response")
-            self.check("allocation-profiler", "PASS", "explicitly disabled on Windows", expected_disabled=True)
-            return None
         deadline = time.monotonic() + 55
         url: str | None = None
         while time.monotonic() < deadline:
