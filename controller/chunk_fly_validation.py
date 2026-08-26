@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import pathlib
 import time
@@ -14,6 +15,7 @@ class ChunkFlySparkValidation(FleetSparkValidation):
     def __init__(self, bot_binary: pathlib.Path, count: int, profile_seconds: int):
         super().__init__(bot_binary, count, "chunk-fly", profile_seconds)
         self.result["chunk_fly_evidence"] = None
+        self.result["server_position_samples"] = []
         self._write_results()
 
     def start_fleet(self) -> None:
@@ -50,6 +52,77 @@ class ChunkFlySparkValidation(FleetSparkValidation):
         if not isinstance(a, list) or not isinstance(b, list) or len(a) < 3 or len(b) < 3:
             return None
         return math.hypot(float(b[0]) - float(a[0]), float(b[2]) - float(a[2]))
+
+    @staticmethod
+    def _querytarget_positions(output: list[str]) -> list[list[float]]:
+        """Extract positions from BDS /querytarget output without assuming one wrapper format."""
+        positions: list[list[float]] = []
+        candidates: list[Any] = []
+        for line in output:
+            fragments = [line]
+            left = line.find("[")
+            right = line.rfind("]")
+            if 0 <= left < right:
+                fragments.append(line[left : right + 1])
+            left = line.find("{")
+            right = line.rfind("}")
+            if 0 <= left < right:
+                fragments.append(line[left : right + 1])
+            for fragment in fragments:
+                try:
+                    value = json.loads(fragment)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                candidates.append(value)
+
+        def walk(value: Any) -> None:
+            if isinstance(value, dict):
+                pos = value.get("position")
+                if isinstance(pos, dict) and all(axis in pos for axis in ("x", "y", "z")):
+                    positions.append([float(pos["x"]), float(pos["y"]), float(pos["z"])])
+                details = value.get("details")
+                if isinstance(details, str):
+                    try:
+                        walk(json.loads(details))
+                    except json.JSONDecodeError:
+                        pass
+                for nested in value.values():
+                    if nested is not details:
+                        walk(nested)
+            elif isinstance(value, list):
+                for item in value:
+                    walk(item)
+
+        for candidate in candidates:
+            walk(candidate)
+        unique: list[list[float]] = []
+        for pos in positions:
+            if pos not in unique:
+                unique.append(pos)
+        return unique
+
+    def sample_server_positions(self, phase: str) -> dict[str, Any]:
+        assert self.server is not None
+        samples: dict[str, Any] = {"phase": phase, "players": {}}
+        for name in self.expected_names():
+            start = self.server.command(f"querytarget {name}")
+            output = self.server.wait_command_output(start, 8)
+            samples["players"][name] = {
+                "positions": self._querytarget_positions(output),
+                "output": output[-20:],
+            }
+        self.result.setdefault("server_position_samples", []).append(samples)
+        self._write_results()
+        return samples
+
+    def profile_execution(self) -> tuple[str, list[int]]:
+        # querytarget is a BDS-side entity transform query, so these snapshots
+        # provide independent proof that the server accepted traversal rather
+        # than trusting the bot's client-predicted position counter.
+        self.sample_server_positions("before-profile")
+        result = super().profile_execution()
+        self.sample_server_positions("after-profile")
+        return result
 
     def stop_fleet(self) -> None:
         super().stop_fleet()
