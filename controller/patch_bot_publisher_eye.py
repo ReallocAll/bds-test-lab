@@ -37,19 +37,19 @@ def main() -> int:
 }
 '''
     new = '''func publisherEyePosition(position protocol.BlockPos, startGameY float32) mgl32.Vec3 {
-\t// NetworkChunkPublisherUpdate contains a BlockPos, so its Y loses the
-\t// player's fractional feet offset. StartGame's temporary Y is unusable as
-\t// an absolute coordinate, but its fractional component remains the actual
-\t// spawn fraction (BDS querytarget reports the same .62 in this build).
-\t// PlayerAuthInput.Position is the eye position, so reconstruct feet Y first
-\t// and then add the 1.62 eye offset.
+\t// NetworkChunkPublisherUpdate publishes the block containing the wire eye
+\t// position. StartGame's temporary absolute Y is unusable (about 32769 in
+\t// current BDS), but it preserves the eye-position fractional component.
+\t// /tp to Y=100 followed by querytarget reports Y=101.62, confirming that
+\t// querytarget/wire movement coordinates are eye positions. Reconstruct that
+\t// eye coordinate directly; adding playerEyeHeight again overshoots by 1.62.
 \t_, fraction := math.Modf(float64(startGameY))
 \tif fraction < 0 {
 \t\tfraction += 1
 \t}
 \treturn mgl32.Vec3{
 \t\tfloat32(position[0]) + 0.5,
-\t\tfloat32(position[1]) + float32(fraction) + playerEyeHeight,
+\t\tfloat32(position[1]) + float32(fraction),
 \t\tfloat32(position[2]) + 0.5,
 \t}
 }
@@ -69,7 +69,7 @@ def main() -> int:
 '''
     new = '''func TestPublisherEyePositionUsesAuthoritativeBlockPosition(t *testing.T) {
 \tgot := publisherEyePosition(protocol.BlockPos{266, 70, 159}, 32769.62)
-\twant := mgl32.Vec3{266.5, 70 + 0.62 + playerEyeHeight, 159.5}
+\twant := mgl32.Vec3{266.5, 70 + 0.62, 159.5}
 \tif math.Abs(float64(got[1]-want[1])) > 0.002 || got[0] != want[0] || got[2] != want[2] {
 \t\tt.Fatalf("publisher eye position = %v, want %v", got, want)
 \t}
