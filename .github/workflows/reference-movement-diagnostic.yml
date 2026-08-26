@@ -54,9 +54,11 @@ jobs:
           go-version: "1.26.x"
           cache: false
 
-      - name: Build reference client
+      - name: Upgrade reference protocol and build
         working-directory: reference-src
         run: |
+          go get github.com/sandertv/gophertunnel@v1.59.0
+          go mod tidy
           go build -trimpath -o ../reference-client .
 
       - name: Set up Python 3.13
