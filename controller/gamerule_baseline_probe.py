@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import site
 import traceback
 
 import providers.artifact_provider as artifact_provider
@@ -22,10 +23,29 @@ RULES = [
 ]
 
 
+def install_api_probe_plugin() -> None:
+    site_packages = pathlib.Path(site.getsitepackages()[0])
+    module = site_packages / "gamerule_probe_plugin.py"
+    module.write_text(
+        '''from endstone.plugin import Plugin\n\n\nclass GameruleProbePlugin(Plugin):\n    api_version = "0.11"\n\n    def on_enable(self) -> None:\n        level = self.server.level\n        for rule in ("minecraft:playerwaypoints", "minecraft:locatorbar"):\n            present = level.has_game_rule(rule)\n            value = level.get_game_rule(rule) if present else None\n            self.logger.info(\n                f"GAMERULE_API {rule} has={present} value={value!r} type={type(value).__name__}"\n            )\n''',
+        encoding="utf-8",
+    )
+    dist_info = site_packages / "endstone_gamerule_probe-0.0.0.dist-info"
+    dist_info.mkdir(exist_ok=True)
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: endstone-gamerule-probe\nVersion: 0.0.0\n",
+        encoding="utf-8",
+    )
+    (dist_info / "entry_points.txt").write_text(
+        "[endstone]\ngamerule-probe = gamerule_probe_plugin:GameruleProbePlugin\n",
+        encoding="utf-8",
+    )
+
+
 class GameruleBaselineProbe(SparkReleaseValidation):
     def __init__(self) -> None:
         super().__init__("linux", 30, pathlib.Path("/bin/true"))
-        self.result.update({"test_kind": "temporary-gamerule-baseline-probe", "gamerules": {}})
+        self.result.update({"test_kind": "temporary-gamerule-baseline-probe", "gamerules": {}, "api_probe": []})
         write_json(self.result_path, self.result)
 
     def install_artifacts(self) -> None:
@@ -48,9 +68,15 @@ class GameruleBaselineProbe(SparkReleaseValidation):
             stage = "artifact-discovery"
             self.install_artifacts()
             self.verify_endstone_version()
+            install_api_probe_plugin()
             stage = "bds-bootstrap"
             self.bootstrap_offline_server()
             assert self.server is not None
+
+            api_lines = [line for line in self.server.snapshot() if "GAMERULE_API" in line]
+            self.result["api_probe"] = api_lines
+            for line in api_lines:
+                print(line, flush=True)
 
             stage = "query-gamerules"
             for rule in RULES:
@@ -78,7 +104,13 @@ class GameruleBaselineProbe(SparkReleaseValidation):
             self.split_logs()
             write_json(self.result_path, self.result)
             pathlib.Path("gamerule-baseline.json").write_text(
-                json.dumps(self.result.get("gamerules", {}), indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+                json.dumps(
+                    {"gamerules": self.result.get("gamerules", {}), "api_probe": self.result.get("api_probe", [])},
+                    indent=2,
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
             )
 
 
