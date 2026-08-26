@@ -12,9 +12,12 @@ from controller.fleet_spark_validation import set_server_property
 from controller.release_validation import SparkReleaseValidation
 from controller.run_test import now_iso, write_json
 
-TARGET_X = 4096
-TARGET_Y = 200
-TARGET_Z = 4096
+# Keep the validation BlockActor in the spawn area that the real TestBot has
+# already loaded. This avoids treating a remote ticking-area generation delay
+# as a Spark failure and makes the same probe deterministic across world seeds.
+TARGET_X = 0
+TARGET_Y = 100
+TARGET_Z = 0
 TICKING_AREA_NAME = "spark_pr11_seed_report"
 RECONCILE_WAIT_SECONDS = 80
 
@@ -36,6 +39,22 @@ class PR11SeedReportValidation(SparkReleaseValidation):
             }
         )
         write_json(self.result_path, self.result)
+
+    @staticmethod
+    def _command_failed(lines: list[str]) -> bool:
+        text = "\n".join(lines).lower()
+        return any(
+            marker in text
+            for marker in (
+                " error]",
+                "failed",
+                "cannot place",
+                "could not",
+                "couldn't",
+                "does not match",
+                "expected:",
+            )
+        )
 
     def bootstrap_seed_world(self) -> None:
         self.start_server()
@@ -76,21 +95,22 @@ class PR11SeedReportValidation(SparkReleaseValidation):
             "seeded-ticking-area",
             f"tickingarea add circle {TARGET_X} 64 {TARGET_Z} 1 {TICKING_AREA_NAME}",
         )
-        if any("failed" in line.lower() or "error" in line.lower() for line in output):
+        if self._command_failed(output):
             raise RuntimeError("BDS rejected ticking area: " + " | ".join(output[-20:]))
+        time.sleep(3)
 
         output = self.command_check(
             "seeded-block-actor-place",
             f"setblock {TARGET_X} {TARGET_Y} {TARGET_Z} chest",
         )
-        if any("could not" in line.lower() or "failed" in line.lower() for line in output):
+        if self._command_failed(output) or not any("block placed" in line.lower() for line in output):
             raise RuntimeError("BDS failed to place BlockActor chest: " + " | ".join(output[-20:]))
 
         verify = self.command_check(
             "seeded-block-actor-verify",
             f"testforblock {TARGET_X} {TARGET_Y} {TARGET_Z} chest",
         )
-        if any("failed" in line.lower() or "does not match" in line.lower() for line in verify):
+        if self._command_failed(verify) or not any("successfully found the block" in line.lower() for line in verify):
             raise RuntimeError("BDS did not confirm BlockActor chest: " + " | ".join(verify[-20:]))
 
         deadline = time.monotonic() + RECONCILE_WAIT_SECONDS
@@ -103,6 +123,14 @@ class PR11SeedReportValidation(SparkReleaseValidation):
 
         self.validate_player_health()
         self.command_check("seeded-post-reconcile-tps", "spark tps")
+        # Re-confirm the chest immediately before uploading so the report cannot
+        # be generated after the validation BlockActor disappeared.
+        verify = self.command_check(
+            "seeded-block-actor-pre-upload-verify",
+            f"testforblock {TARGET_X} {TARGET_Y} {TARGET_Z} chest",
+        )
+        if self._command_failed(verify) or not any("successfully found the block" in line.lower() for line in verify):
+            raise RuntimeError("BlockActor chest was not present immediately before health upload")
         self.check(
             "seeded-block-actor-reconciled-window",
             "PASS",
@@ -142,9 +170,7 @@ class PR11SeedReportValidation(SparkReleaseValidation):
             self.place_block_actor_and_wait()
 
             stage = "online-health-report"
-            url = self.validate_health_upload()
-            # validate_health_upload stores health_upload_viewer_url; keep a dedicated
-            # seed-report field for artifact consumers and summaries.
+            self.validate_health_upload()
             self.result["report_viewer_url"] = self.result.get("health_upload_viewer_url")
             if not self.result["report_viewer_url"]:
                 raise RuntimeError("Spark health upload completed without a viewer URL")
