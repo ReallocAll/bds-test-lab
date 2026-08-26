@@ -56,13 +56,31 @@ jobs:
           go-version: "1.25.x"
           cache: false
 
-      - name: Build exact diagnostic bot
+      - name: Validate exact bot baseline
         working-directory: bot-src
         shell: bash
         run: |
           go mod download
           go vet ./...
           go test ./...
+
+      - name: Patch pre-correction idle auth stream
+        working-directory: bot-src
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("internal/bot/tick.go")
+          text = path.read_text()
+          old = '''\tif cfg.Scenario == ScenarioChunkWalk || cfg.Scenario == ScenarioChunkFly {\n\t\ttimer := time.NewTimer(movementStartDelay)\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\tif !timer.Stop() {\n\t\t\t\t<-timer.C\n\t\t\t}\n\t\t\treturn nil\n\t\tcase <-timer.C:\n\t\t}\n\t}\n'''
+          new = '''\tif cfg.Scenario == ScenarioChunkFly {\n\t\t// Protocol 2168 may correct StartGame's temporary Y only after it sees\n\t\t// the client's first PlayerAuthInput. Establish an idle prediction\n\t\t// history during the spawn settle window before requesting flight.\n\t\twriteIdle := func() error {\n\t\t\ttick := state.nextInputTick()\n\t\t\treturn writer.WritePacket(authInputPacket(state, tick))\n\t\t}\n\t\tif err := writeIdle(); err != nil {\n\t\t\tif ctx.Err() != nil {\n\t\t\t\treturn nil\n\t\t\t}\n\t\t\treturn err\n\t\t}\n\t\tsettleTicker := time.NewTicker(time.Second / 20)\n\t\tsettleTimer := time.NewTimer(movementStartDelay)\n\t\tsettling := true\n\t\tfor settling {\n\t\t\tselect {\n\t\t\tcase <-ctx.Done():\n\t\t\t\tsettleTicker.Stop()\n\t\t\t\tif !settleTimer.Stop() {\n\t\t\t\t\t<-settleTimer.C\n\t\t\t\t}\n\t\t\t\treturn nil\n\t\t\tcase <-settleTicker.C:\n\t\t\t\tif err := writeIdle(); err != nil {\n\t\t\t\t\tsettleTicker.Stop()\n\t\t\t\t\tif !settleTimer.Stop() {\n\t\t\t\t\t\t<-settleTimer.C\n\t\t\t\t\t}\n\t\t\t\t\tif ctx.Err() != nil {\n\t\t\t\t\t\treturn nil\n\t\t\t\t\t}\n\t\t\t\t\treturn err\n\t\t\t\t}\n\t\t\tcase <-settleTimer.C:\n\t\t\t\tsettling = false\n\t\t\t}\n\t\t}\n\t\tsettleTicker.Stop()\n\t} else if cfg.Scenario == ScenarioChunkWalk {\n\t\ttimer := time.NewTimer(movementStartDelay)\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\tif !timer.Stop() {\n\t\t\t\t<-timer.C\n\t\t\t}\n\t\t\treturn nil\n\t\tcase <-timer.C:\n\t\t}\n\t}\n'''
+          if old not in text:
+              raise SystemExit("movement settle block not found")
+          path.write_text(text.replace(old, new, 1))
+          PY
+          gofmt -w internal/bot/tick.go
+          go vet ./...
           mkdir -p ../dist
           go build -trimpath -o ../dist/bds-test-bot ./cmd/bds-test-bot
 
