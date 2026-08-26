@@ -79,8 +79,16 @@ jobs:
           if old not in text:
               raise SystemExit("analogue movement target not found")
           tick.write_text(text.replace(old, new, 1))
+
+          test = Path("bot-src/internal/bot/flight_test.go")
+          text = test.read_text()
+          old = "\tif input.AnalogueMoveVector != (mgl32.Vec2{}) {\n\t\tt.Fatalf(\"reference BDS tuple must leave analogue move vector unset: %v\", input.AnalogueMoveVector)\n\t}\n"
+          new = "\tif input.AnalogueMoveVector != input.MoveVector {\n\t\tt.Fatalf(\"analogue move vector = %v, want move vector %v\", input.AnalogueMoveVector, input.MoveVector)\n\t}\n"
+          if old not in text:
+              raise SystemExit("analogue expectation target not found")
+          test.write_text(text.replace(old, new, 1))
           PY
-          gofmt -w bot-src/internal/bot/bot.go bot-src/internal/bot/tick.go
+          gofmt -w bot-src/internal/bot/bot.go bot-src/internal/bot/tick.go bot-src/internal/bot/flight_test.go
 
       - name: Set up Go 1.25
         uses: actions/setup-go@v6
