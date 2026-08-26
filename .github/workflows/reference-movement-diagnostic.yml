@@ -60,11 +60,32 @@ jobs:
           go get github.com/sandertv/gophertunnel@v1.59.0
           python3 - <<'PY'
           from pathlib import Path
-          path = Path("gotestbds/internal/unsafe.go")
-          text = path.read_text()
-          text = text.replace("\t\tHasNetworkID:   true,\n", "")
-          path.write_text(text)
+
+          unsafe = Path("gotestbds/internal/unsafe.go")
+          text = unsafe.read_text().replace("\t\tHasNetworkID:   true,\n", "")
+          unsafe.write_text(text)
+
+          config = Path("gotestbds/actor/config.go")
+          text = config.read_text().replace(
+              "protocol.NewBitset(packet.PlayerAuthInputBitsetSize)",
+              "protocol.NewInputFlags(packet.InputFlagCount)",
+          )
+          config.write_text(text)
+
+          movement = Path("gotestbds/actor/movement.go")
+          text = movement.read_text()
+          text = text.replace("movementBitset                                                       protocol.Bitset", "movementBitset                                                       protocol.InputFlags")
+          text = text.replace(
+              "protocol.NewBitset(packet.PlayerAuthInputBitsetSize)",
+              "protocol.NewInputFlags(packet.InputFlagCount)",
+          )
+          text = text.replace(
+              "\t\tBlockActions:      a.blockActions(),\n",
+              "\t\tBlockActions:      protocol.Option(a.blockActions()),\n",
+          )
+          movement.write_text(text)
           PY
+          gofmt -w gotestbds/internal/unsafe.go gotestbds/actor/config.go gotestbds/actor/movement.go
           go mod tidy
           go build -trimpath -o ../reference-client .
 
