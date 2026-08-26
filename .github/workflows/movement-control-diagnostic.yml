@@ -16,7 +16,9 @@ permissions:
 env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
-  SPARK_RUN_ID: "32940101210"
+  ENDSTONE_RUN_ID: "32770415029"
+  SPARK_RUN_ID: "32958686154"
+  SPARK_RUN_BRANCH: "fix/headless-player-ping"
   BOT_REF: "605c63af9300b21862b0d76169ede5d27106cbbd"
 
 jobs:
@@ -26,13 +28,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        count: [1]
+        count: [1, 5, 10, 20]
 
     steps:
       - name: Checkout test lab
         uses: actions/checkout@v7
 
-      - name: Pin Spark only and enable chunk-fly fleet validation
+      - name: Pin ABI-matched artifacts and enable chunk-fly fleet validation
         shell: bash
         run: |
           python3 - <<'PY'
@@ -41,7 +43,7 @@ jobs:
           provider = Path("providers/artifact_provider.py")
           text = provider.read_text()
           needle = "    branch = config[\"branch\"]\n"
-          injected = "    branch = config[\"branch\"]\n    override_run_id = os.environ.get(f\"{component.upper()}_RUN_ID\", \"\").strip()\n    if override_run_id:\n        run = _get_json(f\"/repos/{repo}/actions/runs/{override_run_id}\")\n        if run.get(\"head_branch\") != branch or run.get(\"conclusion\") != \"success\":\n            raise ArtifactResolutionError(f\"Pinned {component} run {override_run_id} is not a successful {repo}@{branch} run\")\n        artifact = _select_from_run(component, platform_name, repo, run)\n        if artifact is None:\n            raise ArtifactResolutionError(f\"Pinned {component} run {override_run_id} has no compatible {platform_name} artifact\")\n        return run, artifact\n"
+          injected = "    branch = config[\"branch\"]\n    override_run_id = os.environ.get(f\"{component.upper()}_RUN_ID\", \"\").strip()\n    if override_run_id:\n        expected_branch = os.environ.get(f\"{component.upper()}_RUN_BRANCH\", branch).strip() or branch\n        run = _get_json(f\"/repos/{repo}/actions/runs/{override_run_id}\")\n        if run.get(\"head_branch\") != expected_branch or run.get(\"conclusion\") != \"success\":\n            raise ArtifactResolutionError(f\"Pinned {component} run {override_run_id} is not a successful {repo}@{expected_branch} run\")\n        artifact = _select_from_run(component, platform_name, repo, run)\n        if artifact is None:\n            raise ArtifactResolutionError(f\"Pinned {component} run {override_run_id} has no compatible {platform_name} artifact\")\n        return run, artifact\n"
           if needle not in text:
               raise SystemExit("artifact provider discover target not found")
           provider.write_text(text.replace(needle, injected, 1))
