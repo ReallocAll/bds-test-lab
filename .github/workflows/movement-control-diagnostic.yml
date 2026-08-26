@@ -1,0 +1,135 @@
+name: Movement Control Diagnostic
+
+on:
+  push:
+    branches:
+      - test/chunk-fly-spark
+    paths:
+      - ".github/workflows/movement-control-diagnostic.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+  ENDSTONE_RUN_ID: "32770415029"
+  BOT_REF: "b76da26e01b85384487a2147e8f9aa81809a6c8b"
+
+jobs:
+  movement-control:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [chunk-walk, chunk-fly]
+
+    steps:
+      - name: Checkout test lab
+        uses: actions/checkout@v7
+
+      - name: Pin known-good Endstone artifact run
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("providers/artifact_provider.py")
+          text = path.read_text()
+          needle = "    branch = config[\"branch\"]\n"
+          injected = "    branch = config[\"branch\"]\n    override_run_id = os.environ.get(f\"{component.upper()}_RUN_ID\", \"\").strip()\n    if override_run_id:\n        run = _get_json(f\"/repos/{repo}/actions/runs/{override_run_id}\")\n        if run.get(\"head_branch\") != branch or run.get(\"conclusion\") != \"success\":\n            raise ArtifactResolutionError(f\"Pinned {component} run {override_run_id} is not a successful {repo}@{branch} run\")\n        artifact = _select_from_run(component, platform_name, repo, run)\n        if artifact is None:\n            raise ArtifactResolutionError(f\"Pinned {component} run {override_run_id} has no compatible {platform_name} artifact\")\n        return run, artifact\n"
+          if needle not in text:
+              raise SystemExit("artifact provider discover target not found")
+          path.write_text(text.replace(needle, injected, 1))
+          PY
+
+      - name: Checkout exact bot revision
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/bds-test-bot
+          ref: ${{ env.BOT_REF }}
+          path: bot-src
+          persist-credentials: false
+
+      - name: Patch authoritative traversal seed and reference input flags
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          bot = Path("bot-src/internal/bot/bot.go")
+          text = bot.read_text()
+          old = "if cfg.Scenario == ScenarioChunkFly && samePublisher {"
+          new = "if (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && samePublisher {"
+          if old not in text:
+              raise SystemExit("publisher seed target not found")
+          text = text.replace(old, new, 1)
+          old = "if cfg.Scenario == ScenarioChunkFly && changedChunk {"
+          new = "if (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && changedChunk {"
+          if old not in text:
+              raise SystemExit("publisher telemetry target not found")
+          bot.write_text(text.replace(old, new, 1))
+
+          tick = Path("bot-src/internal/bot/tick.go")
+          text = tick.read_text()
+          old = "\tflags.Set(packet.InputFlagBlockBreakingDelayEnabled)\n"
+          if old not in text:
+              raise SystemExit("block-breaking-delay input flag target not found")
+          tick.write_text(text.replace(old, "", 1))
+          PY
+          gofmt -w bot-src/internal/bot/bot.go bot-src/internal/bot/tick.go
+
+      - name: Set up Go 1.25
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Build diagnostic bot
+        working-directory: bot-src
+        shell: bash
+        run: |
+          go mod tidy
+          go vet ./...
+          go test ./...
+          mkdir -p ../dist
+          go build -trimpath -o ../dist/bds-test-bot ./cmd/bds-test-bot
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install validation dependencies
+        run: python -m pip install --disable-pip-version-check psutil
+
+      - name: Run real BDS movement control
+        shell: bash
+        env:
+          SCENARIO: ${{ matrix.scenario }}
+        run: |
+          set +e
+          if [[ "$SCENARIO" == "chunk-fly" ]]; then
+            python -m controller.chunk_fly_validation --bot dist/bds-test-bot --count 1 --profile-seconds 5
+          else
+            python -m controller.chunk_walk_validation --bot dist/bds-test-bot --count 1 --profile-seconds 5
+          fi
+          rc=$?
+          echo "validation_exit=$rc"
+          exit 0
+
+      - name: Upload movement evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: movement-control-${{ matrix.scenario }}-${{ github.run_id }}
+          path: |
+            fleet-1-${{ matrix.scenario }}.log
+            fleet-spark-result.json
+            failure-diagnostics.txt
+            bds.log
+            work/linux/bedrock_server/server.properties
+          if-no-files-found: warn
+          retention-days: 7
