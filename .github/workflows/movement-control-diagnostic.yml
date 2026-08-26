@@ -64,7 +64,7 @@ jobs:
           go vet ./...
           go test ./...
 
-      - name: Patch exact tuple with telemetry
+      - name: Patch 40-frame idle rewind bootstrap
         working-directory: bot-src
         shell: bash
         run: |
@@ -112,6 +112,98 @@ jobs:
           if state_ctor not in text:
               raise SystemExit("player state constructor target not found")
           text = text.replace(state_ctor, "\treturn &playerState{\n\t\tserverTick: 1,\n\t\tposition:", 1)
+
+          start = text.index("func runTickLoop(")
+          replacement = r'''func runTickLoop(ctx context.Context, writer packetWriter, state *playerState, cfg Config, headingYaw float32, botName string, entityRuntimeID uint64) error {
+              if cfg.Scenario == ScenarioChunkWalk {
+                  // Do not leave a 40-frame hole in the client prediction history.
+                  // First wait until the repeated publisher gives us the exact
+                  // server-owned spawn position, then fill the complete rewind
+                  // window with stationary PlayerAuthInput frames at 20 Hz.
+                  positionDeadline := time.NewTimer(2 * time.Second)
+                  positionPoll := time.NewTicker(10 * time.Millisecond)
+                  for !state.positionReadySnapshot() {
+                      select {
+                      case <-ctx.Done():
+                          positionDeadline.Stop()
+                          positionPoll.Stop()
+                          return nil
+                      case <-positionDeadline.C:
+                          positionPoll.Stop()
+                          return fmt.Errorf("publisher position not ready before rewind bootstrap")
+                      case <-positionPoll.C:
+                      }
+                  }
+                  if !positionDeadline.Stop() {
+                      select {
+                      case <-positionDeadline.C:
+                      default:
+                      }
+                  }
+                  positionPoll.Stop()
+
+                  idleTicker := time.NewTicker(time.Second / 20)
+                  for i := 0; i < 40; i++ {
+                      select {
+                      case <-ctx.Done():
+                          idleTicker.Stop()
+                          return nil
+                      case <-idleTicker.C:
+                          tick := state.nextInputTick()
+                          if err := writer.WritePacket(authInputPacket(state, tick)); err != nil {
+                              idleTicker.Stop()
+                              if ctx.Err() != nil {
+                                  return nil
+                              }
+                              return err
+                          }
+                      }
+                  }
+                  idleTicker.Stop()
+              }
+
+              if cfg.Scenario == ScenarioChunkFly {
+                  tick := state.nextInputTick()
+                  if err := writer.WritePacket(authInputPacket(state, tick)); err != nil {
+                      if ctx.Err() != nil {
+                          return nil
+                      }
+                      return err
+                  }
+              }
+
+              ticker := time.NewTicker(time.Second / 20)
+              defer ticker.Stop()
+
+              scenarioAction, err := newScenarioAction(cfg, state, headingYaw, writer, botName, entityRuntimeID)
+              if err != nil {
+                  return err
+              }
+              runner := action.NewRunner(scenarioAction)
+              if err := runner.Start(ctx); err != nil {
+                  return err
+              }
+
+              for {
+                  select {
+                  case <-ctx.Done():
+                      return nil
+                  case <-ticker.C:
+                      tick := state.nextInputTick()
+                      if err := runner.Tick(ctx, action.TickContext{Tick: tick}); err != nil {
+                          return err
+                      }
+                      if err := writer.WritePacket(authInputPacket(state, tick)); err != nil {
+                          if ctx.Err() != nil {
+                              return nil
+                          }
+                          return err
+                      }
+                  }
+              }
+          }
+          '''
+          text = text[:start] + replacement
           tick.write_text(text)
           PY
           gofmt -w internal/bot/flight.go internal/bot/bot.go internal/bot/tick.go
@@ -135,7 +227,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: movement-bds-only-chunk-walk-input-telemetry-${{ github.run_id }}
+          name: movement-bds-only-chunk-walk-rewind-bootstrap-${{ github.run_id }}
           path: |
             bds-only-chunk-walk.log
             test-results.json
