@@ -64,7 +64,7 @@ jobs:
           go vet ./...
           go test ./...
 
-      - name: Patch exact tuple with tick one
+      - name: Patch exact tuple with telemetry
         working-directory: bot-src
         shell: bash
         run: |
@@ -85,6 +85,16 @@ jobs:
           new = "\t\t\tif samePublisher {\n"
           if old not in text:
               raise SystemExit("publisher scenario gate target not found")
+          text = text.replace(old, new, 1)
+          old = "\t\tif onlineState && cfg.Scenario == ScenarioChunkFly && !time.Now().Before(nextProgress) {\n"
+          new = "\t\tif onlineState && !time.Now().Before(nextProgress) {\n"
+          if old not in text:
+              raise SystemExit("progress scenario gate target not found")
+          text = text.replace(old, new, 1)
+          old = "\tgame := conn.GameData()\n\tstats.StartPosition = game.PlayerPosition\n"
+          new = "\tgame := conn.GameData()\n\tif err := out.Emit(\"movement_settings\", map[string]any{\"rewind_history_size\": game.PlayerMovementSettings.RewindHistorySize, \"server_authoritative_block_breaking\": game.PlayerMovementSettings.ServerAuthoritativeBlockBreaking, \"world_time\": game.Time}); err != nil {\n\t\treturn stageError(ExitRuntime, \"output\", err)\n\t}\n\tstats.StartPosition = game.PlayerPosition\n"
+          if old not in text:
+              raise SystemExit("game data telemetry target not found")
           bot.write_text(text.replace(old, new, 1))
 
           tick = Path("internal/bot/tick.go")
@@ -94,12 +104,10 @@ jobs:
           if old not in text:
               raise SystemExit("walk speed target not found")
           text = text.replace(old, new, 1)
-
           baseline = "\tflags.Set(packet.InputFlagBlockBreakingDelayEnabled)\n"
           if baseline not in text:
               raise SystemExit("baseline input flag target not found")
           text = text.replace(baseline, "", 1)
-
           state_ctor = "\treturn &playerState{\n\t\tposition:"
           if state_ctor not in text:
               raise SystemExit("player state constructor target not found")
@@ -127,7 +135,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: movement-bds-only-chunk-walk-exact-tick1-${{ github.run_id }}
+          name: movement-bds-only-chunk-walk-input-telemetry-${{ github.run_id }}
           path: |
             bds-only-chunk-walk.log
             test-results.json
