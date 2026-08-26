@@ -53,7 +53,7 @@ jobs:
           path: bot-src
           persist-credentials: false
 
-      - name: Patch authoritative traversal seed and reference input flags
+      - name: Patch authoritative traversal seed
         shell: bash
         run: |
           python3 - <<'PY'
@@ -71,15 +71,8 @@ jobs:
           if old not in text:
               raise SystemExit("publisher telemetry target not found")
           bot.write_text(text.replace(old, new, 1))
-
-          tick = Path("bot-src/internal/bot/tick.go")
-          text = tick.read_text()
-          old = "\tflags.Set(packet.InputFlagBlockBreakingDelayEnabled)\n"
-          if old not in text:
-              raise SystemExit("block-breaking-delay input flag target not found")
-          tick.write_text(text.replace(old, "", 1))
           PY
-          gofmt -w bot-src/internal/bot/bot.go bot-src/internal/bot/tick.go
+          gofmt -w bot-src/internal/bot/bot.go
 
       - name: Set up Go 1.25
         uses: actions/setup-go@v6
