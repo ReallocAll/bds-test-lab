@@ -14,7 +14,7 @@ from controller.run_test import now_iso, write_json
 
 # Rules that can be queried individually through the current BDS /gamerule
 # bool/int command forms. playerwaypoints is an enum-valued replacement for the
-# removed locatorbar rule and is deliberately measured separately.
+# deprecated locatorbar rule and is deliberately measured separately.
 QUERY_RULES = (
     "commandblockoutput",
     "commandblocksenabled",
@@ -56,6 +56,7 @@ QUERY_RULES = (
 )
 
 VALUE_RE = re.compile(r"(?:=|is(?: currently)? set to)\s*([A-Za-z0-9_.+-]+)\s*$", re.IGNORECASE)
+LIST_ENTRY_RE = re.compile(r"(?:^|,\s*)([A-Za-z][A-Za-z0-9]*)\s*=\s*([^,\r\n]+)", re.IGNORECASE)
 
 
 class GameruleDefaultProbe(SparkReleaseValidation):
@@ -94,6 +95,14 @@ class GameruleDefaultProbe(SparkReleaseValidation):
                 return match.group(1).lower()
         return None
 
+    @staticmethod
+    def parse_list_values(lines: list[str]) -> dict[str, str]:
+        values: dict[str, str] = {}
+        for line in lines:
+            for match in LIST_ENTRY_RE.finditer(line):
+                values[match.group(1).casefold()] = match.group(2).strip().lower()
+        return values
+
     def execute_probe(self) -> int:
         stage = "initialization"
         try:
@@ -107,27 +116,35 @@ class GameruleDefaultProbe(SparkReleaseValidation):
             stage = "gamerule-query"
             measured: dict[str, dict[str, object]] = {}
             all_rules = self.command_check("gamerule-list", "gamerule")
+            listed_values = self.parse_list_values(all_rules)
             for rule in QUERY_RULES:
                 lines = self.command_check(f"gamerule-{rule}", f"gamerule {rule}")
                 value = self.parse_value(rule, lines)
                 measured[rule] = {"value": value, "raw": lines[-8:]}
 
-            # locatorbar is removed in 26.30+. Keep its migration state separate
-            # from default-value measurement. playerwaypoints is enum-valued and
-            # cannot be queried with the bool/int single-rule command form.
-            measured["locatorbar"] = {"value": None, "state": "removed", "raw": []}
+            # Keep rename/type evolution separate from default-value inference.
+            # BDS 1.26.44.3 still exposes a deprecated locatorbar shadow in the
+            # full listing while playerwaypoints is the enum-valued replacement.
+            measured["locatorbar"] = {
+                "value": listed_values.get("locatorbar"),
+                "state": "deprecated-shadow",
+                "raw": all_rules[-40:],
+            }
             measured["playerwaypoints"] = {
-                "value": self.parse_value("playerwaypoints", all_rules),
+                "value": listed_values.get("playerwaypoints"),
                 "state": "enum-replacement",
                 "raw": all_rules[-40:],
             }
             self.result["gamerules"] = measured
             self.result["gamerule_list_raw"] = all_rules
+            self.result["gamerule_list_values"] = listed_values
             unresolved = [rule for rule in QUERY_RULES if measured[rule]["value"] is None]
             self.result["unresolved_queryable"] = unresolved
             write_json(self.result_path, self.result)
             if unresolved:
                 raise RuntimeError("could not parse queryable gamerule values: " + ", ".join(unresolved))
+            if measured["playerwaypoints"]["value"] is None:
+                raise RuntimeError("could not parse enum gamerule playerwaypoints from full gamerule listing")
 
             stage = "shutdown"
             self.shutdown()
