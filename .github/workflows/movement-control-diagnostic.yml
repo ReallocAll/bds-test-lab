@@ -56,7 +56,7 @@ jobs:
           go-version: "1.25.x"
           cache: false
 
-      - name: Patch pre-flight horizontal correction probe
+      - name: Patch settled pre-flight horizontal correction probe
         working-directory: bot-src
         shell: bash
         run: |
@@ -80,7 +80,7 @@ jobs:
 
           start = text.index("func runTickLoop(")
           replacement = r'''func runTickLoop(ctx context.Context, writer packetWriter, state *playerState, cfg Config, headingYaw float32, botName string, entityRuntimeID uint64) error {
-              if cfg.Scenario == ScenarioChunkWalk {
+              if cfg.Scenario == ScenarioChunkWalk || cfg.Scenario == ScenarioChunkFly {
                   timer := time.NewTimer(movementStartDelay)
                   select {
                   case <-ctx.Done():
@@ -93,11 +93,10 @@ jobs:
               }
 
               if cfg.Scenario == ScenarioChunkFly && !state.positionReadySnapshot() {
-                  // Diagnostic discriminator: configure the same movement tuple
-                  // as FlyAction, but send one coherent non-zero AuthInput before
-                  // RequestAbility/StartFlying. The reference client receives its
-                  // initial CorrectPlayerMovePrediction on this walking-style
-                  // first movement frame.
+                  // Match the reference client's sequencing exactly on the
+                  // remaining discriminator: wait for the post-spawn settle,
+                  // then send the first coherent horizontal AuthInput before
+                  // RequestAbility/StartFlying.
                   state.setFlightControl(mgl32.Vec2{0, 1}, chunkFlyStepPerTick, headingYaw, chunkFlyMinimumAltitude, chunkFlyVerticalStepPerTick)
                   tick := state.nextInputTick()
                   if err := writer.WritePacket(authInputPacket(state, tick)); err != nil {
@@ -192,7 +191,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: movement-bds-only-chunk-fly-preflight-probe-${{ github.run_id }}
+          name: movement-bds-only-chunk-fly-settled-preflight-probe-${{ github.run_id }}
           path: |
             bds-only-chunk-fly.log
             test-results.json
