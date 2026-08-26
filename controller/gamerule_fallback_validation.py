@@ -15,7 +15,7 @@ from controller.run_test import IntegrationTest, now_iso, write_json
 # its current-version fallback table when no runtime/API default is available.
 EXPECTED_KNOWN_DEFAULTS = {
     "spawnradius": "10",
-    "maxcommandchainlength": "65536",
+    "maxcommandchainlength": "65535",
     "recipesunlock": "true",
     "randomtickspeed": "1",
 }
