@@ -48,6 +48,11 @@ CURRENT_VANILLA_RULES = (
     "tntexplosiondropdecay",
 )
 
+# Bedrock's playerwaypoints command requires an enum argument (off/everyone),
+# so a no-argument console query cannot recover its fresh-world default. Keep
+# that default explicitly unknown instead of deriving it from syntax or docs.
+NON_QUERYABLE_DEFAULTS = {"playerwaypoints"}
+
 VALUE_RE = re.compile(r"(?:=|:)\s*(true|false|-?\d+(?:\.\d+)?)\s*$", re.IGNORECASE)
 
 
@@ -64,6 +69,7 @@ class GameRuleDefaultBaseline(IntegrationTest):
         super().__init__("linux")
         self.result["test_kind"] = "gamerule-default-baseline"
         self.result["gamerules"] = {}
+        self.result["default_unknown"] = []
         write_json(self.result_path, self.result)
 
     def execute_baseline(self) -> int:
@@ -76,13 +82,23 @@ class GameRuleDefaultBaseline(IntegrationTest):
 
             stage = "gamerule-query"
             values: dict[str, str] = {}
+            unknown: list[str] = []
             for rule in CURRENT_VANILLA_RULES:
+                if rule in NON_QUERYABLE_DEFAULTS:
+                    unknown.append(rule)
+                    print(f"GAMERULE_DEFAULT {rule}=unknown", flush=True)
+                    continue
                 output = self.command_check(f"gamerule-{rule}", f"gamerule {rule}")
                 value = parse_value(output)
                 values[rule] = value
                 print(f"GAMERULE_DEFAULT {rule}={value}", flush=True)
             self.result["gamerules"] = values
-            self.check("gamerule-default-count", "PASS", f"captured {len(values)} current vanilla gamerules")
+            self.result["default_unknown"] = unknown
+            self.check(
+                "gamerule-default-count",
+                "PASS",
+                f"captured {len(values)} queryable vanilla gamerules; {len(unknown)} explicitly unknown",
+            )
 
             stage = "unknown-rule"
             assert self.server is not None
