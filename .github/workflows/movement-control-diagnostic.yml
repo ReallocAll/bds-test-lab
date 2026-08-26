@@ -23,6 +23,10 @@ jobs:
   movement-control:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [current, no-block-delay, internal-update, no-block-delay-internal-update]
 
     steps:
       - name: Checkout test lab
@@ -64,28 +68,32 @@ jobs:
           go vet ./...
           go test ./...
 
-      - name: Patch correction-bootstrap movement probe
+      - name: Patch PlayerAuthInput flag variant
         working-directory: bot-src
         shell: bash
+        env:
+          VARIANT: ${{ matrix.variant }}
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          import re
+          import os
 
+          variant = os.environ["VARIANT"]
           path = Path("internal/bot/tick.go")
           text = path.read_text()
+          baseline = "\tflags.Set(packet.InputFlagBlockBreakingDelayEnabled)\n"
+          if baseline not in text:
+              raise SystemExit("BlockBreakingDelayEnabled baseline line not found")
 
-          pattern = r'''func \(s \*playerState\) acceptPublisherPosition\(position mgl32\.Vec3\) bool \{.*?\n\}\n\n'''
-          replacement = '''func (s *playerState) acceptPublisherPosition(position mgl32.Vec3) bool {\n\t// Diagnostic variant: publisher position is observability only. Require a\n\t// real server movement/correction packet before prediction becomes ready.\n\treturn false\n}\n\n'''
-          text, count = re.subn(pattern, replacement, text, count=1, flags=re.S)
-          if count != 1:
-              raise SystemExit(f"publisher seed replacement count={count}")
+          if variant in {"no-block-delay", "no-block-delay-internal-update"}:
+              text = text.replace(baseline, "", 1)
+          if variant in {"internal-update", "no-block-delay-internal-update"}:
+              anchor = "\tflags := protocol.NewInputFlags(packet.InputFlagCount)\n"
+              if anchor not in text:
+                  raise SystemExit("flags construction anchor not found")
+              text = text.replace(anchor, anchor + "\tflags.Set(packet.InputFlagInternalUpdate)\n", 1)
 
-          old = '''\tif cfg.Scenario == ScenarioChunkWalk || cfg.Scenario == ScenarioChunkFly {\n\t\ttimer := time.NewTimer(movementStartDelay)\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\tif !timer.Stop() {\n\t\t\t\t<-timer.C\n\t\t\t}\n\t\t\treturn nil\n\t\tcase <-timer.C:\n\t\t}\n\t}\n'''
-          new = '''\tif cfg.Scenario == ScenarioChunkFly {\n\t\t// A current protocol-2168 reference client receives its initial\n\t\t// CorrectPlayerMovePrediction only after its first non-zero movement\n\t\t// frame. Send one tiny walking probe from StartGame's placeholder state,\n\t\t// then return to idle while BDS supplies the authoritative position.\n\t\tstate.setMoveControl(mgl32.Vec2{0, 1}, chunkWalkStepPerTick, headingYaw)\n\t\tprobeTick := state.nextInputTick()\n\t\tif err := writer.WritePacket(authInputPacket(state, probeTick)); err != nil {\n\t\t\tif ctx.Err() != nil {\n\t\t\t\treturn nil\n\t\t\t}\n\t\t\treturn err\n\t\t}\n\t\tstate.clearMoveControl()\n\n\t\tsettleTicker := time.NewTicker(time.Second / 20)\n\t\tsettleTimer := time.NewTimer(movementStartDelay)\n\t\tsettling := true\n\t\tfor settling {\n\t\t\tselect {\n\t\t\tcase <-ctx.Done():\n\t\t\t\tsettleTicker.Stop()\n\t\t\t\tif !settleTimer.Stop() {\n\t\t\t\t\t<-settleTimer.C\n\t\t\t\t}\n\t\t\t\treturn nil\n\t\t\tcase <-settleTicker.C:\n\t\t\t\ttick := state.nextInputTick()\n\t\t\t\tif err := writer.WritePacket(authInputPacket(state, tick)); err != nil {\n\t\t\t\t\tsettleTicker.Stop()\n\t\t\t\t\tif !settleTimer.Stop() {\n\t\t\t\t\t\t<-settleTimer.C\n\t\t\t\t\t}\n\t\t\t\t\tif ctx.Err() != nil {\n\t\t\t\t\t\treturn nil\n\t\t\t\t\t}\n\t\t\t\t\treturn err\n\t\t\t\t}\n\t\t\tcase <-settleTimer.C:\n\t\t\t\tsettling = false\n\t\t\t}\n\t\t}\n\t\tsettleTicker.Stop()\n\t} else if cfg.Scenario == ScenarioChunkWalk {\n\t\ttimer := time.NewTimer(movementStartDelay)\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\tif !timer.Stop() {\n\t\t\t\t<-timer.C\n\t\t\t}\n\t\t\treturn nil\n\t\tcase <-timer.C:\n\t\t}\n\t}\n'''
-          if old not in text:
-              raise SystemExit("movement settle block not found")
-          path.write_text(text.replace(old, new, 1))
+          path.write_text(text)
           PY
           gofmt -w internal/bot/tick.go
           go vet ./...
@@ -100,17 +108,17 @@ jobs:
       - name: Install validation dependencies
         run: python -m pip install --disable-pip-version-check psutil
 
-      - name: Run BDS-only authoritative chunk-fly validation
+      - name: Run BDS-only authoritative chunk-walk validation
         shell: bash
-        run: python -m controller.movement_bds_only_validation --bot dist/bds-test-bot --scenario chunk-fly
+        run: python -m controller.movement_bds_only_validation --bot dist/bds-test-bot --scenario chunk-walk
 
       - name: Upload movement evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: movement-bds-only-chunk-fly-${{ github.run_id }}
+          name: movement-bds-only-chunk-walk-${{ matrix.variant }}-${{ github.run_id }}
           path: |
-            bds-only-chunk-fly.log
+            bds-only-chunk-walk.log
             test-results.json
             failure-diagnostics.txt
             bds.log
