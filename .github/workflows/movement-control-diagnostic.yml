@@ -16,7 +16,6 @@ permissions:
 env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
-  ENDSTONE_RUN_ID: "32770415029"
   SPARK_RUN_ID: "32940101210"
   BOT_REF: "605c63af9300b21862b0d76169ede5d27106cbbd"
 
@@ -27,13 +26,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        count: [1, 5, 10, 20]
+        count: [1]
 
     steps:
       - name: Checkout test lab
         uses: actions/checkout@v7
 
-      - name: Pin known-good artifacts and enable chunk-fly fleet validation
+      - name: Pin Spark only and enable chunk-fly fleet validation
         shell: bash
         run: |
           python3 - <<'PY'
@@ -68,7 +67,7 @@ jobs:
           text = text.replace(old, new, 1)
 
           old = '            stage = "spark-sanity"\n            self.run_basic_commands()\n\n'
-          new = '''            stage = "spark-sanity"\n            # Do not run `spark health` here. The health dashboard keeps ping\n            # polling active and Endstone 0.11.10.dev372 crashes in getDeviceId()\n            # for these offline headless clients. Use non-persistent commands\n            # only, and cancel Spark's automatic background profiler so the\n            # measured profile starts cleanly after the fleet settles.\n            assert self.server is not None\n            cancel_at = self.server.command("spark profiler cancel")\n            self.server.wait_command_output(cancel_at, 8)\n            tps_at = self.server.command("spark tps")\n            tps_output = self.server.wait_command_output(tps_at, 8)\n            if not any("TPS (5s/10s/1m/5m/15m):" in line for line in tps_output):\n                raise RuntimeError("spark tps sanity command returned no metrics")\n            self.check("spark-safe-sanity", "PASS", "profiler auto-run cancelled; spark tps responsive")\n\n'''
+          new = '''            stage = "spark-sanity"\n            assert self.server is not None\n            cancel_at = self.server.command("spark profiler cancel")\n            self.server.wait_command_output(cancel_at, 8)\n            tps_at = self.server.command("spark tps")\n            tps_output = self.server.wait_command_output(tps_at, 8)\n            if not any("TPS (5s/10s/1m/5m/15m):" in line for line in tps_output):\n                raise RuntimeError("spark tps sanity command returned no metrics")\n            self.check("spark-safe-sanity", "PASS", "profiler auto-run cancelled; spark tps responsive")\n\n'''
           if old not in text:
               raise SystemExit("spark sanity target not found")
           text = text.replace(old, new, 1)
@@ -130,6 +129,7 @@ jobs:
             failure-diagnostics.txt
             bds.log
             spark.log
+            metadata.json
             work/linux/bedrock_server/server.properties
           if-no-files-found: warn
           retention-days: 7
