@@ -26,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [current, no-block-delay, internal-update, no-block-delay-internal-update]
+        variant: [vertical-collision, input-vectors, vertical-collision-input-vectors]
 
     steps:
       - name: Checkout test lab
@@ -68,7 +68,7 @@ jobs:
           go vet ./...
           go test ./...
 
-      - name: Patch PlayerAuthInput flag variant
+      - name: Patch movement semantics variant
         working-directory: bot-src
         shell: bash
         env:
@@ -81,17 +81,24 @@ jobs:
           variant = os.environ["VARIANT"]
           path = Path("internal/bot/tick.go")
           text = path.read_text()
-          baseline = "\tflags.Set(packet.InputFlagBlockBreakingDelayEnabled)\n"
-          if baseline not in text:
-              raise SystemExit("BlockBreakingDelayEnabled baseline line not found")
 
-          if variant in {"no-block-delay", "no-block-delay-internal-update"}:
-              text = text.replace(baseline, "", 1)
-          if variant in {"internal-update", "no-block-delay-internal-update"}:
-              anchor = "\tflags := protocol.NewInputFlags(packet.InputFlagCount)\n"
+          if variant in {"vertical-collision", "vertical-collision-input-vectors"}:
+              anchor = "\tflags.Set(packet.InputFlagBlockBreakingDelayEnabled)\n"
               if anchor not in text:
-                  raise SystemExit("flags construction anchor not found")
-              text = text.replace(anchor, anchor + "\tflags.Set(packet.InputFlagInternalUpdate)\n", 1)
+                  raise SystemExit("baseline flag anchor not found")
+              text = text.replace(anchor, anchor + "\tflags.Set(packet.InputFlagVerticalCollision)\n", 1)
+
+          if variant in {"input-vectors", "vertical-collision-input-vectors"}:
+              old = '''\tmoveVector := snapshot.moveVector\n\trawMoveVector := mgl32.Vec2{}\n\tif lengthSquared := moveVector.LenSqr(); lengthSquared > 0 {\n\t\tmoveVector = moveVector.Mul(1 / float32(math.Sqrt(float64(lengthSquared))))\n\t\thorizontalDelta := float32(math.Hypot(float64(snapshot.delta[0]), float64(snapshot.delta[2])))\n\t\trawMoveVector = moveVector.Mul(horizontalDelta)\n\t}\n'''
+              new = '''\tmoveVector := snapshot.moveVector\n\tif lengthSquared := moveVector.LenSqr(); lengthSquared > 0 {\n\t\tmoveVector = moveVector.Mul(1 / float32(math.Sqrt(float64(lengthSquared))))\n\t}\n\trawMoveVector := moveVector\n\tanalogueMoveVector := moveVector\n'''
+              if old not in text:
+                  raise SystemExit("raw move vector block not found")
+              text = text.replace(old, new, 1)
+              old_field = "\t\tRawMoveVector:     rawMoveVector,\n"
+              new_field = "\t\tAnalogueMoveVector: analogueMoveVector,\n\t\tRawMoveVector:      rawMoveVector,\n"
+              if old_field not in text:
+                  raise SystemExit("raw move vector field not found")
+              text = text.replace(old_field, new_field, 1)
 
           path.write_text(text)
           PY
