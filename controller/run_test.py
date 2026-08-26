@@ -230,6 +230,11 @@ class IntegrationTest:
         target = plugin_dir / spark_binary.name
         shutil.copy2(spark_binary, target)
         self.check("spark-plugin-deployed", "PASS", str(target.relative_to(self.root)))
+        if self.platform == "windows":
+            allocation_shim = locate_one(spark_root, ["spark_allocation_shim.dll"])
+            shim_target = plugin_dir / allocation_shim.name
+            shutil.copy2(allocation_shim, shim_target)
+            self.check("spark-allocation-shim-deployed", "PASS", str(shim_target.relative_to(self.root)))
 
     def start_server(self) -> None:
         cmd = [sys.executable, "-m", "endstone", "--yes", "--server-folder", str(self.server_dir)]
