@@ -1,20 +1,21 @@
 # Latest BDS integration test
 
-- Lab commit: `54ff0eb752b593e55b30d71f35d715117af07578`
-- Lab Actions: [32881171769](https://github.com/ReallocAll/bds-test-lab/actions/runs/32881171769)
+- Lab commit: `83624f6660e221787e689fa59a1a7f15729f63d7`
+- Lab Actions: [32940768264](https://github.com/ReallocAll/bds-test-lab/actions/runs/32940768264)
 - State: **FAIL**
-- Spark SHA: `5e383ad43008d6ce8967bcc8fdcab363d399443c`
-- Endstone SHA: `bf772c28a02db73d3119a45f58c479207254795a`
-- Completed: `2026-08-25T18:31:53.444278Z`
+- Spark SHA: `63f96bc775cd3b694944d33b41b636c119364532`
+- Endstone SHA: `ad11276d1b9c0b7745acfdfefa7396169c2bcbc6`
+- Completed: `2026-08-26T07:13:16.222558Z`
 
 ## Platforms
 
 | Platform | Result | BDS | Shutdown | Crash replay | Soak | Execution | Allocation | Recovery |
 |---|---|---|---|---|---|---|---|---|
-| Windows | **FAIL** | `26.44` | `forced_after_failure` | `crashed_waiting_restart` | `30m` | [viewer](https://spark.lucko.me/I9MrA7QJad) |  |  |
+| Windows | **running** | `26.44` | `controlled_crash_for_recovery` | `PASS` | `30m` | [viewer](https://spark.lucko.me/ysx67BulD2) |  | [viewer](https://spark.lucko.me/8Mo3W953cl) |
 
-**Windows error:** `TimeoutError: Timed out after 90s waiting for Spark crash recovery replay`
-| Linux | **PASS** | `26.44` | `graceful` | `PASS` | `30m` | [viewer](https://spark.lucko.me/8UrqF95dup) | [viewer](https://spark.lucko.me/B0ztaSeThM) | [viewer](https://spark.lucko.me/A3qKCeSKED) |
+- windows soak RSS: start `None`, end `None`, peak `None`
+- windows soak threads: start `None`, end `None`, peak `None`
+| Linux | **running** | `26.44` | `controlled_crash_for_recovery` | `PASS` | `30m` | [viewer](https://spark.lucko.me/RjXEnAWm9a) | [viewer](https://spark.lucko.me/sUhRBgXFJp) | [viewer](https://spark.lucko.me/QvdhFgrZSi) |
 
-- linux soak RSS: start `833708032`, end `839983104`, peak `839983104`
-- linux soak threads: start `29`, end `30`, peak `30`
+- linux soak RSS: start `None`, end `None`, peak `None`
+- linux soak threads: start `None`, end `None`, peak `None`
