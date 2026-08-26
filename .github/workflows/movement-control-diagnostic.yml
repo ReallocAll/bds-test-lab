@@ -116,10 +116,6 @@ jobs:
           start = text.index("func runTickLoop(")
           replacement = r'''func runTickLoop(ctx context.Context, writer packetWriter, state *playerState, cfg Config, headingYaw float32, botName string, entityRuntimeID uint64) error {
               if cfg.Scenario == ScenarioChunkWalk {
-                  // Do not leave a 40-frame hole in the client prediction history.
-                  // First wait until the repeated publisher gives us the exact
-                  // server-owned spawn position, then fill the complete rewind
-                  // window with stationary PlayerAuthInput frames at 20 Hz.
                   positionDeadline := time.NewTimer(2 * time.Second)
                   positionPoll := time.NewTicker(10 * time.Millisecond)
                   for !state.positionReadySnapshot() {
@@ -130,7 +126,7 @@ jobs:
                           return nil
                       case <-positionDeadline.C:
                           positionPoll.Stop()
-                          return fmt.Errorf("publisher position not ready before rewind bootstrap")
+                          return context.DeadlineExceeded
                       case <-positionPoll.C:
                       }
                   }
