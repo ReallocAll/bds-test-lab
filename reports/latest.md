@@ -1,21 +1,21 @@
 # Latest BDS integration test
 
-- Lab commit: `e8e59d3622ef40b3e3ee35f64fad91cc4415d805`
-- Lab Actions: [33006203363](https://github.com/ReallocAll/bds-test-lab/actions/runs/33006203363)
+- Lab commit: `0e0c4f78f56dcbd98404e91a49352211505ffa3b`
+- Lab Actions: [33007068592](https://github.com/ReallocAll/bds-test-lab/actions/runs/33007068592)
 - State: **FAIL**
-- Spark SHA: `3190b9fe5ee1c8eb28a272e73df3c6dc9beee1ad`
+- Spark SHA: `bc280bf0a33c0ae3daedddf2739578b21082fff6`
 - Endstone SHA: `c76c814289ee3be8a7236389b6bdeb5728b154e4`
-- Completed: `2026-08-26T19:48:45.072200Z`
+- Completed: `2026-08-26T19:59:13.936310Z`
 
 ## Platforms
 
 | Platform | Result | BDS | Shutdown | Crash replay | Soak | Execution | Allocation | Recovery |
 |---|---|---|---|---|---|---|---|---|
-| Windows | **running** | `26.44` | `controlled_crash_for_recovery` | `PASS` | `30m` | [viewer](https://spark.lucko.me/dSq2Boj0dX) | [viewer](https://spark.lucko.me/nMhQvLnbkh) | [viewer](https://spark.lucko.me/OFm8xtjTR0) |
+| Windows | **running** | `26.44` | `controlled_crash_for_recovery` | `PASS` | `30m` | [viewer](https://spark.lucko.me/QGn6STByZD) | [viewer](https://spark.lucko.me/UoqChbsp8w) | [viewer](https://spark.lucko.me/odByneKnDb) |
 
 - windows soak RSS: start `None`, end `None`, peak `None`
 - windows soak threads: start `None`, end `None`, peak `None`
-| Linux | **running** | `26.44` | `controlled_crash_for_recovery` | `PASS` | `30m` | [viewer](https://spark.lucko.me/Q2Stt1a47J) | [viewer](https://spark.lucko.me/60zth1jGg0) | [viewer](https://spark.lucko.me/FWBeZdcUaJ) |
+| Linux | **running** | `26.44` | `controlled_crash_for_recovery` | `PASS` | `30m` | [viewer](https://spark.lucko.me/FglsoPUC7M) | [viewer](https://spark.lucko.me/1tokSx1828) | [viewer](https://spark.lucko.me/DjSXRE93Rq) |
 
 - linux soak RSS: start `None`, end `None`, peak `None`
 - linux soak threads: start `None`, end `None`, peak `None`
