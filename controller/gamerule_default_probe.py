@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 import pathlib
 import re
 import shutil
@@ -13,11 +12,10 @@ from controller.fleet_spark_validation import set_server_property
 from controller.release_validation import SparkReleaseValidation
 from controller.run_test import now_iso, write_json
 
-# Vanilla rules currently exposed by the Endstone/BDS Gamerule API. Keep this
-# probe separate from Spark's fallback table: its purpose is to measure a fresh
-# current Bedrock world so hard-coded fallback values can be checked against the
-# runtime rather than guessed.
-RULES = (
+# Rules that can be queried individually through the current BDS /gamerule
+# bool/int command forms. playerwaypoints is an enum-valued replacement for the
+# removed locatorbar rule and is deliberately measured separately.
+QUERY_RULES = (
     "commandblockoutput",
     "commandblocksenabled",
     "dodaylightcycle",
@@ -36,12 +34,10 @@ RULES = (
     "freezedamage",
     "functioncommandlimit",
     "keepinventory",
-    "locatorbar",
     "maxcommandchainlength",
     "mobgriefing",
     "naturalregeneration",
     "playerssleepingpercentage",
-    "playerwaypoints",
     "projectilescanbreakblocks",
     "pvp",
     "randomtickspeed",
@@ -91,14 +87,11 @@ class GameruleDefaultProbe(SparkReleaseValidation):
     @staticmethod
     def parse_value(rule: str, lines: list[str]) -> str | None:
         for line in reversed(lines):
-            lower = line.lower()
-            if rule not in lower:
+            if rule not in line.lower():
                 continue
             match = VALUE_RE.search(line.strip())
             if match:
                 return match.group(1).lower()
-        # BDS often emits just "<rule> = <value>" but retain raw output instead
-        # of guessing if a future version changes the text format.
         return None
 
     def execute_probe(self) -> int:
@@ -113,17 +106,28 @@ class GameruleDefaultProbe(SparkReleaseValidation):
 
             stage = "gamerule-query"
             measured: dict[str, dict[str, object]] = {}
-            for rule in RULES:
+            all_rules = self.command_check("gamerule-list", "gamerule")
+            for rule in QUERY_RULES:
                 lines = self.command_check(f"gamerule-{rule}", f"gamerule {rule}")
                 value = self.parse_value(rule, lines)
                 measured[rule] = {"value": value, "raw": lines[-8:]}
+
+            # locatorbar is removed in 26.30+. Keep its migration state separate
+            # from default-value measurement. playerwaypoints is enum-valued and
+            # cannot be queried with the bool/int single-rule command form.
+            measured["locatorbar"] = {"value": None, "state": "removed", "raw": []}
+            measured["playerwaypoints"] = {
+                "value": self.parse_value("playerwaypoints", all_rules),
+                "state": "enum-replacement",
+                "raw": all_rules[-40:],
+            }
             self.result["gamerules"] = measured
-            self.result["bds_version"] = self.read_bds_version()
-            unresolved = [rule for rule, row in measured.items() if row["value"] is None]
-            self.result["unresolved"] = unresolved
+            self.result["gamerule_list_raw"] = all_rules
+            unresolved = [rule for rule in QUERY_RULES if measured[rule]["value"] is None]
+            self.result["unresolved_queryable"] = unresolved
             write_json(self.result_path, self.result)
             if unresolved:
-                raise RuntimeError("could not parse gamerule values: " + ", ".join(unresolved))
+                raise RuntimeError("could not parse queryable gamerule values: " + ", ".join(unresolved))
 
             stage = "shutdown"
             self.shutdown()
