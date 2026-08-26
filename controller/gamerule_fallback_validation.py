@@ -215,11 +215,11 @@ class GameruleFallbackValidation(IntegrationTest):
             stage = "spark-sanity"
             self.run_basic_commands()
 
-            stage = "gamerule-metadata"
-            self.validate_gamerules()
-
             stage = "playerwaypoints-runtime-mapping"
             self.probe_player_waypoints_mapping()
+
+            stage = "gamerule-metadata"
+            self.validate_gamerules()
 
             stage = "shutdown"
             self.shutdown()
