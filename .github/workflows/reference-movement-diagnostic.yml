@@ -73,7 +73,21 @@ jobs:
           text = text.replace("movementBitset                                                       protocol.Bitset", "movementBitset                                                       protocol.InputFlags")
           text = text.replace("protocol.NewBitset(packet.PlayerAuthInputBitsetSize)", "protocol.NewInputFlags(packet.InputFlagCount)")
           text = text.replace("\t\tBlockActions:      a.blockActions(),\n", "\t\tBlockActions:      protocol.Option(a.blockActions()),\n")
+          text = text.replace(
+              "// SendMovement sends movement to the server.\nfunc (a *Actor) SendMovement() {\n",
+              "// safeMoveVector preserves an idle zero vector instead of normalising it to NaN.\nfunc safeMoveVector(v mgl32.Vec2) mgl32.Vec2 {\n\tif v.LenSqr() == 0 {\n\t\treturn mgl32.Vec2{}\n\t}\n\treturn v.Normalize()\n}\n\n// SendMovement sends movement to the server.\nfunc (a *Actor) SendMovement() {\n",
+              1,
+          )
+          text = text.replace("\t\tMoveVector:        moveVector.Normalize(),\n", "\t\tMoveVector:        safeMoveVector(moveVector),\n", 1)
           movement.write_text(text)
+
+          correction = Path("gotestbds/bot/handler_correct_player_move_prediction.go")
+          text = correction.read_text()
+          old = '''\tif b != nil && b.logger != nil {\n\t\tb.logger.Warn("mismatched movement", slog.String("src", "CorrectPlayerMovePrediction"))\n\t}\n\tcorrect := p.(*packet.CorrectPlayerMovePrediction)\n'''
+          new = '''\tcorrect := p.(*packet.CorrectPlayerMovePrediction)\n\tif b != nil && b.logger != nil {\n\t\tb.logger.Warn("mismatched movement",\n\t\t\tslog.String("src", "CorrectPlayerMovePrediction"),\n\t\t\tslog.Uint64("tick", correct.Tick),\n\t\t\tslog.Any("position", correct.Position),\n\t\t\tslog.Any("delta", correct.Delta),\n\t\t\tslog.Uint64("client_tick", a.CurrentTick()),\n\t\t\tslog.Any("client_feet", a.Position()),\n\t\t)\n\t}\n'''
+          if old not in text:
+              raise SystemExit("correction logging target not found")
+          correction.write_text(text.replace(old, new, 1))
 
           level = Path("gotestbds/bot/handler_level_chunk.go")
           text = level.read_text()
@@ -91,7 +105,7 @@ jobs:
               raise SystemExit("subchunk compatibility target not found")
           sub.write_text(text.replace(old, new, 1))
           PY
-          gofmt -w gotestbds/internal/unsafe.go gotestbds/actor/config.go gotestbds/actor/movement.go gotestbds/bot/handler_level_chunk.go gotestbds/bot/handler_subchunk.go
+          gofmt -w gotestbds/internal/unsafe.go gotestbds/actor/config.go gotestbds/actor/movement.go gotestbds/bot/handler_correct_player_move_prediction.go gotestbds/bot/handler_level_chunk.go gotestbds/bot/handler_subchunk.go
           go mod tidy
           go build -trimpath -o ../reference-client .
 
