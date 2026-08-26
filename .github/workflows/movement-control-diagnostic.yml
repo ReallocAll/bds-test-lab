@@ -23,10 +23,6 @@ jobs:
   movement-control:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        variant: [vertical-collision, input-vectors, vertical-collision-input-vectors]
 
     steps:
       - name: Checkout test lab
@@ -68,41 +64,21 @@ jobs:
           go vet ./...
           go test ./...
 
-      - name: Patch movement semantics variant
+      - name: Patch publisher eye seed
         working-directory: bot-src
         shell: bash
-        env:
-          VARIANT: ${{ matrix.variant }}
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          import os
-
-          variant = os.environ["VARIANT"]
-          path = Path("internal/bot/tick.go")
+          path = Path("internal/bot/flight.go")
           text = path.read_text()
-
-          if variant in {"vertical-collision", "vertical-collision-input-vectors"}:
-              anchor = "\tflags.Set(packet.InputFlagBlockBreakingDelayEnabled)\n"
-              if anchor not in text:
-                  raise SystemExit("baseline flag anchor not found")
-              text = text.replace(anchor, anchor + "\tflags.Set(packet.InputFlagVerticalCollision)\n", 1)
-
-          if variant in {"input-vectors", "vertical-collision-input-vectors"}:
-              old = '''\tmoveVector := snapshot.moveVector\n\trawMoveVector := mgl32.Vec2{}\n\tif lengthSquared := moveVector.LenSqr(); lengthSquared > 0 {\n\t\tmoveVector = moveVector.Mul(1 / float32(math.Sqrt(float64(lengthSquared))))\n\t\thorizontalDelta := float32(math.Hypot(float64(snapshot.delta[0]), float64(snapshot.delta[2])))\n\t\trawMoveVector = moveVector.Mul(horizontalDelta)\n\t}\n'''
-              new = '''\tmoveVector := snapshot.moveVector\n\tif lengthSquared := moveVector.LenSqr(); lengthSquared > 0 {\n\t\tmoveVector = moveVector.Mul(1 / float32(math.Sqrt(float64(lengthSquared))))\n\t}\n\trawMoveVector := moveVector\n\tanalogueMoveVector := moveVector\n'''
-              if old not in text:
-                  raise SystemExit("raw move vector block not found")
-              text = text.replace(old, new, 1)
-              old_field = "\t\tRawMoveVector:     rawMoveVector,\n"
-              new_field = "\t\tAnalogueMoveVector: analogueMoveVector,\n\t\tRawMoveVector:      rawMoveVector,\n"
-              if old_field not in text:
-                  raise SystemExit("raw move vector field not found")
-              text = text.replace(old_field, new_field, 1)
-
-          path.write_text(text)
+          old = "\t\tfloat32(position[1]) + playerEyeHeight,\n"
+          new = "\t\tfloat32(position[1]) + playerEyeHeight - 1,\n"
+          if old not in text:
+              raise SystemExit("publisher Y conversion not found")
+          path.write_text(text.replace(old, new, 1))
           PY
-          gofmt -w internal/bot/tick.go
+          gofmt -w internal/bot/flight.go
           go vet ./...
           mkdir -p ../dist
           go build -trimpath -o ../dist/bds-test-bot ./cmd/bds-test-bot
@@ -115,17 +91,17 @@ jobs:
       - name: Install validation dependencies
         run: python -m pip install --disable-pip-version-check psutil
 
-      - name: Run BDS-only authoritative chunk-walk validation
+      - name: Run BDS-only authoritative chunk-fly validation
         shell: bash
-        run: python -m controller.movement_bds_only_validation --bot dist/bds-test-bot --scenario chunk-walk
+        run: python -m controller.movement_bds_only_validation --bot dist/bds-test-bot --scenario chunk-fly
 
       - name: Upload movement evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: movement-bds-only-chunk-walk-${{ matrix.variant }}-${{ github.run_id }}
+          name: movement-bds-only-chunk-fly-corrected-publisher-${{ github.run_id }}
           path: |
-            bds-only-chunk-walk.log
+            bds-only-chunk-fly.log
             test-results.json
             failure-diagnostics.txt
             bds.log
