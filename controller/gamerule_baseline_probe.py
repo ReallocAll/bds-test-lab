@@ -5,9 +5,11 @@ import json
 import pathlib
 import traceback
 
+import providers.artifact_provider as artifact_provider
 from controller.release_validation import SparkReleaseValidation
 from controller.run_test import now_iso, write_json
 
+ENDSTONE_SHA = "27cc2e04d843bd70f089b0814ddba3054d4c55ef"
 RULES = [
     "commandblockoutput", "commandblocksenabled", "dodaylightcycle", "doentitydrops", "dofiretick",
     "doimmediaterespawn", "doinsomnia", "dolimitedcrafting", "domobloot", "domobspawning", "dotiledrops",
@@ -25,6 +27,20 @@ class GameruleBaselineProbe(SparkReleaseValidation):
         super().__init__("linux", 30, pathlib.Path("/bin/true"))
         self.result.update({"test_kind": "temporary-gamerule-baseline-probe", "gamerules": {}})
         write_json(self.result_path, self.result)
+
+    def install_artifacts(self) -> None:
+        original_discover = artifact_provider.discover
+
+        def pinned_discover(component: str, platform_name: str, expected_sha: str | None = None):
+            if component == "endstone":
+                return original_discover(component, platform_name, expected_sha=ENDSTONE_SHA)
+            return original_discover(component, platform_name, expected_sha=expected_sha)
+
+        artifact_provider.discover = pinned_discover
+        try:
+            super().install_artifacts()
+        finally:
+            artifact_provider.discover = original_discover
 
     def execute_probe(self) -> int:
         stage = "initialization"
