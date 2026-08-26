@@ -1,21 +1,20 @@
 # Latest BDS integration test
 
-- Lab commit: `ac0ff178eade6cf8e9c404cd6c799f0beeb4fb13`
-- Lab Actions: [33008017648](https://github.com/ReallocAll/bds-test-lab/actions/runs/33008017648)
+- Lab commit: `53c5ebfe954ba3d46ce572030a4df2350e6eb101`
+- Lab Actions: [33008818921](https://github.com/ReallocAll/bds-test-lab/actions/runs/33008818921)
 - State: **FAIL**
 - Spark SHA: `bc280bf0a33c0ae3daedddf2739578b21082fff6`
 - Endstone SHA: `c76c814289ee3be8a7236389b6bdeb5728b154e4`
-- Completed: `2026-08-26T20:08:03.146026Z`
+- Completed: `2026-08-26T20:38:28.328759Z`
 
 ## Platforms
 
 | Platform | Result | BDS | Shutdown | Crash replay | Soak | Execution | Allocation | Recovery |
 |---|---|---|---|---|---|---|---|---|
-| Windows | **running** | `26.44` | `controlled_crash_for_recovery` | `PASS` | `30m` | [viewer](https://spark.lucko.me/IE79IwBXpj) | [viewer](https://spark.lucko.me/J7nwH2fJM9) | [viewer](https://spark.lucko.me/PYK37cBngi) |
+| Windows | **running** | `26.44` | `controlled_crash_for_recovery` | `PASS` | `30m` | [viewer](https://spark.lucko.me/MUIWeHVWQ3) | [viewer](https://spark.lucko.me/sUge7YGKDO) | [viewer](https://spark.lucko.me/ZAkt5ii8zX) |
 
 - windows soak RSS: start `None`, end `None`, peak `None`
 - windows soak threads: start `None`, end `None`, peak `None`
-| Linux | **running** | `26.44` | `controlled_crash_for_recovery` | `PASS` | `30m` | [viewer](https://spark.lucko.me/jN7XT2RQfu) | [viewer](https://spark.lucko.me/BgZjKYFHJ1) | [viewer](https://spark.lucko.me/VPwW30zUUf) |
+| Linux | **FAIL** | `26.44` | `forced_after_failure` | `crashed_waiting_restart` | `30m` | [viewer](https://spark.lucko.me/TUlJnNa1hb) | [viewer](https://spark.lucko.me/fJGMRKW3Sd) |  |
 
-- linux soak RSS: start `None`, end `None`, peak `None`
-- linux soak threads: start `None`, end `None`, peak `None`
+**Linux error:** `TimeoutError: Timed out after 90s waiting for Spark crash recovery replay`
