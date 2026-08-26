@@ -1,0 +1,63 @@
+name: Land Correction Replay
+
+on:
+  push:
+    branches: [test/chunk-fly-spark]
+    paths:
+      - ".github/workflows/land-correction-replay.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  EXPECTED_BOT_HEAD: "605c63af9300b21862b0d76169ede5d27106cbbd"
+
+jobs:
+  land:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout test lab
+        uses: actions/checkout@v7
+
+      - name: Checkout bot PR branch
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/bds-test-bot
+          ref: feat/chunk-fly-scenario
+          path: bot-src
+          token: ${{ secrets.REPO_PAT }}
+          fetch-depth: 0
+
+      - name: Verify exact production head
+        working-directory: bot-src
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_BOT_HEAD"
+
+      - name: Apply validated correction rewind/replay
+        run: python controller/patch_bot_correction_replay.py
+
+      - name: Verify full Go tree
+        working-directory: bot-src
+        shell: bash
+        run: |
+          set -euo pipefail
+          gofmt -w internal/bot/tick.go internal/bot/flight_movement.go internal/bot/bot.go internal/bot/tick_test.go
+          go mod download
+          go vet ./...
+          go test ./...
+
+      - name: Commit and push
+        working-directory: bot-src
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "ReallocAll"
+          git config user.email "63277109+ReallocAll@users.noreply.github.com"
+          git add internal/bot/tick.go internal/bot/flight_movement.go internal/bot/bot.go internal/bot/tick_test.go
+          git diff --cached --check
+          git commit -m "fix: replay movement after server corrections"
+          git push origin HEAD:feat/chunk-fly-scenario
