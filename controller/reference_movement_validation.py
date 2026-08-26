@@ -25,6 +25,7 @@ class ReferenceMovementValidation(MovementBDSOnlyValidation):
                 "test_kind": "bds-only-reference-client-movement",
                 "reference_commit": "5fe6b762fe3665caa980a2a25be1ede26e5793fc",
                 "reference_log": self.reference_log.name,
+                "raw_input_commands_sent": 0,
             }
         )
         self._write_results()
@@ -68,36 +69,32 @@ class ReferenceMovementValidation(MovementBDSOnlyValidation):
         assert self.server is not None
         assert self.reference_process is not None
 
-        self.server.command("fill -16 99 -16 32 99 16 stone")
-        time.sleep(1.0)
-        self.server.command("tp TestBot 0 100 0")
+        # Avoid pathfinding and server-side teleport state entirely.  The point
+        # of this control is only to prove that the known headless client can
+        # make BDS accept PlayerAuthInput movement.  Repeated moveRawInput
+        # instructions feed one forward input into successive client ticks.
         time.sleep(5.0)
-        if self.reference_process.poll() is not None:
-            raise RuntimeError(f"reference client exited after teleport with code {self.reference_process.returncode}")
-
         before = self.query_position()
-        action = {
-            "action": "navigateToBlock",
-            "parameters": {"pos": [12, 100, 0]},
-            "id": "diag-nav",
-            "timeoutMs": 30000,
-        }
-        message = "[RUN_ACTION]" + json.dumps(action, separators=(",", ":"))
-        rawtext = json.dumps({"rawtext": [{"text": message}]}, separators=(",", ":"))
-        self.server.command(f"tellraw TestBot {rawtext}")
-
-        deadline = time.monotonic() + 25
-        after = before
-        while time.monotonic() < deadline:
+        commands = 120
+        for index in range(commands):
             if self.reference_process.poll() is not None:
-                raise RuntimeError(f"reference client exited during navigation with code {self.reference_process.returncode}")
+                raise RuntimeError(f"reference client exited during raw movement with code {self.reference_process.returncode}")
             if not self.server.is_alive():
-                raise RuntimeError("BDS exited during reference navigation")
-            time.sleep(2.0)
-            after = self.query_position()
-            if math.hypot(after[0] - before[0], after[2] - before[2]) > 8.0:
-                break
+                raise RuntimeError("BDS exited during reference raw movement")
+            action = {
+                "action": "moveRawInput",
+                "parameters": {"forward": True},
+                "id": f"diag-move-{index:03d}",
+                "timeoutMs": 2000,
+            }
+            message = "[RUN_ACTION]" + json.dumps(action, separators=(",", ":"))
+            rawtext = json.dumps({"rawtext": [{"text": message}]}, separators=(",", ":"))
+            self.server.command(f"tellraw TestBot {rawtext}")
+            self.result["raw_input_commands_sent"] = index + 1
+            time.sleep(0.06)
 
+        time.sleep(2.0)
+        after = self.query_position()
         displacement = math.hypot(after[0] - before[0], after[2] - before[2])
         self.result["server_position_before"] = before
         self.result["server_position_after"] = after
@@ -105,7 +102,8 @@ class ReferenceMovementValidation(MovementBDSOnlyValidation):
         self._write_results()
         if displacement <= 8.0:
             raise RuntimeError(
-                f"reference client did not move authoritatively: before={before}, after={after}, horizontal={displacement:.3f}"
+                f"reference client did not move authoritatively after {commands} raw inputs: "
+                f"before={before}, after={after}, horizontal={displacement:.3f}"
             )
         self.check(
             "reference-server-authoritative-movement",
@@ -113,6 +111,7 @@ class ReferenceMovementValidation(MovementBDSOnlyValidation):
             f"go-test-bds querytarget horizontal displacement={displacement:.3f}",
             before=before,
             after=after,
+            raw_input_commands_sent=commands,
         )
 
     def stop_fleet(self) -> None:
