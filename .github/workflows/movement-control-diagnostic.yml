@@ -64,7 +64,7 @@ jobs:
           go vet ./...
           go test ./...
 
-      - name: Patch prepare and correction coordinate convention
+      - name: Patch current headless movement tuple
         working-directory: bot-src
         shell: bash
         run: |
@@ -74,19 +74,13 @@ jobs:
           flight = Path("internal/bot/flight.go")
           text = flight.read_text()
           old = "\t\tfloat32(position[1]) + playerEyeHeight,\n"
-          new = "\t\tfloat32(position[1]) + playerEyeHeight + 0.62,\n"
+          new = "\t\tfloat32(position[1]) + playerEyeHeight - 1,\n"
           if old not in text:
               raise SystemExit("publisher Y conversion target not found")
           flight.write_text(text.replace(old, new, 1))
 
           bot = Path("internal/bot/bot.go")
           text = bot.read_text()
-          old = '"github.com/sandertv/gophertunnel/minecraft/protocol/login"\n'
-          new = '"github.com/go-gl/mathgl/mgl32"\n\t"github.com/sandertv/gophertunnel/minecraft/protocol"\n\t"github.com/sandertv/gophertunnel/minecraft/protocol/login"\n'
-          if old not in text:
-              raise SystemExit("imports target not found")
-          text = text.replace(old, new, 1)
-
           old = "\t\t\tif cfg.Scenario == ScenarioChunkFly && samePublisher {\n"
           new = "\t\t\tif samePublisher {\n"
           if old not in text:
@@ -99,19 +93,30 @@ jobs:
           text = text.replace(old, new, 1)
 
           marker = '''\tif err := out.Emit("spawned", map[string]any{\n\t\t"x": game.PlayerPosition[0], "y": game.PlayerPosition[1], "z": game.PlayerPosition[2],\n\t}); err != nil {\n\t\treturn stageError(ExitRuntime, "output", err)\n\t}\n\n'''
-          prepare = marker + '''\tfor _, pk := range []packet.Packet{\n\t\t&packet.ServerBoundLoadingScreen{Type: packet.LoadingScreenTypeStart},\n\t\t&packet.Interact{ActionType: packet.InteractActionMouseOverEntity},\n\t\t&packet.ServerBoundLoadingScreen{Type: packet.LoadingScreenTypeEnd},\n\t\t&packet.PlayerAction{EntityRuntimeID: game.EntityRuntimeID, ActionType: protocol.PlayerActionRespawn, BlockFace: -1},\n\t\t&packet.Interact{ActionType: packet.InteractActionMouseOverEntity},\n\t\t&packet.ClientCameraAimAssist{Action: packet.ClientCameraAimAssistActionClear},\n\t} {\n\t\tif err := conn.WritePacket(pk); err != nil {\n\t\t\treturn stageError(ExitRuntime, "prepare", err)\n\t\t}\n\t}\n\tif err := out.Emit("client_prepared", map[string]any{"sequence": "go-test-bds"}); err != nil {\n\t\treturn stageError(ExitRuntime, "output", err)\n\t}\n\n'''
+          prepare = marker + '''\t// Match the current working 2026 headless client: finish the loading\n\t// screen explicitly before beginning the auth-input stream.\n\tif err := conn.WritePacket(&packet.ServerBoundLoadingScreen{Type: packet.LoadingScreenTypeStart}); err != nil {\n\t\treturn stageError(ExitRuntime, "loading-screen-start", err)\n\t}\n\tloadingTimer := time.NewTimer(140 * time.Millisecond)\n\tselect {\n\tcase <-ctx.Done():\n\t\tloadingTimer.Stop()\n\t\treturn nil\n\tcase <-loadingTimer.C:\n\t}\n\tif err := conn.WritePacket(&packet.ServerBoundLoadingScreen{Type: packet.LoadingScreenTypeEnd}); err != nil {\n\t\treturn stageError(ExitRuntime, "loading-screen-end", err)\n\t}\n\tif err := out.Emit("client_prepared", map[string]any{"sequence": "loading-screen-140ms"}); err != nil {\n\t\treturn stageError(ExitRuntime, "output", err)\n\t}\n\n'''
           if marker not in text:
-              raise SystemExit("prepare target not found")
-          text = text.replace(marker, prepare, 1)
+              raise SystemExit("loading screen insertion target not found")
+          bot.write_text(text.replace(marker, prepare, 1))
 
-          old = '''\t\tcase *packet.CorrectPlayerMovePrediction:\n\t\t\tif p.PredictionType == packet.PredictionTypePlayer {\n\t\t\t\tstate.correct(p.Position, p.Rotation[0], p.Rotation[1], p.Rotation[1])\n\t\t\t\tstate.syncServerTick(p.Tick)\n\t\t\t}\n'''
-          new = '''\t\tcase *packet.CorrectPlayerMovePrediction:\n\t\t\tif p.PredictionType == packet.PredictionTypePlayer {\n\t\t\t\tif err := out.Emit("server_correction", map[string]any{\n\t\t\t\t\t"position": []float32{p.Position[0], p.Position[1], p.Position[2]},\n\t\t\t\t\t"delta": []float32{p.Delta[0], p.Delta[1], p.Delta[2]},\n\t\t\t\t\t"on_ground": p.OnGround,\n\t\t\t\t\t"tick": p.Tick,\n\t\t\t\t}); err != nil {\n\t\t\t\t\treturn stageError(ExitRuntime, "output", err)\n\t\t\t\t}\n\t\t\t\t// BDS 1.26.44.3 returns entity/feet coordinates here, while\n\t\t\t\t// PlayerAuthInput requires the eye/wire position. Preserve the\n\t\t\t\t// wire-space state used by authInputPacket across corrections.\n\t\t\t\twirePosition := p.Position.Add(mgl32.Vec3{0, 1.62, 0})\n\t\t\t\tstate.correct(wirePosition, p.Rotation[0], p.Rotation[1], p.Rotation[1])\n\t\t\t\tstate.syncServerTick(p.Tick)\n\t\t\t}\n'''
+          tick = Path("internal/bot/tick.go")
+          text = tick.read_text()
+          old = "const chunkWalkStepPerTick = float32(0.18)\n"
+          new = "const chunkWalkStepPerTick = float32(4.317 / 20)\n"
           if old not in text:
-              raise SystemExit("correction handler target not found")
+              raise SystemExit("walk speed target not found")
           text = text.replace(old, new, 1)
-          bot.write_text(text)
+
+          old = "\tflags.Set(packet.InputFlagBlockBreakingDelayEnabled)\n"
+          new = "\tflags.Set(packet.InputFlagBlockBreakingDelayEnabled)\n\tif snapshot.moveVector != (mgl32.Vec2{}) && !snapshot.flightRequested {\n\t\tflags.Set(packet.InputFlagVerticalCollision)\n\t\tsnapshot.delta[1] = -0.08 * 0.98\n\t}\n"
+          if old not in text:
+              raise SystemExit("input flags target not found")
+          text = text.replace(old, new, 1)
+
+          text = text.replace("\t\tInputMode:         packet.InputModeTouch,\n", "\t\tInputMode:         packet.InputModeMouse,\n", 1)
+          text = text.replace("\t\tPlayMode:          packet.PlayModeNormal,\n", "\t\tPlayMode:          packet.PlayModeScreen,\n", 1)
+          tick.write_text(text)
           PY
-          gofmt -w internal/bot/flight.go internal/bot/bot.go
+          gofmt -w internal/bot/flight.go internal/bot/bot.go internal/bot/tick.go
           go vet ./...
           mkdir -p ../dist
           go build -trimpath -o ../dist/bds-test-bot ./cmd/bds-test-bot
@@ -132,7 +137,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: movement-bds-only-chunk-walk-correction-wire-space-${{ github.run_id }}
+          name: movement-bds-only-chunk-walk-current-headless-${{ github.run_id }}
           path: |
             bds-only-chunk-walk.log
             test-results.json
