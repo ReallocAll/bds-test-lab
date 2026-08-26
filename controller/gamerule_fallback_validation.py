@@ -13,7 +13,7 @@ from controller.run_test import IntegrationTest, now_iso, write_json
 
 EXPECTED_DEFAULTS = {
     "spawnradius": "10",
-    "maxcommandchainlength": "65535",
+    "maxcommandchainlength": "65536",
     "recipesunlock": "true",
     "randomtickspeed": "1",
 }
@@ -101,7 +101,7 @@ class GameruleFallbackValidation(IntegrationTest):
             self.check(
                 "gamerule-current-default",
                 "PASS",
-                name=name,
+                rule=name,
                 expected=expected,
                 actual=actual["default"],
             )
@@ -117,8 +117,8 @@ class GameruleFallbackValidation(IntegrationTest):
             self.check(
                 "gamerule-default-unknown",
                 "PASS",
-                name=name,
-                detail="default field omitted rather than guessed",
+                "default field omitted rather than guessed",
+                rule=name,
             )
 
         self.check(
@@ -161,11 +161,21 @@ class GameruleFallbackValidation(IntegrationTest):
             self.result["error_summary"] = f"{type(exc).__name__}: {exc}"
             self.result["completed_at"] = now_iso()
             write_json(self.result_path, self.result)
+            diagnostic = traceback.format_exc()
             traceback.print_exc()
             try:
-                self.shutdown_after_failure()
+                if self.server is not None:
+                    if self.server.is_alive():
+                        self.server.force_kill_tree()
+                        self.result["shutdown_status"] = "forced_after_failure"
+                    self.server.close()
             except Exception:
-                traceback.print_exc()
+                diagnostic += "\n\nCleanup failure:\n" + traceback.format_exc()
+            last_lines = self.server.snapshot()[-300:] if self.server is not None else []
+            self.diagnostics.write_text(
+                diagnostic + "\n\nLast BDS log lines:\n" + "\n".join(last_lines), encoding="utf-8"
+            )
+            write_json(self.result_path, self.result)
             return 1
         finally:
             self.capture.stop()
