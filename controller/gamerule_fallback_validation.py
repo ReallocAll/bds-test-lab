@@ -73,6 +73,7 @@ class GameruleFallbackValidation(IntegrationTest):
                 "test_kind": "spark-gamerule-default-fallback-real-bds",
                 "spark_sha": os.environ.get("EXPECTED_SPARK_SHA", ""),
                 "gamerules": {},
+                "playerwaypoints_runtime_mapping": {},
             }
         )
         write_json(self.result_path, self.result)
@@ -92,6 +93,52 @@ class GameruleFallbackValidation(IntegrationTest):
                 raise RuntimeError("BDS exited during gamerule health capture")
             time.sleep(0.25)
         raise RuntimeError("timed out waiting for locally captured Spark health payload")
+
+    @staticmethod
+    def single_world_value(rules: dict[str, dict[str, Any]], name: str) -> str:
+        actual = rules.get(name)
+        if actual is None:
+            raise RuntimeError(f"expected gamerule {name!r} is absent from Spark metadata")
+        values = set(actual["world_values"].values())
+        if len(values) != 1:
+            raise RuntimeError(f"expected one effective value for {name!r}, got {sorted(values)!r}")
+        return next(iter(values))
+
+    def probe_player_waypoints_mapping(self) -> None:
+        assert self.server is not None
+        mapping: dict[str, str] = {}
+        for semantic_value in ("off", "everyone"):
+            output = self.command_check(
+                f"playerwaypoints-set-{semantic_value}",
+                f"gamerule playerwaypoints {semantic_value}",
+            )
+            joined = "\n".join(output).casefold()
+            if any(marker in joined for marker in ("syntax error", "invalid", "cannot set", "failed")):
+                raise RuntimeError(
+                    f"BDS rejected playerwaypoints={semantic_value}: " + " | ".join(output[-20:])
+                )
+            time.sleep(1.0)
+            raw_value = self.single_world_value(decode_gamerules(self.capture_health()), "playerwaypoints")
+            try:
+                int(raw_value)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"Endstone runtime playerwaypoints value is not an integer after {semantic_value}: {raw_value!r}"
+                ) from exc
+            mapping[semantic_value] = raw_value
+            self.check(
+                "playerwaypoints-runtime-mapping",
+                "PASS",
+                semantic=semantic_value,
+                runtime_value=raw_value,
+            )
+
+        if mapping["off"] == mapping["everyone"]:
+            raise RuntimeError(
+                "playerwaypoints off/everyone resolved to the same Endstone runtime integer: " + mapping["off"]
+            )
+        self.result["playerwaypoints_runtime_mapping"] = mapping
+        write_json(self.result_path, self.result)
 
     def validate_gamerules(self) -> None:
         rules = decode_gamerules(self.capture_health())
@@ -170,6 +217,9 @@ class GameruleFallbackValidation(IntegrationTest):
 
             stage = "gamerule-metadata"
             self.validate_gamerules()
+
+            stage = "playerwaypoints-runtime-mapping"
+            self.probe_player_waypoints_mapping()
 
             stage = "shutdown"
             self.shutdown()
