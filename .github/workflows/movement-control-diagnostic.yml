@@ -22,7 +22,7 @@ env:
 jobs:
   movement-control:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout test lab
@@ -48,7 +48,8 @@ jobs:
           repository: ReallocAll/bds-test-bot
           ref: ${{ env.BOT_REF }}
           path: bot-src
-          persist-credentials: false
+          token: ${{ secrets.REPO_PAT }}
+          persist-credentials: true
 
       - name: Set up Go 1.25
         uses: actions/setup-go@v6
@@ -56,18 +57,12 @@ jobs:
           go-version: "1.25.x"
           cache: false
 
-      - name: Validate exact bot baseline
+      - name: Patch validated production movement tuple
         working-directory: bot-src
         shell: bash
         run: |
-          go mod download
-          go vet ./...
-          go test ./...
-
-      - name: Patch current headless movement tuple
-        working-directory: bot-src
-        shell: bash
-        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BOT_REF"
           python3 - <<'PY'
           from pathlib import Path
 
@@ -82,18 +77,18 @@ jobs:
           bot = Path("internal/bot/bot.go")
           text = bot.read_text()
           old = "\t\t\tif cfg.Scenario == ScenarioChunkFly && samePublisher {\n"
-          new = "\t\t\tif samePublisher {\n"
+          new = "\t\t\tif (cfg.Scenario == ScenarioChunkWalk || cfg.Scenario == ScenarioChunkFly) && samePublisher {\n"
           if old not in text:
               raise SystemExit("publisher scenario gate target not found")
           text = text.replace(old, new, 1)
           old = "\t\tif onlineState && cfg.Scenario == ScenarioChunkFly && !time.Now().Before(nextProgress) {\n"
-          new = "\t\tif onlineState && !time.Now().Before(nextProgress) {\n"
+          new = "\t\tif onlineState && (cfg.Scenario == ScenarioChunkWalk || cfg.Scenario == ScenarioChunkFly) && !time.Now().Before(nextProgress) {\n"
           if old not in text:
               raise SystemExit("progress scenario gate target not found")
           text = text.replace(old, new, 1)
 
           marker = '''\tif err := out.Emit("spawned", map[string]any{\n\t\t"x": game.PlayerPosition[0], "y": game.PlayerPosition[1], "z": game.PlayerPosition[2],\n\t}); err != nil {\n\t\treturn stageError(ExitRuntime, "output", err)\n\t}\n\n'''
-          prepare = marker + '''\t// Match the current working 2026 headless client: finish the loading\n\t// screen explicitly before beginning the auth-input stream.\n\tif err := conn.WritePacket(&packet.ServerBoundLoadingScreen{Type: packet.LoadingScreenTypeStart}); err != nil {\n\t\treturn stageError(ExitRuntime, "loading-screen-start", err)\n\t}\n\tloadingTimer := time.NewTimer(140 * time.Millisecond)\n\tselect {\n\tcase <-ctx.Done():\n\t\tloadingTimer.Stop()\n\t\treturn nil\n\tcase <-loadingTimer.C:\n\t}\n\tif err := conn.WritePacket(&packet.ServerBoundLoadingScreen{Type: packet.LoadingScreenTypeEnd}); err != nil {\n\t\treturn stageError(ExitRuntime, "loading-screen-end", err)\n\t}\n\tif err := out.Emit("client_prepared", map[string]any{"sequence": "loading-screen-140ms"}); err != nil {\n\t\treturn stageError(ExitRuntime, "output", err)\n\t}\n\n'''
+          prepare = marker + '''\t// BDS 1.26.44 requires the client loading-screen lifecycle to finish\n\t// before movement input is accepted consistently. Match the current\n\t// headless-client cadence rather than starting PlayerAuthInput immediately.\n\tif err := conn.WritePacket(&packet.ServerBoundLoadingScreen{Type: packet.LoadingScreenTypeStart}); err != nil {\n\t\treturn stageError(ExitRuntime, "loading-screen-start", err)\n\t}\n\tloadingTimer := time.NewTimer(140 * time.Millisecond)\n\tselect {\n\tcase <-ctx.Done():\n\t\tif !loadingTimer.Stop() {\n\t\t\t<-loadingTimer.C\n\t\t}\n\t\treturn nil\n\tcase <-loadingTimer.C:\n\t}\n\tif err := conn.WritePacket(&packet.ServerBoundLoadingScreen{Type: packet.LoadingScreenTypeEnd}); err != nil {\n\t\treturn stageError(ExitRuntime, "loading-screen-end", err)\n\t}\n\tif err := out.Emit("client_prepared", map[string]any{"sequence": "loading-screen-140ms"}); err != nil {\n\t\treturn stageError(ExitRuntime, "output", err)\n\t}\n\n'''
           if marker not in text:
               raise SystemExit("loading screen insertion target not found")
           bot.write_text(text.replace(marker, prepare, 1))
@@ -111,15 +106,35 @@ jobs:
           if old not in text:
               raise SystemExit("input flags target not found")
           text = text.replace(old, new, 1)
-
-          text = text.replace("\t\tInputMode:         packet.InputModeTouch,\n", "\t\tInputMode:         packet.InputModeMouse,\n", 1)
-          text = text.replace("\t\tPlayMode:          packet.PlayModeNormal,\n", "\t\tPlayMode:          packet.PlayModeScreen,\n", 1)
-          tick.write_text(text)
+          old = "\t\tInputMode:         packet.InputModeTouch,\n"
+          new = "\t\tInputMode:         packet.InputModeMouse,\n"
+          if old not in text:
+              raise SystemExit("input mode target not found")
+          text = text.replace(old, new, 1)
+          old = "\t\tPlayMode:          packet.PlayModeNormal,\n"
+          new = "\t\tPlayMode:          packet.PlayModeScreen,\n"
+          if old not in text:
+              raise SystemExit("play mode target not found")
+          tick.write_text(text.replace(old, new, 1))
           PY
+
           gofmt -w internal/bot/flight.go internal/bot/bot.go internal/bot/tick.go
           go vet ./...
+          go test ./...
           mkdir -p ../dist
           go build -trimpath -o ../dist/bds-test-bot ./cmd/bds-test-bot
+
+      - name: Commit validated tuple to bot PR branch
+        working-directory: bot-src
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "ReallocAll"
+          git config user.email "63277109+ReallocAll@users.noreply.github.com"
+          git add internal/bot/flight.go internal/bot/bot.go internal/bot/tick.go
+          git commit -m "fix: match BDS headless movement semantics"
+          git push origin HEAD:feat/chunk-fly-scenario
+          git rev-parse HEAD | tee ../landed-bot-sha.txt
 
       - name: Set up Python 3.13
         uses: actions/setup-python@v6
@@ -129,20 +144,38 @@ jobs:
       - name: Install validation dependencies
         run: python -m pip install --disable-pip-version-check psutil
 
-      - name: Run BDS-only authoritative chunk-walk validation
+      - name: Validate production chunk-walk
         shell: bash
         run: python -m controller.movement_bds_only_validation --bot dist/bds-test-bot --scenario chunk-walk
+
+      - name: Preserve chunk-walk evidence
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p evidence/chunk-walk
+          cp -f bds-only-chunk-walk.log test-results.json bds.log evidence/chunk-walk/ 2>/dev/null || true
+          cp -f failure-diagnostics.txt evidence/chunk-walk/ 2>/dev/null || true
+
+      - name: Validate production chunk-fly
+        shell: bash
+        run: python -m controller.movement_bds_only_validation --bot dist/bds-test-bot --scenario chunk-fly
+
+      - name: Preserve chunk-fly evidence
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p evidence/chunk-fly
+          cp -f bds-only-chunk-fly.log test-results.json bds.log evidence/chunk-fly/ 2>/dev/null || true
+          cp -f failure-diagnostics.txt evidence/chunk-fly/ 2>/dev/null || true
 
       - name: Upload movement evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: movement-bds-only-chunk-walk-current-headless-${{ github.run_id }}
+          name: production-movement-tuple-${{ github.run_id }}
           path: |
-            bds-only-chunk-walk.log
-            test-results.json
-            failure-diagnostics.txt
-            bds.log
+            landed-bot-sha.txt
+            evidence/
             work/linux/bedrock_server/server.properties
           if-no-files-found: warn
           retention-days: 7
