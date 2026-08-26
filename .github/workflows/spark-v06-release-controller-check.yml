@@ -7,6 +7,16 @@ on:
     paths:
       - "controller/release_validation.py"
       - "controller/assert_spark_artifact.py"
+      - "providers/artifact_provider.py"
+      - "tests/test_artifact_provider.py"
+      - ".github/workflows/spark-v06-release-validation.yml"
+      - ".github/workflows/spark-v06-release-controller-check.yml"
+  pull_request:
+    paths:
+      - "controller/release_validation.py"
+      - "controller/assert_spark_artifact.py"
+      - "providers/artifact_provider.py"
+      - "tests/test_artifact_provider.py"
       - ".github/workflows/spark-v06-release-validation.yml"
       - ".github/workflows/spark-v06-release-controller-check.yml"
 
@@ -27,11 +37,16 @@ jobs:
           python -m py_compile
           controller/release_validation.py
           controller/assert_spark_artifact.py
+          providers/artifact_provider.py
+          tests/test_artifact_provider.py
+      - name: Run artifact provider tests
+        run: python -m unittest tests.test_artifact_provider -v
       - name: Verify module imports
         run: |
           python -m pip install --disable-pip-version-check psutil packaging
           python - <<'PY'
           import controller.assert_spark_artifact
           import controller.release_validation
+          import providers.artifact_provider
           print("release controller imports: PASS")
           PY
