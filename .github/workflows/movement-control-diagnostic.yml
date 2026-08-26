@@ -53,7 +53,7 @@ jobs:
           path: bot-src
           persist-credentials: false
 
-      - name: Patch authoritative traversal seed and analogue movement
+      - name: Patch authoritative traversal seed
         shell: bash
         run: |
           python3 - <<'PY'
@@ -71,30 +71,85 @@ jobs:
           if old not in text:
               raise SystemExit("publisher telemetry target not found")
           bot.write_text(text.replace(old, new, 1))
-
-          tick = Path("bot-src/internal/bot/tick.go")
-          text = tick.read_text()
-          old = "\t\tDelta:             snapshot.delta,\n\t\tCameraOrientation: camera,\n"
-          new = "\t\tDelta:              snapshot.delta,\n\t\tAnalogueMoveVector: moveVector,\n\t\tCameraOrientation:  camera,\n"
-          if old not in text:
-              raise SystemExit("analogue movement target not found")
-          tick.write_text(text.replace(old, new, 1))
-
-          test = Path("bot-src/internal/bot/flight_test.go")
-          text = test.read_text()
-          old = "\tif input.AnalogueMoveVector != (mgl32.Vec2{}) {\n\t\tt.Fatalf(\"reference BDS tuple must leave analogue move vector unset: %v\", input.AnalogueMoveVector)\n\t}\n"
-          new = "\tif input.AnalogueMoveVector != input.MoveVector {\n\t\tt.Fatalf(\"analogue move vector = %v, want move vector %v\", input.AnalogueMoveVector, input.MoveVector)\n\t}\n"
-          if old not in text:
-              raise SystemExit("analogue expectation target not found")
-          test.write_text(text.replace(old, new, 1))
           PY
-          gofmt -w bot-src/internal/bot/bot.go bot-src/internal/bot/tick.go bot-src/internal/bot/flight_test.go
+          gofmt -w bot-src/internal/bot/bot.go
 
       - name: Set up Go 1.25
         uses: actions/setup-go@v6
         with:
           go-version: "1.25.x"
           cache: false
+
+      - name: Patch gophertunnel spawn bootstrap
+        working-directory: bot-src
+        shell: bash
+        run: |
+          go mod download github.com/sandertv/gophertunnel@v1.59.0
+          moddir="$(go env GOMODCACHE)/github.com/sandertv/gophertunnel@v1.59.0"
+          rm -rf ../gophertunnel-patched
+          cp -a "$moddir" ../gophertunnel-patched
+          chmod -R u+w ../gophertunnel-patched
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("../gophertunnel-patched/minecraft/conn.go")
+          text = path.read_text()
+          import_old = '\t"github.com/coreos/go-oidc/v3/oidc"\n'
+          import_new = import_old + '\t"github.com/go-gl/mathgl/mgl32"\n'
+          if import_old not in text:
+              raise SystemExit("gophertunnel import target not found")
+          text = text.replace(import_old, import_new, 1)
+
+          old = '''func (conn *Conn) tryFinaliseClientConn() {
+\tif conn.waitingForSpawn.Load() && conn.gameDataReceived.Load() {
+\t\tconn.waitingForSpawn.Store(false)
+\t\tconn.gameDataReceived.Store(false)
+
+\t\tclose(conn.spawn)
+\t\tconn.loggedIn = true
+\t\t_ = conn.WritePacket(&packet.SetLocalPlayerAsInitialised{EntityRuntimeID: conn.gameData.EntityRuntimeID})
+\t}
+}
+'''
+          new = '''func (conn *Conn) tryFinaliseClientConn() {
+\tif conn.waitingForSpawn.Load() && conn.gameDataReceived.Load() {
+\t\tconn.waitingForSpawn.Store(false)
+\t\tconn.gameDataReceived.Store(false)
+
+\t\t// Match the vanilla client bootstrap ordering before the final spawn
+\t\t// acknowledgement: RequestChunkRadius -> Interact -> PlayerAuthInput ->
+\t\t// SetLocalPlayerAsInitialised. This is intentionally isolated from the
+\t\t// separate required-server-packet waiting change proposed upstream.
+\t\t_ = conn.WritePacket(&packet.Interact{
+\t\t\tActionType:            packet.InteractActionMouseOverEntity,
+\t\t\tTargetEntityRuntimeID: 0,
+\t\t\tPosition:              protocol.Option(mgl32.Vec3{}),
+\t\t})
+\t\t_ = conn.WritePacket(&packet.PlayerAuthInput{
+\t\t\tPitch:            conn.gameData.Pitch,
+\t\t\tYaw:              conn.gameData.Yaw,
+\t\t\tPosition:         conn.gameData.PlayerPosition,
+\t\t\tHeadYaw:          conn.gameData.Yaw,
+\t\t\tInputData:        protocol.NewInputFlags(packet.InputFlagCount),
+\t\t\tInputMode:        packet.InputModeTouch,
+\t\t\tPlayMode:         packet.PlayModeNormal,
+\t\t\tInteractionModel: packet.InteractionModelTouch,
+\t\t\tInteractPitch:    conn.gameData.Pitch,
+\t\t\tInteractYaw:      conn.gameData.Yaw,
+\t\t})
+
+\t\tclose(conn.spawn)
+\t\tconn.loggedIn = true
+\t\t_ = conn.WritePacket(&packet.SetLocalPlayerAsInitialised{EntityRuntimeID: conn.gameData.EntityRuntimeID})
+\t}
+}
+'''
+          if old not in text:
+              raise SystemExit("gophertunnel spawn finalisation target not found")
+          path.write_text(text.replace(old, new, 1))
+          PY
+          gofmt -w ../gophertunnel-patched/minecraft/conn.go
+          go mod edit -replace github.com/sandertv/gophertunnel=../gophertunnel-patched
 
       - name: Build diagnostic bot
         working-directory: bot-src
