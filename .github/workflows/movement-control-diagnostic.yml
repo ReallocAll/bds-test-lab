@@ -100,7 +100,6 @@ jobs:
           if old not in text:
               raise SystemExit("walk speed target not found")
           text = text.replace(old, new, 1)
-
           old = "\tflags.Set(packet.InputFlagBlockBreakingDelayEnabled)\n"
           new = "\tflags.Set(packet.InputFlagBlockBreakingDelayEnabled)\n\tif snapshot.moveVector != (mgl32.Vec2{}) && !snapshot.flightRequested {\n\t\tflags.Set(packet.InputFlagVerticalCollision)\n\t\tsnapshot.delta[1] = -0.08 * 0.98\n\t}\n"
           if old not in text:
@@ -116,9 +115,22 @@ jobs:
           if old not in text:
               raise SystemExit("play mode target not found")
           tick.write_text(text.replace(old, new, 1))
+
+          tests = Path("internal/bot/flight_test.go")
+          text = tests.read_text()
+          old = "if input.InputMode != packet.InputModeTouch || input.PlayMode != packet.PlayModeNormal || input.InteractionModel != packet.InteractionModelTouch {"
+          new = "if input.InputMode != packet.InputModeMouse || input.PlayMode != packet.PlayModeScreen || input.InteractionModel != packet.InteractionModelTouch {"
+          if old not in text:
+              raise SystemExit("input tuple expectation target not found")
+          text = text.replace(old, new, 1)
+          old = "want := mgl32.Vec3{266.5, 70 + playerEyeHeight, 159.5}"
+          new = "want := mgl32.Vec3{266.5, 70 + playerEyeHeight - 1, 159.5}"
+          if old not in text:
+              raise SystemExit("publisher expectation target not found")
+          tests.write_text(text.replace(old, new, 1))
           PY
 
-          gofmt -w internal/bot/flight.go internal/bot/bot.go internal/bot/tick.go
+          gofmt -w internal/bot/flight.go internal/bot/bot.go internal/bot/tick.go internal/bot/flight_test.go
           go vet ./...
           go test ./...
           mkdir -p ../dist
@@ -131,7 +143,7 @@ jobs:
           set -euo pipefail
           git config user.name "ReallocAll"
           git config user.email "63277109+ReallocAll@users.noreply.github.com"
-          git add internal/bot/flight.go internal/bot/bot.go internal/bot/tick.go
+          git add internal/bot/flight.go internal/bot/bot.go internal/bot/tick.go internal/bot/flight_test.go
           git commit -m "fix: match BDS headless movement semantics"
           git push origin HEAD:feat/chunk-fly-scenario
           git rev-parse HEAD | tee ../landed-bot-sha.txt
