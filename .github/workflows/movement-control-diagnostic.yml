@@ -23,6 +23,15 @@ jobs:
   movement-control:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - vertical-collision
+          - raw-analogue
+          - vertical-full
+          - hyena
+          - vanilla-full
 
     steps:
       - name: Checkout test lab
@@ -64,12 +73,17 @@ jobs:
           go vet ./...
           go test ./...
 
-      - name: Patch trusted publisher position for ground movement
+      - name: Patch trusted-position input semantics
         working-directory: bot-src
         shell: bash
+        env:
+          VARIANT: ${{ matrix.variant }}
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import os
+
+          variant = os.environ["VARIANT"]
 
           flight = Path("internal/bot/flight.go")
           text = flight.read_text()
@@ -86,8 +100,59 @@ jobs:
           if old not in text:
               raise SystemExit("publisher scenario gate target not found")
           bot.write_text(text.replace(old, new, 1))
+
+          tick = Path("internal/bot/tick.go")
+          text = tick.read_text()
+
+          collision_variants = {"vertical-collision", "vertical-full", "hyena", "vanilla-full"}
+          full_analogue_variants = {"raw-analogue", "vertical-full", "vanilla-full"}
+          full_raw_variants = full_analogue_variants | {"hyena"}
+
+          if variant in collision_variants:
+              anchor = "\tflags.Set(packet.InputFlagBlockBreakingDelayEnabled)\n"
+              if anchor not in text:
+                  raise SystemExit("input flag anchor not found")
+              text = text.replace(anchor, anchor + "\tflags.Set(packet.InputFlagVerticalCollision)\n", 1)
+
+          if variant in full_raw_variants:
+              old = '''\tmoveVector := snapshot.moveVector\n\trawMoveVector := mgl32.Vec2{}\n\tif lengthSquared := moveVector.LenSqr(); lengthSquared > 0 {\n\t\tmoveVector = moveVector.Mul(1 / float32(math.Sqrt(float64(lengthSquared))))\n\t\thorizontalDelta := float32(math.Hypot(float64(snapshot.delta[0]), float64(snapshot.delta[2])))\n\t\trawMoveVector = moveVector.Mul(horizontalDelta)\n\t}\n'''
+              if variant in full_analogue_variants:
+                  new = '''\tmoveVector := snapshot.moveVector\n\tif lengthSquared := moveVector.LenSqr(); lengthSquared > 0 {\n\t\tmoveVector = moveVector.Mul(1 / float32(math.Sqrt(float64(lengthSquared))))\n\t}\n\trawMoveVector := moveVector\n\tanalogueMoveVector := moveVector\n'''
+              else:
+                  new = '''\tmoveVector := snapshot.moveVector\n\tif lengthSquared := moveVector.LenSqr(); lengthSquared > 0 {\n\t\tmoveVector = moveVector.Mul(1 / float32(math.Sqrt(float64(lengthSquared))))\n\t}\n\trawMoveVector := moveVector\n'''
+              if old not in text:
+                  raise SystemExit("raw move vector block not found")
+              text = text.replace(old, new, 1)
+
+              if variant in full_analogue_variants:
+                  old_field = "\t\tRawMoveVector:     rawMoveVector,\n"
+                  new_field = "\t\tAnalogueMoveVector: analogueMoveVector,\n\t\tRawMoveVector:      rawMoveVector,\n"
+                  if old_field not in text:
+                      raise SystemExit("raw move vector field not found")
+                  text = text.replace(old_field, new_field, 1)
+
+          if variant == "hyena":
+              old = "\t\tInteractionModel:  packet.InteractionModelTouch,\n"
+              new = "\t\tInteractionModel:  packet.InteractionModelClassic,\n"
+              if old not in text:
+                  raise SystemExit("interaction model target not found")
+              text = text.replace(old, new, 1)
+              old = "\t\tCameraOrientation: camera,\n"
+              new = "\t\tCameraOrientation: mgl32.Vec3{},\n"
+              if old not in text:
+                  raise SystemExit("camera orientation target not found")
+              text = text.replace(old, new, 1)
+
+          if variant == "vanilla-full":
+              old = "const chunkWalkStepPerTick = float32(0.18)\n"
+              new = "const chunkWalkStepPerTick = float32(4.317 / 20)\n"
+              if old not in text:
+                  raise SystemExit("walk speed target not found")
+              text = text.replace(old, new, 1)
+
+          tick.write_text(text)
           PY
-          gofmt -w internal/bot/flight.go internal/bot/bot.go
+          gofmt -w internal/bot/flight.go internal/bot/bot.go internal/bot/tick.go
           go vet ./...
           mkdir -p ../dist
           go build -trimpath -o ../dist/bds-test-bot ./cmd/bds-test-bot
@@ -108,7 +173,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: movement-bds-only-chunk-walk-trusted-publisher-${{ github.run_id }}
+          name: movement-bds-only-chunk-walk-${{ matrix.variant }}-${{ github.run_id }}
           path: |
             bds-only-chunk-walk.log
             test-results.json
