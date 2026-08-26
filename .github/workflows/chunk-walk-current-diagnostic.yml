@@ -16,7 +16,6 @@ permissions:
 env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
-  ENDSTONE_RUN_ID: "32770415029"
 
 jobs:
   correction-replay:
@@ -33,30 +32,6 @@ jobs:
           ref="$(tr -d '[:space:]' < controller/chunk_fly_bot_ref.txt)"
           [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid exact bot ref: $ref" >&2; exit 1; }
           echo "BOT_REF=$ref" >> "$GITHUB_ENV"
-
-      - name: Pin known-good Endstone artifact run
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path("providers/artifact_provider.py")
-          text = path.read_text()
-          needle = '    branch = config["branch"]\n'
-          injected = '''    branch = config["branch"]
-    override_run_id = os.environ.get(f"{component.upper()}_RUN_ID", "").strip()
-    if override_run_id:
-        run = _get_json(f"/repos/{repo}/actions/runs/{override_run_id}")
-        if run.get("head_branch") != branch or run.get("conclusion") != "success":
-            raise ArtifactResolutionError(f"Pinned {component} run {override_run_id} is not a successful {repo}@{branch} run")
-        artifact = _select_from_run(component, platform_name, repo, run)
-        if artifact is None:
-            raise ArtifactResolutionError(f"Pinned {component} run {override_run_id} has no compatible {platform_name} artifact")
-        return run, artifact
-'''
-          if needle not in text:
-              raise SystemExit("artifact provider discover target not found")
-          path.write_text(text.replace(needle, injected, 1))
-          PY
 
       - name: Checkout exact production bot
         uses: actions/checkout@v7
