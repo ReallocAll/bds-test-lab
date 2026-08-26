@@ -12,12 +12,12 @@ def main() -> int:
     parser.add_argument("--expected-sha", required=True)
     args = parser.parse_args()
 
-    run, artifact = discover("spark", args.platform)
+    run, artifact = discover("spark", args.platform, expected_sha=args.expected_sha)
     actual = str(run.get("head_sha") or "")
     if actual != args.expected_sha:
         raise SystemExit(
-            f"Latest successful Spark develop artifact for {args.platform} is {actual}, "
-            f"expected {args.expected_sha}; release validation must not use stale artifacts"
+            f"Resolved Spark artifact for {args.platform} is {actual}, expected {args.expected_sha}; "
+            "release validation must not use stale artifacts"
         )
     print(
         f"Spark artifact preflight PASS: platform={args.platform} sha={actual} "

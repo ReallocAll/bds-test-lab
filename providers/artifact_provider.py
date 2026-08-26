@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Resolve development GitHub Actions artifacts for Endstone and Spark.
+"""Resolve GitHub Actions artifacts for Endstone and Spark.
 
 Discovery deliberately runs inside the GitHub Actions runner and uses GH_TOKEN.
-No artifact name is hard-coded: successful develop runs are scanned newest-first,
-then their artifacts are ranked for the current platform.
+No artifact name is hard-coded: artifacts are ranked for the current platform.
+By default, development artifacts come from the configured branch. Release and
+pre-merge validation can pin Spark to an exact successful workflow head SHA.
 """
 
 from __future__ import annotations
@@ -132,26 +133,40 @@ def _select_from_run(
     return ranked[0][1]
 
 
-def discover(component: str, platform_name: str) -> tuple[dict[str, Any], dict[str, Any]]:
+def discover(
+    component: str,
+    platform_name: str,
+    expected_sha: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     config = COMPONENTS[component]
     repo = config["repo"]
     branch = config["branch"]
-    query = urllib.parse.urlencode(
-        {
-            "branch": branch,
-            "status": "success",
-            "per_page": 100,
-        }
-    )
+    exact_sha = (expected_sha or "").strip()
+
+    query_fields: dict[str, Any] = {"status": "success", "per_page": 100}
+    if exact_sha:
+        query_fields["head_sha"] = exact_sha
+    else:
+        query_fields["branch"] = branch
+    query = urllib.parse.urlencode(query_fields)
     runs = _get_json(f"/repos/{repo}/actions/runs?{query}").get("workflow_runs") or []
 
     for run in runs:
-        if run.get("head_branch") != branch or run.get("conclusion") != "success":
+        if run.get("conclusion") != "success":
+            continue
+        if exact_sha:
+            if run.get("head_sha") != exact_sha:
+                continue
+        elif run.get("head_branch") != branch:
             continue
         artifact = _select_from_run(component, platform_name, repo, run)
         if artifact is not None:
             return run, artifact
 
+    if exact_sha:
+        raise ArtifactResolutionError(
+            f"No successful {repo}@{exact_sha} run with a {platform_name} {component} artifact was found"
+        )
     raise ArtifactResolutionError(
         f"No successful {repo}@{branch} run with a {platform_name} {component} artifact was found"
     )
@@ -223,16 +238,19 @@ def resolve_artifacts(
     platform_name: str,
     output_dir: pathlib.Path | str = "downloads",
     metadata_path: pathlib.Path | str = "metadata.json",
+    spark_sha: str | None = None,
 ) -> dict[str, Any]:
     if platform_name not in {"linux", "windows"}:
         raise ValueError(f"Unsupported platform: {platform_name}")
 
+    exact_spark_sha = (spark_sha or os.environ.get("EXPECTED_SPARK_SHA", "")).strip() or None
     root = pathlib.Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
     result: dict[str, Any] = {"platform": platform_name, "components": {}}
 
     for component, config in COMPONENTS.items():
-        run, artifact = discover(component, platform_name)
+        expected_sha = exact_spark_sha if component == "spark" else None
+        run, artifact = discover(component, platform_name, expected_sha=expected_sha)
         info = _metadata(component, config["repo"], run, artifact)
         result["components"][component] = info
         save_metadata(result, metadata_path)
@@ -253,5 +271,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--platform", required=True, choices=["linux", "windows"])
     parser.add_argument("--output-dir", default="downloads")
+    parser.add_argument("--spark-sha", default=None)
     args = parser.parse_args()
-    print(json.dumps(resolve_artifacts(args.platform, args.output_dir), indent=2))
+    print(json.dumps(resolve_artifacts(args.platform, args.output_dir, spark_sha=args.spark_sha), indent=2))
