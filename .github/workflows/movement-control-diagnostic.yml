@@ -8,6 +8,7 @@ on:
       - ".github/workflows/movement-control-diagnostic.yml"
       - "controller/movement_bds_only_validation.py"
       - "controller/patch_gophertunnel_spawn.py"
+      - "controller/patch_bot_publisher_eye.py"
   workflow_dispatch:
 
 permissions:
@@ -73,6 +74,7 @@ jobs:
               raise SystemExit("publisher telemetry target not found")
           bot.write_text(text.replace(old, new, 1))
           PY
+          python3 controller/patch_bot_publisher_eye.py bot-src
 
       - name: Set up Go 1.25
         uses: actions/setup-go@v6
@@ -90,7 +92,7 @@ jobs:
           cp -a "$moddir" ../gophertunnel-patched
           chmod -R u+w ../gophertunnel-patched
           python3 ../controller/patch_gophertunnel_spawn.py ../gophertunnel-patched/minecraft/conn.go
-          gofmt -w ../gophertunnel-patched/minecraft/conn.go internal/bot/bot.go
+          gofmt -w ../gophertunnel-patched/minecraft/conn.go internal/bot/bot.go internal/bot/flight.go
           go mod edit -replace github.com/sandertv/gophertunnel=../gophertunnel-patched
 
       - name: Build diagnostic bot
