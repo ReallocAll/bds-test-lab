@@ -102,7 +102,7 @@ jobs:
               raise SystemExit("gophertunnel spawn finalisation target not found")
           path.write_text(text.replace(old, new, 1))
           PY
-          gofmt -w ../gophertunnel-patched/minecraft/conn.go bot.go internal/bot/*.go
+          gofmt -w ../gophertunnel-patched/minecraft/conn.go internal/bot/bot.go
           go mod edit -replace github.com/sandertv/gophertunnel=../gophertunnel-patched
 
       - name: Build diagnostic bot
