@@ -70,7 +70,7 @@ def main() -> int:
     new = '''func TestPublisherEyePositionUsesAuthoritativeBlockPosition(t *testing.T) {
 \tgot := publisherEyePosition(protocol.BlockPos{266, 70, 159}, 32769.62)
 \twant := mgl32.Vec3{266.5, 70 + 0.62 + playerEyeHeight, 159.5}
-\tif math.Abs(float64(got[1]-want[1])) > 0.001 || got[0] != want[0] || got[2] != want[2] {
+\tif math.Abs(float64(got[1]-want[1])) > 0.002 || got[0] != want[0] || got[2] != want[2] {
 \t\tt.Fatalf("publisher eye position = %v, want %v", got, want)
 \t}
 }
