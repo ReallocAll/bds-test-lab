@@ -58,7 +58,6 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
-
           bot = Path("bot-src/internal/bot/bot.go")
           text = bot.read_text()
           old = "if cfg.Scenario == ScenarioChunkFly && samePublisher {"
@@ -72,7 +71,6 @@ jobs:
               raise SystemExit("publisher telemetry target not found")
           bot.write_text(text.replace(old, new, 1))
           PY
-          gofmt -w bot-src/internal/bot/bot.go
 
       - name: Set up Go 1.25
         uses: actions/setup-go@v6
@@ -91,7 +89,6 @@ jobs:
           chmod -R u+w ../gophertunnel-patched
           python3 - <<'PY'
           from pathlib import Path
-
           path = Path("../gophertunnel-patched/minecraft/conn.go")
           text = path.read_text()
           import_old = '\t"github.com/coreos/go-oidc/v3/oidc"\n'
@@ -99,56 +96,13 @@ jobs:
           if import_old not in text:
               raise SystemExit("gophertunnel import target not found")
           text = text.replace(import_old, import_new, 1)
-
-          old = '''func (conn *Conn) tryFinaliseClientConn() {
-\tif conn.waitingForSpawn.Load() && conn.gameDataReceived.Load() {
-\t\tconn.waitingForSpawn.Store(false)
-\t\tconn.gameDataReceived.Store(false)
-
-\t\tclose(conn.spawn)
-\t\tconn.loggedIn = true
-\t\t_ = conn.WritePacket(&packet.SetLocalPlayerAsInitialised{EntityRuntimeID: conn.gameData.EntityRuntimeID})
-\t}
-}
-'''
-          new = '''func (conn *Conn) tryFinaliseClientConn() {
-\tif conn.waitingForSpawn.Load() && conn.gameDataReceived.Load() {
-\t\tconn.waitingForSpawn.Store(false)
-\t\tconn.gameDataReceived.Store(false)
-
-\t\t// Match the vanilla client bootstrap ordering before the final spawn
-\t\t// acknowledgement: RequestChunkRadius -> Interact -> PlayerAuthInput ->
-\t\t// SetLocalPlayerAsInitialised. This is intentionally isolated from the
-\t\t// separate required-server-packet waiting change proposed upstream.
-\t\t_ = conn.WritePacket(&packet.Interact{
-\t\t\tActionType:            packet.InteractActionMouseOverEntity,
-\t\t\tTargetEntityRuntimeID: 0,
-\t\t\tPosition:              protocol.Option(mgl32.Vec3{}),
-\t\t})
-\t\t_ = conn.WritePacket(&packet.PlayerAuthInput{
-\t\t\tPitch:            conn.gameData.Pitch,
-\t\t\tYaw:              conn.gameData.Yaw,
-\t\t\tPosition:         conn.gameData.PlayerPosition,
-\t\t\tHeadYaw:          conn.gameData.Yaw,
-\t\t\tInputData:        protocol.NewInputFlags(packet.InputFlagCount),
-\t\t\tInputMode:        packet.InputModeTouch,
-\t\t\tPlayMode:         packet.PlayModeNormal,
-\t\t\tInteractionModel: packet.InteractionModelTouch,
-\t\t\tInteractPitch:    conn.gameData.Pitch,
-\t\t\tInteractYaw:      conn.gameData.Yaw,
-\t\t})
-
-\t\tclose(conn.spawn)
-\t\tconn.loggedIn = true
-\t\t_ = conn.WritePacket(&packet.SetLocalPlayerAsInitialised{EntityRuntimeID: conn.gameData.EntityRuntimeID})
-\t}
-}
-'''
+          old = "func (conn *Conn) tryFinaliseClientConn() {\n\tif conn.waitingForSpawn.Load() && conn.gameDataReceived.Load() {\n\t\tconn.waitingForSpawn.Store(false)\n\t\tconn.gameDataReceived.Store(false)\n\n\t\tclose(conn.spawn)\n\t\tconn.loggedIn = true\n\t\t_ = conn.WritePacket(&packet.SetLocalPlayerAsInitialised{EntityRuntimeID: conn.gameData.EntityRuntimeID})\n\t}\n}\n"
+          new = "func (conn *Conn) tryFinaliseClientConn() {\n\tif conn.waitingForSpawn.Load() && conn.gameDataReceived.Load() {\n\t\tconn.waitingForSpawn.Store(false)\n\t\tconn.gameDataReceived.Store(false)\n\n\t\t_ = conn.WritePacket(&packet.Interact{ActionType: packet.InteractActionMouseOverEntity, TargetEntityRuntimeID: 0, Position: protocol.Option(mgl32.Vec3{})})\n\t\t_ = conn.WritePacket(&packet.PlayerAuthInput{Pitch: conn.gameData.Pitch, Yaw: conn.gameData.Yaw, Position: conn.gameData.PlayerPosition, HeadYaw: conn.gameData.Yaw, InputData: protocol.NewInputFlags(packet.InputFlagCount), InputMode: packet.InputModeTouch, PlayMode: packet.PlayModeNormal, InteractionModel: packet.InteractionModelTouch, InteractPitch: conn.gameData.Pitch, InteractYaw: conn.gameData.Yaw})\n\n\t\tclose(conn.spawn)\n\t\tconn.loggedIn = true\n\t\t_ = conn.WritePacket(&packet.SetLocalPlayerAsInitialised{EntityRuntimeID: conn.gameData.EntityRuntimeID})\n\t}\n}\n"
           if old not in text:
               raise SystemExit("gophertunnel spawn finalisation target not found")
           path.write_text(text.replace(old, new, 1))
           PY
-          gofmt -w ../gophertunnel-patched/minecraft/conn.go
+          gofmt -w ../gophertunnel-patched/minecraft/conn.go bot.go internal/bot/*.go
           go mod edit -replace github.com/sandertv/gophertunnel=../gophertunnel-patched
 
       - name: Build diagnostic bot
