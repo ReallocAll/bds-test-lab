@@ -17,7 +17,7 @@ env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
   ENDSTONE_RUN_ID: "32770415029"
-  BOT_REF: "cde6b2468f51a12a26d14d550490f02662573fc3"
+  BOT_REF: "cbbd93deaa9fb6140ebe330235428aa1191e8337"
 
 jobs:
   movement-control:
@@ -56,30 +56,13 @@ jobs:
           go-version: "1.25.x"
           cache: false
 
-      - name: Validate exact bot baseline
+      - name: Build exact diagnostic bot
         working-directory: bot-src
         shell: bash
         run: |
           go mod download
           go vet ./...
           go test ./...
-
-      - name: Patch publisher eye seed
-        working-directory: bot-src
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path("internal/bot/flight.go")
-          text = path.read_text()
-          old = "\t\tfloat32(position[1]) + playerEyeHeight,\n"
-          new = "\t\tfloat32(position[1]) + playerEyeHeight - 1,\n"
-          if old not in text:
-              raise SystemExit("publisher Y conversion not found")
-          path.write_text(text.replace(old, new, 1))
-          PY
-          gofmt -w internal/bot/flight.go
-          go vet ./...
           mkdir -p ../dist
           go build -trimpath -o ../dist/bds-test-bot ./cmd/bds-test-bot
 
@@ -99,7 +82,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: movement-bds-only-chunk-fly-corrected-publisher-${{ github.run_id }}
+          name: movement-bds-only-chunk-fly-correction-bootstrap-${{ github.run_id }}
           path: |
             bds-only-chunk-fly.log
             test-results.json
