@@ -17,7 +17,7 @@ env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
   ENDSTONE_RUN_ID: "32770415029"
-  BOT_REF: "1904a39a59f8dca210acb2f5d4100ab130a82d5b"
+  BOT_REF: "c2f55ed60a74b37d3cb206ca8ed4338acfde49b5"
 
 jobs:
   movement-control:
@@ -56,7 +56,7 @@ jobs:
           go-version: "1.25.x"
           cache: false
 
-      - name: Patch pre-flight correction bootstrap
+      - name: Patch pre-flight horizontal correction probe
         working-directory: bot-src
         shell: bash
         run: |
@@ -65,30 +65,21 @@ jobs:
 
           path = Path("internal/bot/tick.go")
           text = path.read_text()
+
+          old = '''\t} else if s.control.fly {\n\t\tswitch {\n\t\tcase !s.flyingConfirmed:\n\t\t\tsnapshot.moveVector = mgl32.Vec2{}\n\t\tcase !s.positionReady && !s.correctionProbeSent:\n'''
+          new = '''\t} else if s.control.fly {\n\t\tswitch {\n\t\tcase !s.positionReady && !s.correctionProbeSent:\n'''
+          if old not in text:
+              raise SystemExit("probe-order target not found")
+          text = text.replace(old, new, 1)
+
+          old = '''\t\tcase !s.positionReady:\n\t\t\tsnapshot.moveVector = mgl32.Vec2{}\n\t\tdefault:\n'''
+          new = '''\t\tcase !s.positionReady:\n\t\t\tsnapshot.moveVector = mgl32.Vec2{}\n\t\tcase !s.flyingConfirmed:\n\t\t\tsnapshot.moveVector = mgl32.Vec2{}\n\t\tdefault:\n'''
+          if old not in text:
+              raise SystemExit("probe-order fallback target not found")
+          text = text.replace(old, new, 1)
+
           start = text.index("func runTickLoop(")
-          replacement = r'''func runChunkFlyCorrectionBootstrap(ctx context.Context, writer packetWriter, state *playerState) error {
-          ticker := time.NewTicker(time.Second / 20)
-          defer ticker.Stop()
-
-          for !state.positionReadySnapshot() {
-              state.stepCorrectionBootstrap()
-              tick := state.nextInputTick()
-              if err := writer.WritePacket(authInputPacket(state, tick)); err != nil {
-                  if ctx.Err() != nil {
-                      return nil
-                  }
-                  return err
-              }
-              select {
-              case <-ctx.Done():
-                  return nil
-              case <-ticker.C:
-              }
-          }
-          return nil
-          }
-
-          func runTickLoop(ctx context.Context, writer packetWriter, state *playerState, cfg Config, headingYaw float32, botName string, entityRuntimeID uint64) error {
+          replacement = r'''func runTickLoop(ctx context.Context, writer packetWriter, state *playerState, cfg Config, headingYaw float32, botName string, entityRuntimeID uint64) error {
               if cfg.Scenario == ScenarioChunkWalk {
                   timer := time.NewTimer(movementStartDelay)
                   select {
@@ -102,14 +93,44 @@ jobs:
               }
 
               if cfg.Scenario == ScenarioChunkFly && !state.positionReadySnapshot() {
-                  if err := runChunkFlyCorrectionBootstrap(ctx, writer, state); err != nil {
+                  // Diagnostic discriminator: configure the same movement tuple
+                  // as FlyAction, but send one coherent non-zero AuthInput before
+                  // RequestAbility/StartFlying. The reference client receives its
+                  // initial CorrectPlayerMovePrediction on this walking-style
+                  // first movement frame.
+                  state.setFlightControl(mgl32.Vec2{0, 1}, chunkFlyStepPerTick, headingYaw, chunkFlyMinimumAltitude, chunkFlyVerticalStepPerTick)
+                  tick := state.nextInputTick()
+                  if err := writer.WritePacket(authInputPacket(state, tick)); err != nil {
+                      if ctx.Err() != nil {
+                          return nil
+                      }
                       return err
                   }
-                  if ctx.Err() != nil {
-                      return nil
+
+                  deadline := time.NewTimer(2 * time.Second)
+                  poll := time.NewTicker(10 * time.Millisecond)
+                  for !state.positionReadySnapshot() {
+                      select {
+                      case <-ctx.Done():
+                          deadline.Stop()
+                          poll.Stop()
+                          return nil
+                      case <-deadline.C:
+                          poll.Stop()
+                          goto bootstrapDone
+                      case <-poll.C:
+                      }
                   }
+                  if !deadline.Stop() {
+                      select {
+                      case <-deadline.C:
+                      default:
+                      }
+                  }
+                  poll.Stop()
               }
 
+          bootstrapDone:
               ticker := time.NewTicker(time.Second / 20)
               defer ticker.Stop()
 
@@ -171,7 +192,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: movement-bds-only-chunk-fly-preflight-bootstrap-${{ github.run_id }}
+          name: movement-bds-only-chunk-fly-preflight-probe-${{ github.run_id }}
           path: |
             bds-only-chunk-fly.log
             test-results.json
