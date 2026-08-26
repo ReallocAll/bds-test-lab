@@ -64,17 +64,25 @@ jobs:
           go vet ./...
           go test ./...
 
-      - name: Patch pre-correction idle auth stream
+      - name: Patch correction-bootstrap movement probe
         working-directory: bot-src
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           path = Path("internal/bot/tick.go")
           text = path.read_text()
+
+          pattern = r'''func \(s \*playerState\) acceptPublisherPosition\(position mgl32\.Vec3\) bool \{.*?\n\}\n\n'''
+          replacement = '''func (s *playerState) acceptPublisherPosition(position mgl32.Vec3) bool {\n\t// Diagnostic variant: publisher position is observability only. Require a\n\t// real server movement/correction packet before prediction becomes ready.\n\treturn false\n}\n\n'''
+          text, count = re.subn(pattern, replacement, text, count=1, flags=re.S)
+          if count != 1:
+              raise SystemExit(f"publisher seed replacement count={count}")
+
           old = '''\tif cfg.Scenario == ScenarioChunkWalk || cfg.Scenario == ScenarioChunkFly {\n\t\ttimer := time.NewTimer(movementStartDelay)\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\tif !timer.Stop() {\n\t\t\t\t<-timer.C\n\t\t\t}\n\t\t\treturn nil\n\t\tcase <-timer.C:\n\t\t}\n\t}\n'''
-          new = '''\tif cfg.Scenario == ScenarioChunkFly {\n\t\t// Protocol 2168 may correct StartGame's temporary Y only after it sees\n\t\t// the client's first PlayerAuthInput. Establish an idle prediction\n\t\t// history during the spawn settle window before requesting flight.\n\t\twriteIdle := func() error {\n\t\t\ttick := state.nextInputTick()\n\t\t\treturn writer.WritePacket(authInputPacket(state, tick))\n\t\t}\n\t\tif err := writeIdle(); err != nil {\n\t\t\tif ctx.Err() != nil {\n\t\t\t\treturn nil\n\t\t\t}\n\t\t\treturn err\n\t\t}\n\t\tsettleTicker := time.NewTicker(time.Second / 20)\n\t\tsettleTimer := time.NewTimer(movementStartDelay)\n\t\tsettling := true\n\t\tfor settling {\n\t\t\tselect {\n\t\t\tcase <-ctx.Done():\n\t\t\t\tsettleTicker.Stop()\n\t\t\t\tif !settleTimer.Stop() {\n\t\t\t\t\t<-settleTimer.C\n\t\t\t\t}\n\t\t\t\treturn nil\n\t\t\tcase <-settleTicker.C:\n\t\t\t\tif err := writeIdle(); err != nil {\n\t\t\t\t\tsettleTicker.Stop()\n\t\t\t\t\tif !settleTimer.Stop() {\n\t\t\t\t\t\t<-settleTimer.C\n\t\t\t\t\t}\n\t\t\t\t\tif ctx.Err() != nil {\n\t\t\t\t\t\treturn nil\n\t\t\t\t\t}\n\t\t\t\t\treturn err\n\t\t\t\t}\n\t\t\tcase <-settleTimer.C:\n\t\t\t\tsettling = false\n\t\t\t}\n\t\t}\n\t\tsettleTicker.Stop()\n\t} else if cfg.Scenario == ScenarioChunkWalk {\n\t\ttimer := time.NewTimer(movementStartDelay)\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\tif !timer.Stop() {\n\t\t\t\t<-timer.C\n\t\t\t}\n\t\t\treturn nil\n\t\tcase <-timer.C:\n\t\t}\n\t}\n'''
+          new = '''\tif cfg.Scenario == ScenarioChunkFly {\n\t\t// A current protocol-2168 reference client receives its initial\n\t\t// CorrectPlayerMovePrediction only after its first non-zero movement\n\t\t// frame. Send one tiny walking probe from StartGame's placeholder state,\n\t\t// then return to idle while BDS supplies the authoritative position.\n\t\tstate.setMoveControl(mgl32.Vec2{0, 1}, chunkWalkStepPerTick, headingYaw)\n\t\tprobeTick := state.nextInputTick()\n\t\tif err := writer.WritePacket(authInputPacket(state, probeTick)); err != nil {\n\t\t\tif ctx.Err() != nil {\n\t\t\t\treturn nil\n\t\t\t}\n\t\t\treturn err\n\t\t}\n\t\tstate.clearMoveControl()\n\n\t\tsettleTicker := time.NewTicker(time.Second / 20)\n\t\tsettleTimer := time.NewTimer(movementStartDelay)\n\t\tsettling := true\n\t\tfor settling {\n\t\t\tselect {\n\t\t\tcase <-ctx.Done():\n\t\t\t\tsettleTicker.Stop()\n\t\t\t\tif !settleTimer.Stop() {\n\t\t\t\t\t<-settleTimer.C\n\t\t\t\t}\n\t\t\t\treturn nil\n\t\t\tcase <-settleTicker.C:\n\t\t\t\ttick := state.nextInputTick()\n\t\t\t\tif err := writer.WritePacket(authInputPacket(state, tick)); err != nil {\n\t\t\t\t\tsettleTicker.Stop()\n\t\t\t\t\tif !settleTimer.Stop() {\n\t\t\t\t\t\t<-settleTimer.C\n\t\t\t\t\t}\n\t\t\t\t\tif ctx.Err() != nil {\n\t\t\t\t\t\treturn nil\n\t\t\t\t\t}\n\t\t\t\t\treturn err\n\t\t\t\t}\n\t\t\tcase <-settleTimer.C:\n\t\t\t\tsettling = false\n\t\t\t}\n\t\t}\n\t\tsettleTicker.Stop()\n\t} else if cfg.Scenario == ScenarioChunkWalk {\n\t\ttimer := time.NewTimer(movementStartDelay)\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\tif !timer.Stop() {\n\t\t\t\t<-timer.C\n\t\t\t}\n\t\t\treturn nil\n\t\tcase <-timer.C:\n\t\t}\n\t}\n'''
           if old not in text:
               raise SystemExit("movement settle block not found")
           path.write_text(text.replace(old, new, 1))
