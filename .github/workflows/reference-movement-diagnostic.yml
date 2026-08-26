@@ -65,10 +65,7 @@ jobs:
           unsafe.write_text(unsafe.read_text().replace("\t\tHasNetworkID:   true,\n", ""))
 
           config = Path("gotestbds/actor/config.go")
-          config.write_text(config.read_text().replace(
-              "protocol.NewBitset(packet.PlayerAuthInputBitsetSize)",
-              "protocol.NewInputFlags(packet.InputFlagCount)",
-          ))
+          config.write_text(config.read_text().replace("protocol.NewBitset(packet.PlayerAuthInputBitsetSize)", "protocol.NewInputFlags(packet.InputFlagCount)"))
 
           movement = Path("gotestbds/actor/movement.go")
           text = movement.read_text()
@@ -77,32 +74,21 @@ jobs:
           text = text.replace("\t\tBlockActions:      a.blockActions(),\n", "\t\tBlockActions:      protocol.Option(a.blockActions()),\n")
           movement.write_text(text)
 
-          # This diagnostic exercises only the reference client's movement
-          # implementation. Its pinned chunk decoder predates the current
-          # protocol's SubChunkLimit/Optional payload APIs, so keep packet
-          # registration intact but no-op these two world-cache handlers.
-          Path("gotestbds/bot/handler_level_chunk.go").write_text('''package bot
+          level = Path("gotestbds/bot/handler_level_chunk.go")
+          text = level.read_text()
+          old = "\tmax := (r.Max() - r.Min() + 1) >> 4\n\tswitch levelChunk.SubChunkCount {\n\tcase protocol.SubChunkRequestModeLimited:\n\t\t// HighestSubChunk indexes from the bottom of the dimension, so everything\n\t\t// above it is air and not worth asking for.\n\t\treturn min(int(levelChunk.HighestSubChunk)+1, max), true\n\tcase protocol.SubChunkRequestModeLimitless:\n\t\treturn max, true\n\t}\n\treturn min(int(levelChunk.SubChunkCount), max), false\n"
+          new = "\tmax := (r.Max() - r.Min() + 1) >> 4\n\tif limit, ok := levelChunk.SubChunkLimit.Value(); ok {\n\t\tif limit < 0 {\n\t\t\treturn max, true\n\t\t}\n\t\treturn min(int(limit), max), true\n\t}\n\treturn min(int(levelChunk.SubChunkCount), max), false\n"
+          if old not in text:
+              raise SystemExit("level chunk compatibility target not found")
+          level.write_text(text.replace(old, new, 1))
 
-import (
-    "github.com/sandertv/gophertunnel/minecraft/protocol/packet"
-    "github.com/smell-of-curry/go-test-bds/gotestbds/actor"
-)
-
-type LevelChunkHandler struct{}
-
-func (*LevelChunkHandler) Handle(packet.Packet, *Bot, *actor.Actor) error { return nil }
-''')
-          Path("gotestbds/bot/handler_subchunk.go").write_text('''package bot
-
-import (
-    "github.com/sandertv/gophertunnel/minecraft/protocol/packet"
-    "github.com/smell-of-curry/go-test-bds/gotestbds/actor"
-)
-
-type SubChunkHandler struct{}
-
-func (*SubChunkHandler) Handle(packet.Packet, *Bot, *actor.Actor) error { return nil }
-''')
+          sub = Path("gotestbds/bot/handler_subchunk.go")
+          text = sub.read_text()
+          old = "\t\tbuf.Reset()\n\t\tbuf.Write(entry.RawPayload)\n"
+          new = "\t\tbuf.Reset()\n\t\trawPayload, ok := entry.RawPayload.Value()\n\t\tif !ok {\n\t\t\tcontinue\n\t\t}\n\t\tbuf.Write(rawPayload)\n"
+          if old not in text:
+              raise SystemExit("subchunk compatibility target not found")
+          sub.write_text(text.replace(old, new, 1))
           PY
           gofmt -w gotestbds/internal/unsafe.go gotestbds/actor/config.go gotestbds/actor/movement.go gotestbds/bot/handler_level_chunk.go gotestbds/bot/handler_subchunk.go
           go mod tidy
