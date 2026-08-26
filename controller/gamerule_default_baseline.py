@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import traceback
 
 from controller.run_test import IntegrationTest, now_iso, write_json
@@ -72,6 +73,19 @@ class GameRuleDefaultBaseline(IntegrationTest):
         self.result["default_unknown"] = []
         write_json(self.result_path, self.result)
 
+    def wait_for_spark_enabled(self, timeout: float = 15.0) -> None:
+        assert self.server is not None
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            text = "\n".join(self.server.snapshot()).lower()
+            if "endstone-spark" in text and "enabled" in text:
+                self.check("spark-enabled-before-gamerule-query", "PASS")
+                return
+            if not self.server.is_alive():
+                raise RuntimeError("Server exited before Spark finished enabling")
+            time.sleep(0.25)
+        raise RuntimeError("Spark did not finish enabling before gamerule baseline query")
+
     def execute_baseline(self) -> int:
         stage = "initialization"
         try:
@@ -79,6 +93,8 @@ class GameRuleDefaultBaseline(IntegrationTest):
             self.install_artifacts()
             stage = "bds-start"
             self.start_server()
+            stage = "spark-enable"
+            self.wait_for_spark_enabled()
 
             stage = "gamerule-query"
             values: dict[str, str] = {}
