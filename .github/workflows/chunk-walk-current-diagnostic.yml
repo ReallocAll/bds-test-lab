@@ -18,7 +18,7 @@ env:
   ENDSTONE_RUN_ID: "32770415029"
 
 jobs:
-  chunk-walk-reference-tuple:
+  correction-replay:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -57,7 +57,7 @@ jobs:
           path.write_text(text.replace(needle, injected, 1))
           PY
 
-      - name: Checkout exact current bot
+      - name: Checkout exact production bot
         uses: actions/checkout@v7
         with:
           repository: ReallocAll/bds-test-bot
@@ -71,66 +71,227 @@ jobs:
           go-version: "1.25.x"
           cache: false
 
-      - name: Verify exact bot before diagnostic patch
-        working-directory: bot-src
-        shell: bash
-        run: |
-          set -euo pipefail
-          go mod tidy
-          go vet ./...
-          go test ./...
-
-      - name: Apply authoritative telemetry and reference input tuple
+      - name: Apply correction rewind/replay diagnostic
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
 
-          bot = Path("bot-src/internal/bot/bot.go")
-          text = bot.read_text()
-          replacements = [
-              ("if cfg.Scenario == ScenarioChunkFly && samePublisher {",
-               "if (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && samePublisher {"),
-              ("if cfg.Scenario == ScenarioChunkFly && changedChunk {",
-               "if (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && changedChunk {"),
-              ("if onlineState && cfg.Scenario == ScenarioChunkFly && !time.Now().Before(nextProgress) {",
-               "if onlineState && (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && !time.Now().Before(nextProgress) {"),
-          ]
-          for old, new in replacements:
-              if old not in text:
-                  raise SystemExit(f"bot.go diagnostic target not found: {old}")
-              text = text.replace(old, new, 1)
-          bot.write_text(text)
-
           tick = Path("bot-src/internal/bot/tick.go")
           text = tick.read_text()
-          replacements = [
-              ("if cfg.Scenario == ScenarioChunkFly && !state.positionReadySnapshot() {",
-               "if (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && !state.positionReadySnapshot() {"),
-              ("\tflags.Set(packet.InputFlagBlockBreakingDelayEnabled)\n", ""),
-              ("\t\tInputMode:          packet.InputModeMouse,\n", "\t\tInputMode:          packet.InputModeTouch,\n"),
-              ("\t\tPlayMode:           packet.PlayModeScreen,\n", "\t\tPlayMode:           packet.PlayModeNormal,\n"),
-              ("\t\tInteractionModel:   packet.InteractionModelCrosshair,\n", "\t\tInteractionModel:   packet.InteractionModelTouch,\n"),
-              ("\t\tAnalogueMoveVector: snapshot.moveVector,\n", "\t\tAnalogueMoveVector: mgl32.Vec2{},\n"),
-          ]
-          for old, new in replacements:
-              if old not in text:
-                  raise SystemExit(f"tick.go diagnostic target not found: {old!r}")
-              text = text.replace(old, new, 1)
-          old = "\t\tRawMoveVector:      snapshot.moveVector,\n"
-          new = "\t\tRawMoveVector: mgl32.Vec2{\n\t\t\tsnapshot.moveVector[0] * float32(math.Hypot(float64(snapshot.delta[0]), float64(snapshot.delta[2]))),\n\t\t\tsnapshot.moveVector[1] * float32(math.Hypot(float64(snapshot.delta[0]), float64(snapshot.delta[2]))),\n\t\t},\n"
-          if old not in text:
-              raise SystemExit("RawMoveVector diagnostic target not found")
-          tick.write_text(text.replace(old, new, 1))
-          PY
-          gofmt -w bot-src/internal/bot/bot.go bot-src/internal/bot/tick.go
 
-      - name: Build diagnostic bot
+          old = '''type playerState struct {
+\tmu                  sync.Mutex
+'''
+          new = '''type predictionFrame struct {
+\ttick  uint64
+\tdelta mgl32.Vec3
+}
+
+const predictionHistoryLimit = 256
+
+type playerState struct {
+\tmu                  sync.Mutex
+'''
+          if old not in text:
+              raise SystemExit("playerState insertion target missing")
+          text = text.replace(old, new, 1)
+
+          old = '''\tserverTick          uint64
+\ttickSynced          bool
+\tcontrol             inputControl
+'''
+          new = '''\tserverTick          uint64
+\ttickSynced          bool
+\tpredictionHistory   []predictionFrame
+\tcontrol             inputControl
+'''
+          if old not in text:
+              raise SystemExit("prediction history field target missing")
+          text = text.replace(old, new, 1)
+
+          old = '''\tverticalDirection float32
+}
+'''
+          new = '''\tverticalDirection float32
+\tcommittedDelta    mgl32.Vec3
+}
+'''
+          if old not in text:
+              raise SystemExit("snapshot committed delta target missing")
+          text = text.replace(old, new, 1)
+
+          old = '''func (s *playerState) correct(position mgl32.Vec3, pitch, yaw, headYaw float32) {
+\ts.mu.Lock()
+\tdefer s.mu.Unlock()
+\ts.position = position
+\tif validPlayerPositionY(position[1]) {
+\t\ts.positionReady = true
+\t}
+\ts.pitch = pitch
+\ts.yaw = yaw
+\ts.headYaw = headYaw
+\ts.serverCorrections++
+}
+'''
+          new = old + '''
+func (s *playerState) recordPrediction(tick uint64, delta mgl32.Vec3) {
+\ts.mu.Lock()
+\tdefer s.mu.Unlock()
+\ts.predictionHistory = append(s.predictionHistory, predictionFrame{tick: tick, delta: delta})
+\tif len(s.predictionHistory) > predictionHistoryLimit {
+\t\ts.predictionHistory = append([]predictionFrame(nil), s.predictionHistory[len(s.predictionHistory)-predictionHistoryLimit:]...)
+\t}
+}
+
+func (s *playerState) correctPrediction(position mgl32.Vec3, pitch, yaw, headYaw float32, tick uint64) {
+\ts.mu.Lock()
+\tdefer s.mu.Unlock()
+\tcurrent := position
+\tkeep := s.predictionHistory[:0]
+\tfor _, frame := range s.predictionHistory {
+\t\tif frame.tick > tick {
+\t\t\tcurrent = current.Add(frame.delta)
+\t\t\tkeep = append(keep, frame)
+\t\t}
+\t}
+\ts.predictionHistory = keep
+\ts.position = current
+\tif validPlayerPositionY(position[1]) {
+\t\ts.positionReady = true
+\t}
+\ts.pitch = pitch
+\ts.yaw = yaw
+\ts.headYaw = headYaw
+\ts.serverCorrections++
+}
+'''
+          if old not in text:
+              raise SystemExit("correct method target missing")
+          text = text.replace(old, new, 1)
+
+          old = '''\ts.position[0] += snapshot.delta[0]
+\ts.position[2] += snapshot.delta[2]
+}
+'''
+          new = '''\ts.position[0] += snapshot.delta[0]
+\ts.position[2] += snapshot.delta[2]
+\tsnapshot.committedDelta[0] = snapshot.delta[0]
+\tsnapshot.committedDelta[2] = snapshot.delta[2]
+}
+'''
+          if old not in text:
+              raise SystemExit("horizontal committed delta target missing")
+          text = text.replace(old, new, 1)
+
+          old = '''\t// Match the coherent input tuple used by go-test-bds, a current BDS test
+'''
+          new = '''\ts.recordPrediction(tick, snapshot.committedDelta)
+
+\t// Match the coherent input tuple used by go-test-bds, a current BDS test
+'''
+          if old not in text:
+              raise SystemExit("record prediction target missing")
+          text = text.replace(old, new, 1)
+          tick.write_text(text)
+
+          flight = Path("bot-src/internal/bot/flight_movement.go")
+          text = flight.read_text()
+          old = '''\t\tsnapshot.delta[1] = step
+\t\ts.position[1] += step
+\t\treturn
+'''
+          new = '''\t\tsnapshot.delta[1] = step
+\t\ts.position[1] += step
+\t\tsnapshot.committedDelta[1] = step
+\t\treturn
+'''
+          if old not in text:
+              raise SystemExit("flight ascent committed delta target missing")
+          text = text.replace(old, new, 1)
+          old = '''\t\tsnapshot.delta[1] = -step
+\t\ts.position[1] -= step
+\t\treturn
+'''
+          new = '''\t\tsnapshot.delta[1] = -step
+\t\ts.position[1] -= step
+\t\tsnapshot.committedDelta[1] = -step
+\t\treturn
+'''
+          if old not in text:
+              raise SystemExit("flight descent committed delta target missing")
+          flight.write_text(text.replace(old, new, 1))
+
+          bot = Path("bot-src/internal/bot/bot.go")
+          text = bot.read_text()
+          old = '''\t\tcase *packet.CorrectPlayerMovePrediction:
+\t\t\tif p.PredictionType == packet.PredictionTypePlayer {
+\t\t\t\tstate.correct(p.Position, p.Rotation[0], p.Rotation[1], p.Rotation[1])
+\t\t\t\tstate.syncServerTick(p.Tick)
+\t\t\t}
+'''
+          new = '''\t\tcase *packet.CorrectPlayerMovePrediction:
+\t\t\tif p.PredictionType == packet.PredictionTypePlayer {
+\t\t\t\tstate.correctPrediction(p.Position, p.Rotation[0], p.Rotation[1], p.Rotation[1], p.Tick)
+\t\t\t\tstate.syncServerTick(p.Tick)
+\t\t\t}
+'''
+          if old not in text:
+              raise SystemExit("correction handler target missing")
+          bot.write_text(text.replace(old, new, 1))
+
+          tests = Path("bot-src/internal/bot/tick_test.go")
+          text = tests.read_text()
+          text += r'''
+
+func TestCorrectionReplaysPredictionsAfterCorrectedTick(t *testing.T) {
+\tstate := newPlayerState(mgl32.Vec3{10, 70, 20}, 0, 0)
+\tstate.setMoveControl(mgl32.Vec2{0, 1}, chunkWalkStepPerTick, 0)
+\t_ = authInputPacket(state, 40)
+\t_ = authInputPacket(state, 41)
+\t_ = authInputPacket(state, 42)
+
+\tcorrected := mgl32.Vec3{10, 70, 20.25}
+\tstate.correctPrediction(corrected, 0, 0, 0, 40)
+\tposition, _, corrections := state.telemetrySnapshot()
+\twantZ := corrected[2] + 2*chunkWalkStepPerTick
+\tif math.Abs(float64(position[2]-wantZ)) > 1e-5 || position[0] != corrected[0] || position[1] != corrected[1] {
+\t\tt.Fatalf("replayed position = %v, want x=%f y=%f z=%f", position, corrected[0], corrected[1], wantZ)
+\t}
+\tif corrections != 1 {
+\t\tt.Fatalf("server corrections = %d, want 1", corrections)
+\t}
+}
+
+func TestCorrectionReplayDoesNotCommitGroundGravityDelta(t *testing.T) {
+\tstate := newPlayerState(mgl32.Vec3{0, 64, 0}, 0, 0)
+\tstate.setMoveControl(mgl32.Vec2{0, 1}, chunkWalkStepPerTick, 0)
+\tpk := authInputPacket(state, 2)
+\tif pk.Delta[1] >= 0 {
+\t\tt.Fatalf("walk packet should carry ground gravity delta: %v", pk.Delta)
+\t}
+\tstate.correctPrediction(mgl32.Vec3{0, 64, 0}, 0, 0, 0, 1)
+\tposition, _, _ := state.telemetrySnapshot()
+\tif position[1] != 64 {
+\t\tt.Fatalf("gravity delta was replayed into prediction position: %v", position)
+\t}
+\tif math.Abs(float64(position[2]-chunkWalkStepPerTick)) > 1e-5 {
+\t\tt.Fatalf("horizontal prediction was not replayed: %v", position)
+\t}
+}
+'''.replace('\\t', '\t')
+          tests.write_text(text)
+          PY
+          gofmt -w bot-src/internal/bot/tick.go bot-src/internal/bot/flight_movement.go bot-src/internal/bot/bot.go bot-src/internal/bot/tick_test.go
+
+      - name: Verify diagnostic build and tests
         working-directory: bot-src
         shell: bash
         run: |
           set -euo pipefail
+          go mod download
           go vet ./...
+          go test ./...
           mkdir -p ../dist
           go build -trimpath -o ../dist/bds-test-bot ./cmd/bds-test-bot
 
@@ -142,58 +303,19 @@ jobs:
       - name: Install validation dependencies
         run: python -m pip install --disable-pip-version-check psutil
 
-      - name: Run reference-tuple chunk-walk against real BDS
-        continue-on-error: true
-        run: >-
-          python -m controller.chunk_walk_validation
-          --bot dist/bds-test-bot
-          --count 1
-          --profile-seconds 10
-
-      - name: Summarize authoritative movement evidence
-        if: always()
-        shell: bash
-        run: |
-          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
-          import json
-          from pathlib import Path
-          path = Path("fleet-1-chunk-walk.log")
-          print("## Reference PlayerAuthInput tuple")
-          if not path.exists():
-              print("No fleet log produced.")
-              raise SystemExit(0)
-          progress = []
-          for line in path.read_text(errors="replace").splitlines():
-              try:
-                  event = json.loads(line)
-              except json.JSONDecodeError:
-                  continue
-              if event.get("event") == "bot_progress":
-                  progress.append(event)
-          print(f"Progress samples: {len(progress)}")
-          if progress:
-              first, last = progress[0], progress[-1]
-              print(f"Publisher first/last: {first.get('publisher_position')} -> {last.get('publisher_position')}")
-              print(f"Publisher chunk first/last: {first.get('publisher_chunk')} -> {last.get('publisher_chunk')}")
-              print(f"Chunks first/last: {first.get('chunks_received')} -> {last.get('chunks_received')}")
-              print(f"Server post-move first/last: {first.get('server_post_move_updates')} -> {last.get('server_post_move_updates')}")
-              print(f"Client distance first/last: {first.get('horizontal_distance')} -> {last.get('horizontal_distance')}")
-              print(f"Tick synced last: {last.get('tick_synced')}")
-          PY
+      - name: Run strict BDS-only chunk-walk validation
+        run: python -m controller.movement_bds_only_validation --bot dist/bds-test-bot --scenario chunk-walk
 
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: reference-tuple-chunk-walk-${{ github.run_id }}
+          name: correction-replay-chunk-walk-${{ github.run_id }}
           path: |
-            fleet-1-chunk-walk.log
-            fleet-spark-result.json
+            bds-only-chunk-walk.log
             test-results.json
             failure-diagnostics.txt
             bds.log
-            endstone.log
-            spark.log
             work/linux/bedrock_server/server.properties
           if-no-files-found: warn
           retention-days: 7
