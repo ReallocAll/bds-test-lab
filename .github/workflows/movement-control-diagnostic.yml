@@ -23,13 +23,6 @@ jobs:
   movement-control:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        variant:
-          - wire-y
-          - wire-y-prepare
-          - prepare-old-y
 
     steps:
       - name: Checkout test lab
@@ -71,30 +64,17 @@ jobs:
           go vet ./...
           go test ./...
 
-      - name: Patch wire position and prepare sequence
+      - name: Patch prepare and correction coordinate convention
         working-directory: bot-src
         shell: bash
-        env:
-          VARIANT: ${{ matrix.variant }}
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          import os
-
-          variant = os.environ["VARIANT"]
 
           flight = Path("internal/bot/flight.go")
           text = flight.read_text()
           old = "\t\tfloat32(position[1]) + playerEyeHeight,\n"
-          if variant in {"wire-y", "wire-y-prepare"}:
-              # NetworkChunkPublisherUpdate block Y -> querytarget/server entity Y
-              # is +0.62 on BDS. PlayerAuthInput wire position is another +1.62
-              # above server entity position (Dragonfly's server handler subtracts
-              # 1.62 before applying movement), so the total is blockY + 2.24.
-              new = "\t\tfloat32(position[1]) + playerEyeHeight + 0.62,\n"
-          else:
-              # Control: the previously tested querytarget-aligned value.
-              new = "\t\tfloat32(position[1]) + playerEyeHeight - 1,\n"
+          new = "\t\tfloat32(position[1]) + playerEyeHeight + 0.62,\n"
           if old not in text:
               raise SystemExit("publisher Y conversion target not found")
           flight.write_text(text.replace(old, new, 1))
@@ -102,11 +82,10 @@ jobs:
           bot = Path("internal/bot/bot.go")
           text = bot.read_text()
           old = '"github.com/sandertv/gophertunnel/minecraft/protocol/login"\n'
-          new = '"github.com/sandertv/gophertunnel/minecraft/protocol"\n\t"github.com/sandertv/gophertunnel/minecraft/protocol/login"\n'
-          if variant in {"wire-y-prepare", "prepare-old-y"}:
-              if old not in text:
-                  raise SystemExit("protocol import target not found")
-              text = text.replace(old, new, 1)
+          new = '"github.com/go-gl/mathgl/mgl32"\n\t"github.com/sandertv/gophertunnel/minecraft/protocol"\n\t"github.com/sandertv/gophertunnel/minecraft/protocol/login"\n'
+          if old not in text:
+              raise SystemExit("imports target not found")
+          text = text.replace(old, new, 1)
 
           old = "\t\t\tif cfg.Scenario == ScenarioChunkFly && samePublisher {\n"
           new = "\t\t\tif samePublisher {\n"
@@ -119,19 +98,17 @@ jobs:
               raise SystemExit("progress scenario gate target not found")
           text = text.replace(old, new, 1)
 
-          old = "\tgame := conn.GameData()\n\tstats.StartPosition = game.PlayerPosition\n"
-          new = "\tgame := conn.GameData()\n\tif err := out.Emit(\"movement_settings\", map[string]any{\"rewind_history_size\": game.PlayerMovementSettings.RewindHistorySize, \"server_authoritative_block_breaking\": game.PlayerMovementSettings.ServerAuthoritativeBlockBreaking, \"world_time\": game.Time}); err != nil {\n\t\treturn stageError(ExitRuntime, \"output\", err)\n\t}\n\tstats.StartPosition = game.PlayerPosition\n"
+          marker = '''\tif err := out.Emit("spawned", map[string]any{\n\t\t"x": game.PlayerPosition[0], "y": game.PlayerPosition[1], "z": game.PlayerPosition[2],\n\t}); err != nil {\n\t\treturn stageError(ExitRuntime, "output", err)\n\t}\n\n'''
+          prepare = marker + '''\tfor _, pk := range []packet.Packet{\n\t\t&packet.ServerBoundLoadingScreen{Type: packet.LoadingScreenTypeStart},\n\t\t&packet.Interact{ActionType: packet.InteractActionMouseOverEntity},\n\t\t&packet.ServerBoundLoadingScreen{Type: packet.LoadingScreenTypeEnd},\n\t\t&packet.PlayerAction{EntityRuntimeID: game.EntityRuntimeID, ActionType: protocol.PlayerActionRespawn, BlockFace: -1},\n\t\t&packet.Interact{ActionType: packet.InteractActionMouseOverEntity},\n\t\t&packet.ClientCameraAimAssist{Action: packet.ClientCameraAimAssistActionClear},\n\t} {\n\t\tif err := conn.WritePacket(pk); err != nil {\n\t\t\treturn stageError(ExitRuntime, "prepare", err)\n\t\t}\n\t}\n\tif err := out.Emit("client_prepared", map[string]any{"sequence": "go-test-bds"}); err != nil {\n\t\treturn stageError(ExitRuntime, "output", err)\n\t}\n\n'''
+          if marker not in text:
+              raise SystemExit("prepare target not found")
+          text = text.replace(marker, prepare, 1)
+
+          old = '''\t\tcase *packet.CorrectPlayerMovePrediction:\n\t\t\tif p.PredictionType == packet.PredictionTypePlayer {\n\t\t\t\tstate.correct(p.Position, p.Rotation[0], p.Rotation[1], p.Rotation[1])\n\t\t\t\tstate.syncServerTick(p.Tick)\n\t\t\t}\n'''
+          new = '''\t\tcase *packet.CorrectPlayerMovePrediction:\n\t\t\tif p.PredictionType == packet.PredictionTypePlayer {\n\t\t\t\tif err := out.Emit("server_correction", map[string]any{\n\t\t\t\t\t"position": []float32{p.Position[0], p.Position[1], p.Position[2]},\n\t\t\t\t\t"delta": []float32{p.Delta[0], p.Delta[1], p.Delta[2]},\n\t\t\t\t\t"on_ground": p.OnGround,\n\t\t\t\t\t"tick": p.Tick,\n\t\t\t\t}); err != nil {\n\t\t\t\t\treturn stageError(ExitRuntime, "output", err)\n\t\t\t\t}\n\t\t\t\t// BDS 1.26.44.3 returns entity/feet coordinates here, while\n\t\t\t\t// PlayerAuthInput requires the eye/wire position. Preserve the\n\t\t\t\t// wire-space state used by authInputPacket across corrections.\n\t\t\t\twirePosition := p.Position.Add(mgl32.Vec3{0, 1.62, 0})\n\t\t\t\tstate.correct(wirePosition, p.Rotation[0], p.Rotation[1], p.Rotation[1])\n\t\t\t\tstate.syncServerTick(p.Tick)\n\t\t\t}\n'''
           if old not in text:
-              raise SystemExit("movement settings target not found")
+              raise SystemExit("correction handler target not found")
           text = text.replace(old, new, 1)
-
-          if variant in {"wire-y-prepare", "prepare-old-y"}:
-              marker = '''\tif err := out.Emit("spawned", map[string]any{\n\t\t"x": game.PlayerPosition[0], "y": game.PlayerPosition[1], "z": game.PlayerPosition[2],\n\t}); err != nil {\n\t\treturn stageError(ExitRuntime, "output", err)\n\t}\n\n'''
-              prepare = marker + '''\t// Mirror go-test-bds Actor.prepare(): these packets are sent immediately\n\t// after DoSpawn and before its two-second movement settle.\n\tfor _, pk := range []packet.Packet{\n\t\t&packet.ServerBoundLoadingScreen{Type: packet.LoadingScreenTypeStart},\n\t\t&packet.Interact{ActionType: packet.InteractActionMouseOverEntity},\n\t\t&packet.ServerBoundLoadingScreen{Type: packet.LoadingScreenTypeEnd},\n\t\t&packet.PlayerAction{EntityRuntimeID: game.EntityRuntimeID, ActionType: protocol.PlayerActionRespawn, BlockFace: -1},\n\t\t&packet.Interact{ActionType: packet.InteractActionMouseOverEntity},\n\t\t&packet.ClientCameraAimAssist{Action: packet.ClientCameraAimAssistActionClear},\n\t} {\n\t\tif err := conn.WritePacket(pk); err != nil {\n\t\t\treturn stageError(ExitRuntime, "prepare", err)\n\t\t}\n\t}\n\tif err := out.Emit("client_prepared", map[string]any{"sequence": "go-test-bds"}); err != nil {\n\t\treturn stageError(ExitRuntime, "output", err)\n\t}\n\n'''
-              if marker not in text:
-                  raise SystemExit("prepare insertion target not found")
-              text = text.replace(marker, prepare, 1)
-
           bot.write_text(text)
           PY
           gofmt -w internal/bot/flight.go internal/bot/bot.go
@@ -155,7 +132,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: movement-bds-only-chunk-walk-${{ matrix.variant }}-${{ github.run_id }}
+          name: movement-bds-only-chunk-walk-correction-wire-space-${{ github.run_id }}
           path: |
             bds-only-chunk-walk.log
             test-results.json
