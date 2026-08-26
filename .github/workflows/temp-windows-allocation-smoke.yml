@@ -88,3 +88,5 @@ jobs:
             failure-diagnostics.txt
           if-no-files-found: warn
           retention-days: 7
+
+# Exact-SHA smoke trigger: 4d621d13 attempt 1
