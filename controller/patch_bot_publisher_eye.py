@@ -56,6 +56,27 @@ def main() -> int:
 '''
     text = replace_once(text, old, new, "publisher eye implementation")
     flight.write_text(text)
+
+    flight_test = root / "internal/bot/flight_test.go"
+    text = flight_test.read_text()
+    old = '''func TestPublisherEyePositionUsesAuthoritativeBlockPosition(t *testing.T) {
+\tgot := publisherEyePosition(protocol.BlockPos{266, 70, 159})
+\twant := mgl32.Vec3{266.5, 70 + playerEyeHeight, 159.5}
+\tif got != want {
+\t\tt.Fatalf("publisher eye position = %v, want %v", got, want)
+\t}
+}
+'''
+    new = '''func TestPublisherEyePositionUsesAuthoritativeBlockPosition(t *testing.T) {
+\tgot := publisherEyePosition(protocol.BlockPos{266, 70, 159}, 32769.62)
+\twant := mgl32.Vec3{266.5, 70 + 0.62 + playerEyeHeight, 159.5}
+\tif math.Abs(float64(got[1]-want[1])) > 0.001 || got[0] != want[0] || got[2] != want[2] {
+\t\tt.Fatalf("publisher eye position = %v, want %v", got, want)
+\t}
+}
+'''
+    text = replace_once(text, old, new, "publisher eye test")
+    flight_test.write_text(text)
     return 0
 
 
