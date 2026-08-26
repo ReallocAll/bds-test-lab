@@ -1,0 +1,63 @@
+name: Spark Recovery Multi-Session Validation
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "recovery-multisession-trigger.json"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  validate:
+    name: Multi-session crash replay
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install validation dependencies
+        run: python -m pip install --disable-pip-version-check psutil packaging
+      - name: Resolve exact Spark artifact
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          data = json.loads(Path("recovery-multisession-trigger.json").read_text())
+          sha = str(data.get("spark_sha", "")).strip()
+          if len(sha) != 40:
+              raise SystemExit(f"invalid spark_sha: {sha!r}")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write(f"EXPECTED_SPARK_SHA={sha}\n")
+          print(f"Spark SHA: {sha}")
+          PY
+      - name: Require exact Spark artifact
+        run: python -m controller.assert_spark_artifact --platform linux --expected-sha ${{ env.EXPECTED_SPARK_SHA }}
+      - name: Run multi-session crash replay
+        run: python -m controller.recovery_multisession_validation --platform linux
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: spark-recovery-multisession-${{ github.run_id }}
+          path: |
+            metadata.json
+            test-results.json
+            bds.log
+            endstone.log
+            spark.log
+            failure-diagnostics.txt
+            work/linux/bedrock_server/plugins/spark/recovery/**
+            work/linux/bedrock_server/plugins/spark/**/*.sparkprofile
+          if-no-files-found: warn
+          retention-days: 30
