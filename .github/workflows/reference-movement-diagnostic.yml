@@ -1,0 +1,84 @@
+name: Reference Client Movement Diagnostic
+
+on:
+  push:
+    branches:
+      - test/chunk-fly-spark
+    paths:
+      - ".github/workflows/reference-movement-diagnostic.yml"
+      - "controller/reference_movement_validation.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+  ENDSTONE_RUN_ID: "32770415029"
+
+jobs:
+  reference-movement:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout test lab
+        uses: actions/checkout@v7
+
+      - name: Pin known-good Endstone artifact run
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("providers/artifact_provider.py")
+          text = path.read_text()
+          needle = "    branch = config[\"branch\"]\n"
+          injected = "    branch = config[\"branch\"]\n    override_run_id = os.environ.get(f\"{component.upper()}_RUN_ID\", \"\").strip()\n    if override_run_id:\n        run = _get_json(f\"/repos/{repo}/actions/runs/{override_run_id}\")\n        if run.get(\"head_branch\") != branch or run.get(\"conclusion\") != \"success\":\n            raise ArtifactResolutionError(f\"Pinned {component} run {override_run_id} is not a successful {repo}@{branch} run\")\n        artifact = _select_from_run(component, platform_name, repo, run)\n        if artifact is None:\n            raise ArtifactResolutionError(f\"Pinned {component} run {override_run_id} has no compatible {platform_name} artifact\")\n        return run, artifact\n"
+          if needle not in text:
+              raise SystemExit("artifact provider discover target not found")
+          path.write_text(text.replace(needle, injected, 1))
+          PY
+
+      - name: Checkout reference client
+        uses: actions/checkout@v7
+        with:
+          repository: smell-of-curry/go-test-bds
+          ref: 5fe6b762fe3665caa980a2a25be1ede26e5793fc
+          path: reference-src
+          persist-credentials: false
+
+      - name: Set up Go 1.26
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          cache: false
+
+      - name: Build reference client
+        working-directory: reference-src
+        run: |
+          go build -trimpath -o ../reference-client .
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install validation dependencies
+        run: python -m pip install --disable-pip-version-check psutil
+
+      - name: Run reference movement diagnostic
+        run: python -m controller.reference_movement_validation --binary reference-client --moves 40
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: reference-movement-${{ github.run_id }}
+          path: |
+            test-results.json
+            reference-client.log
+            bds.log
+            work/linux/bedrock_server/server.properties
+          if-no-files-found: warn
+          retention-days: 7
