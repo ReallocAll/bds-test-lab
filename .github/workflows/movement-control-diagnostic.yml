@@ -17,7 +17,7 @@ env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
   ENDSTONE_RUN_ID: "32770415029"
-  BOT_REF: "b5b0061181854af29ac0aa9222c1d1d0705088d6"
+  BOT_REF: "bd0bd419a7a4674dbbf464d3a1e250bbb7c85ede"
 
 jobs:
   movement-control:
@@ -82,7 +82,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: movement-bds-only-chunk-fly-gravity-bootstrap-${{ github.run_id }}
+          name: movement-bds-only-chunk-fly-correction-probe-${{ github.run_id }}
           path: |
             bds-only-chunk-fly.log
             test-results.json
