@@ -62,30 +62,49 @@ jobs:
           from pathlib import Path
 
           unsafe = Path("gotestbds/internal/unsafe.go")
-          text = unsafe.read_text().replace("\t\tHasNetworkID:   true,\n", "")
-          unsafe.write_text(text)
+          unsafe.write_text(unsafe.read_text().replace("\t\tHasNetworkID:   true,\n", ""))
 
           config = Path("gotestbds/actor/config.go")
-          text = config.read_text().replace(
+          config.write_text(config.read_text().replace(
               "protocol.NewBitset(packet.PlayerAuthInputBitsetSize)",
               "protocol.NewInputFlags(packet.InputFlagCount)",
-          )
-          config.write_text(text)
+          ))
 
           movement = Path("gotestbds/actor/movement.go")
           text = movement.read_text()
           text = text.replace("movementBitset                                                       protocol.Bitset", "movementBitset                                                       protocol.InputFlags")
-          text = text.replace(
-              "protocol.NewBitset(packet.PlayerAuthInputBitsetSize)",
-              "protocol.NewInputFlags(packet.InputFlagCount)",
-          )
-          text = text.replace(
-              "\t\tBlockActions:      a.blockActions(),\n",
-              "\t\tBlockActions:      protocol.Option(a.blockActions()),\n",
-          )
+          text = text.replace("protocol.NewBitset(packet.PlayerAuthInputBitsetSize)", "protocol.NewInputFlags(packet.InputFlagCount)")
+          text = text.replace("\t\tBlockActions:      a.blockActions(),\n", "\t\tBlockActions:      protocol.Option(a.blockActions()),\n")
           movement.write_text(text)
+
+          # This diagnostic exercises only the reference client's movement
+          # implementation. Its pinned chunk decoder predates the current
+          # protocol's SubChunkLimit/Optional payload APIs, so keep packet
+          # registration intact but no-op these two world-cache handlers.
+          Path("gotestbds/bot/handler_level_chunk.go").write_text('''package bot
+
+import (
+    "github.com/sandertv/gophertunnel/minecraft/protocol/packet"
+    "github.com/smell-of-curry/go-test-bds/gotestbds/actor"
+)
+
+type LevelChunkHandler struct{}
+
+func (*LevelChunkHandler) Handle(packet.Packet, *Bot, *actor.Actor) error { return nil }
+''')
+          Path("gotestbds/bot/handler_subchunk.go").write_text('''package bot
+
+import (
+    "github.com/sandertv/gophertunnel/minecraft/protocol/packet"
+    "github.com/smell-of-curry/go-test-bds/gotestbds/actor"
+)
+
+type SubChunkHandler struct{}
+
+func (*SubChunkHandler) Handle(packet.Packet, *Bot, *actor.Actor) error { return nil }
+''')
           PY
-          gofmt -w gotestbds/internal/unsafe.go gotestbds/actor/config.go gotestbds/actor/movement.go
+          gofmt -w gotestbds/internal/unsafe.go gotestbds/actor/config.go gotestbds/actor/movement.go gotestbds/bot/handler_level_chunk.go gotestbds/bot/handler_subchunk.go
           go mod tidy
           go build -trimpath -o ../reference-client .
 
