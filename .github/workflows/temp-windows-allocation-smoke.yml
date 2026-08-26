@@ -64,6 +64,9 @@ jobs:
         shell: python
         run: |
           import pathlib
+          import sys
+
+          sys.path.insert(0, str(pathlib.Path.cwd()))
           from controller.release_validation import SparkReleaseValidation
 
           validation = SparkReleaseValidation("windows", 30, pathlib.Path("dist/bds-test-bot.exe"))
