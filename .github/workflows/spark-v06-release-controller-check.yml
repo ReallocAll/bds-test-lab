@@ -8,20 +8,26 @@ on:
       - "controller/release_validation.py"
       - "controller/assert_spark_artifact.py"
       - "controller/run_test.py"
+      - "controller/block_actor_validation.py"
       - "providers/artifact_provider.py"
       - "tests/test_artifact_provider.py"
       - "tests/test_run_test.py"
+      - "tests/test_block_actor_validation.py"
       - ".github/workflows/spark-v06-release-validation.yml"
+      - ".github/workflows/spark-block-actor-validation.yml"
       - ".github/workflows/spark-v06-release-controller-check.yml"
   pull_request:
     paths:
       - "controller/release_validation.py"
       - "controller/assert_spark_artifact.py"
       - "controller/run_test.py"
+      - "controller/block_actor_validation.py"
       - "providers/artifact_provider.py"
       - "tests/test_artifact_provider.py"
       - "tests/test_run_test.py"
+      - "tests/test_block_actor_validation.py"
       - ".github/workflows/spark-v06-release-validation.yml"
+      - ".github/workflows/spark-block-actor-validation.yml"
       - ".github/workflows/spark-v06-release-controller-check.yml"
 
 permissions:
@@ -36,22 +42,31 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-      - name: Compile release controller
+      - name: Install controller dependencies
+        run: python -m pip install --disable-pip-version-check psutil packaging
+      - name: Compile release controllers
         run: >-
           python -m py_compile
           controller/release_validation.py
           controller/assert_spark_artifact.py
           controller/run_test.py
+          controller/block_actor_validation.py
           providers/artifact_provider.py
           tests/test_artifact_provider.py
           tests/test_run_test.py
+          tests/test_block_actor_validation.py
       - name: Run controller tests
-        run: python -m unittest tests.test_artifact_provider tests.test_run_test -v
+        run: >-
+          python -m unittest
+          tests.test_artifact_provider
+          tests.test_run_test
+          tests.test_block_actor_validation
+          -v
       - name: Verify module imports
         run: |
-          python -m pip install --disable-pip-version-check psutil packaging
           python - <<'PY'
           import controller.assert_spark_artifact
+          import controller.block_actor_validation
           import controller.release_validation
           import controller.run_test
           import providers.artifact_provider
