@@ -16,7 +16,7 @@ env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
   ENDSTONE_RUN_ID: "32770415029"
-  BOT_REF: "cb329a123de56cb09e07466651d09a0ff06ab0d6"
+  BOT_REF: "8f15c6f1bb48c20fe66e4ca9f84bb1e42beb1dc2"
 
 jobs:
   diagnose:
