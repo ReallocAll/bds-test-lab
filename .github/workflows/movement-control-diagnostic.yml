@@ -64,7 +64,7 @@ jobs:
           go vet ./...
           go test ./...
 
-      - name: Patch exact reference movement tuple
+      - name: Patch exact tuple with tick one
         working-directory: bot-src
         shell: bash
         run: |
@@ -99,6 +99,11 @@ jobs:
           if baseline not in text:
               raise SystemExit("baseline input flag target not found")
           text = text.replace(baseline, "", 1)
+
+          state_ctor = "\treturn &playerState{\n\t\tposition:"
+          if state_ctor not in text:
+              raise SystemExit("player state constructor target not found")
+          text = text.replace(state_ctor, "\treturn &playerState{\n\t\tserverTick: 1,\n\t\tposition:", 1)
           tick.write_text(text)
           PY
           gofmt -w internal/bot/flight.go internal/bot/bot.go internal/bot/tick.go
@@ -122,7 +127,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: movement-bds-only-chunk-walk-exact-reference-${{ github.run_id }}
+          name: movement-bds-only-chunk-walk-exact-tick1-${{ github.run_id }}
           path: |
             bds-only-chunk-walk.log
             test-results.json
