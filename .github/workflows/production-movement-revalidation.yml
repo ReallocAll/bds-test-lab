@@ -1,0 +1,80 @@
+name: Production Movement Revalidation
+
+on:
+  push:
+    branches: [test/chunk-fly-spark]
+    paths:
+      - ".github/workflows/production-movement-revalidation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+  BOT_REF: "081bc5fdef9fab6c70cb01c9fee21e2c81c48cf5"
+
+jobs:
+  movement:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [chunk-walk, chunk-fly]
+    steps:
+      - name: Checkout test lab
+        uses: actions/checkout@v7
+
+      - name: Checkout exact production bot
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/bds-test-bot
+          ref: ${{ env.BOT_REF }}
+          path: bot-src
+          persist-credentials: false
+
+      - name: Set up Go 1.25
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Build production bot without patches
+        working-directory: bot-src
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BOT_REF"
+          go mod download
+          go vet ./...
+          go test ./...
+          mkdir -p ../dist
+          go build -trimpath -o ../dist/bds-test-bot ./cmd/bds-test-bot
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install validation dependencies
+        run: python -m pip install --disable-pip-version-check psutil
+
+      - name: Run strict BDS-only movement validation
+        run: python -m controller.movement_bds_only_validation --bot dist/bds-test-bot --scenario ${{ matrix.scenario }}
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: production-${{ matrix.scenario }}-${{ github.run_id }}
+          path: |
+            bds-only-${{ matrix.scenario }}.log
+            test-results.json
+            failure-diagnostics.txt
+            bds.log
+            work/linux/bedrock_server/server.properties
+          if-no-files-found: warn
+          retention-days: 7
