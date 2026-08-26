@@ -53,7 +53,7 @@ jobs:
           path: bot-src
           persist-credentials: false
 
-      - name: Patch authoritative traversal seed
+      - name: Patch authoritative traversal seed and server tick
         shell: bash
         run: |
           python3 - <<'PY'
@@ -70,9 +70,22 @@ jobs:
           new = "if (cfg.Scenario == ScenarioChunkFly || cfg.Scenario == ScenarioChunkWalk) && changedChunk {"
           if old not in text:
               raise SystemExit("publisher telemetry target not found")
+          text = text.replace(old, new, 1)
+          old = "\tstate = newPlayerState(game.PlayerPosition, game.Pitch, game.Yaw)\n"
+          new = old + "\tif game.Time > 0 {\n\t\tstate.syncServerTick(uint64(game.Time))\n\t}\n"
+          if old not in text:
+              raise SystemExit("StartGame tick seed target not found")
           bot.write_text(text.replace(old, new, 1))
+
+          tick = Path("bot-src/internal/bot/tick.go")
+          text = tick.read_text()
+          old = "\t\tcase <-timer.C:\n\t\t}\n\t}\n\n\tticker := time.NewTicker(time.Second / 20)\n"
+          new = "\t\tcase <-timer.C:\n\t\t}\n\t\tif _, synced := state.tickSnapshot(); synced {\n\t\t\tfor i := 0; i < int(movementStartDelay/(time.Second/20)); i++ {\n\t\t\t\tstate.nextInputTick()\n\t\t\t}\n\t\t}\n\t}\n\n\tticker := time.NewTicker(time.Second / 20)\n"
+          if old not in text:
+              raise SystemExit("movement settle tick advance target not found")
+          tick.write_text(text.replace(old, new, 1))
           PY
-          gofmt -w bot-src/internal/bot/bot.go
+          gofmt -w bot-src/internal/bot/bot.go bot-src/internal/bot/tick.go
 
       - name: Set up Go 1.25
         uses: actions/setup-go@v6
