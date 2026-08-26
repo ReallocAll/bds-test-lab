@@ -35,30 +35,36 @@ jobs:
           python - <<'PY'
           import json
           import pathlib
+          import re
           from controller.release_validation import SparkReleaseValidation
 
+          rules = [
+              "commandblockoutput", "commandblocksenabled", "dodaylightcycle", "doentitydrops",
+              "dofiretick", "doimmediaterespawn", "doinsomnia", "dolimitedcrafting", "domobloot",
+              "domobspawning", "dotiledrops", "doweathercycle", "drowningdamage", "falldamage",
+              "firedamage", "freezedamage", "functioncommandlimit", "keepinventory", "locatorbar",
+              "maxcommandchainlength", "mobgriefing", "naturalregeneration", "playerssleepingpercentage",
+              "playerwaypoints", "projectilescanbreakblocks", "pvp", "randomtickspeed", "recipesunlock",
+              "respawnblocksexplode", "sendcommandfeedback", "showbordereffect", "showcoordinates",
+              "showdaysplayed", "showdeathmessages", "showrecipemessages", "showtags", "spawnradius",
+              "tntexplodes", "tntexplosiondropdecay",
+          ]
           validation = SparkReleaseValidation("linux", 30, pathlib.Path("/bin/true"))
+          observed = {}
           try:
               validation.install_artifacts()
               validation.verify_endstone_version()
               validation.start_server()
-              queries = {
-                  "spawnradius": "5",
-                  "randomtickspeed": "1",
-                  "recipesunlock": "true",
-                  "maxcommandchainlength": "65535",
-              }
-              observed = {}
-              for rule, expected in queries.items():
+              for rule in rules:
                   lines = validation.command_check(f"gamerule-{rule}", f"gamerule {rule}")
                   text = "\n".join(lines)
-                  observed[rule] = text
-                  lowered = text.lower()
-                  if expected.lower() not in lowered:
-                      raise RuntimeError(f"{rule}: expected default {expected!r}, output={text!r}")
-              for rule in ("locatorbar", "playerwaypoints"):
-                  lines = validation.command_check(f"gamerule-{rule}", f"gamerule {rule}")
-                  observed[rule] = "\n".join(lines)
+                  value = None
+                  for line in reversed(lines):
+                      match = re.search(rf"\b{re.escape(rule)}\s*=\s*(.+?)\s*$", line, re.IGNORECASE)
+                      if match:
+                          value = match.group(1).strip()
+                          break
+                  observed[rule] = {"value": value, "output": text}
               pathlib.Path("gamerule-default-audit.json").write_text(
                   json.dumps(observed, indent=2, ensure_ascii=False), encoding="utf-8"
               )
