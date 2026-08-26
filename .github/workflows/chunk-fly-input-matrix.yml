@@ -6,6 +6,7 @@ on:
       - test/chunk-fly-spark
     paths:
       - ".github/workflows/chunk-fly-input-matrix.yml"
+      - "controller/patch_chunk_fly_matrix_variant.py"
   workflow_dispatch:
 
 permissions:
@@ -27,8 +28,8 @@ jobs:
       fail-fast: false
       matrix:
         variant:
-          - tick1-predicted
-          - tick1-no-block
+          - coherent-baseline
+          - coherent-no-block
 
     steps:
       - name: Checkout test lab
