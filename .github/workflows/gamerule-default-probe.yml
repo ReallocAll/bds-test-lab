@@ -1,0 +1,52 @@
+name: Bedrock Gamerule Default Probe
+
+on:
+  push:
+    branches:
+      - test/gamerule-default-probe
+    paths:
+      - ".github/workflows/gamerule-default-probe.yml"
+      - "controller/gamerule_defaults_probe.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+  EXPECTED_SPARK_SHA: "3190b9fe5ee1c8eb28a272e73df3c6dc9beee1ad"
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --disable-pip-version-check psutil packaging
+      - name: Require exact merged Spark artifact
+        run: >-
+          python -m controller.assert_spark_artifact
+          --platform linux
+          --expected-sha ${{ env.EXPECTED_SPARK_SHA }}
+      - name: Query fresh-world gamerule defaults
+        run: python -m controller.gamerule_defaults_probe
+      - name: Upload probe evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gamerule-default-probe-${{ github.run_id }}
+          path: |
+            test-results.json
+            bds.log
+            endstone.log
+            spark.log
+            failure-diagnostics.txt
+            work/linux/bedrock_server/server.properties
+            work/linux/bedrock_server/version.txt
+          if-no-files-found: warn
+          retention-days: 7
