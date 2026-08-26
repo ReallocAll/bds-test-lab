@@ -11,13 +11,15 @@ from controller.block_actor_validation import BytebinCapture, ProtoDecodeError, 
 from controller.run_test import IntegrationTest, now_iso, write_json
 
 
+# Fresh BDS 1.26.44.3 current defaults. playerWaypoints is an enum-style
+# Gamerule whose Endstone runtime value is the integer 1 on a fresh world.
 EXPECTED_DEFAULTS = {
     "spawnradius": "10",
-    "maxcommandchainlength": "65536",
+    "maxcommandchainlength": "65535",
     "recipesunlock": "true",
     "randomtickspeed": "1",
+    "playerwaypoints": "1",
 }
-DEFAULT_UNKNOWN_RULES = {"playerwaypoints"}
 
 
 def _optional_text_field(data: bytes, field_number: int) -> str | None:
@@ -106,25 +108,10 @@ class GameruleFallbackValidation(IntegrationTest):
                 actual=actual["default"],
             )
 
-        for name in DEFAULT_UNKNOWN_RULES:
-            actual = rules.get(name)
-            if actual is None:
-                raise RuntimeError(f"expected runtime gamerule {name!r} is absent from Spark metadata")
-            if actual["default_present"]:
-                raise RuntimeError(
-                    f"gamerule {name!r} must remain default-unknown, but Spark serialized {actual['default']!r}"
-                )
-            self.check(
-                "gamerule-default-unknown",
-                "PASS",
-                "default field omitted rather than guessed",
-                rule=name,
-            )
-
         self.check(
             "gamerule-fallback-metadata",
             "PASS",
-            "current Bedrock defaults were serialized and playerWaypoints remained default-unknown",
+            "fresh-BDS current defaults were serialized for representative boolean, integer, and enum rules",
         )
 
     def execute_validation(self) -> int:
