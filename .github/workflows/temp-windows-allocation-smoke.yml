@@ -14,7 +14,7 @@ permissions:
 env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
-  EXPECTED_SPARK_SHA: "d9d4f6abd23e16694d5e5a4f27a4a371e9ae71e4"
+  EXPECTED_SPARK_SHA: "4d621d13a5db2c46778a78ef969deb354ebb97ad"
   BOT_REF: "a0a83240e9e8f12d4806ba31194fb1807d7b5dd1"
 
 jobs:
