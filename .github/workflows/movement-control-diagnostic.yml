@@ -6,7 +6,7 @@ on:
       - test/chunk-fly-spark
     paths:
       - ".github/workflows/movement-control-diagnostic.yml"
-      - "controller/movement_bds_only_validation.py"
+      - "controller/fleet_spark_validation.py"
   workflow_dispatch:
 
 permissions:
@@ -17,29 +17,61 @@ env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
   ENDSTONE_RUN_ID: "32770415029"
+  SPARK_RUN_ID: "32940101210"
   BOT_REF: "605c63af9300b21862b0d76169ede5d27106cbbd"
 
 jobs:
   movement-control:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        count: [1, 5, 10, 20]
 
     steps:
       - name: Checkout test lab
         uses: actions/checkout@v7
 
-      - name: Pin known-good Endstone artifact run
+      - name: Pin known-good artifacts and enable chunk-fly fleet validation
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          path = Path("providers/artifact_provider.py")
-          text = path.read_text()
+
+          provider = Path("providers/artifact_provider.py")
+          text = provider.read_text()
           needle = "    branch = config[\"branch\"]\n"
           injected = "    branch = config[\"branch\"]\n    override_run_id = os.environ.get(f\"{component.upper()}_RUN_ID\", \"\").strip()\n    if override_run_id:\n        run = _get_json(f\"/repos/{repo}/actions/runs/{override_run_id}\")\n        if run.get(\"head_branch\") != branch or run.get(\"conclusion\") != \"success\":\n            raise ArtifactResolutionError(f\"Pinned {component} run {override_run_id} is not a successful {repo}@{branch} run\")\n        artifact = _select_from_run(component, platform_name, repo, run)\n        if artifact is None:\n            raise ArtifactResolutionError(f\"Pinned {component} run {override_run_id} has no compatible {platform_name} artifact\")\n        return run, artifact\n"
           if needle not in text:
               raise SystemExit("artifact provider discover target not found")
-          path.write_text(text.replace(needle, injected, 1))
+          provider.write_text(text.replace(needle, injected, 1))
+
+          controller = Path("controller/fleet_spark_validation.py")
+          text = controller.read_text()
+          old = '        set_server_property(properties, "max-players", "30")\n'
+          new = old + '        set_server_property(properties, "gamemode", "creative")\n        set_server_property(properties, "force-gamemode", "true")\n'
+          if old not in text:
+              raise SystemExit("server property target not found")
+          text = text.replace(old, new, 1)
+
+          old = '        bad = [event for event in stats if not event.get("online") or int(event.get("auth_inputs_sent", 0)) <= 0]\n'
+          new = '        bad = [event for event in stats if not event.get("online") or int(event.get("auth_inputs_sent", 0)) <= 0 or (self.scenario == "chunk-fly" and (event.get("flying_confirmed") is not True or float(event.get("horizontal_distance", 0)) <= 8.0))]\n'
+          if old not in text:
+              raise SystemExit("stats validation target not found")
+          text = text.replace(old, new, 1)
+
+          old = '        if shutdown is None or shutdown.get("graceful_shutdown") is not True:\n            raise RuntimeError(f"Missing successful fleet_shutdown event: {shutdown}")\n'
+          new = old + '        if self.scenario == "chunk-fly" and int(shutdown.get("flying_confirmed", -1)) != self.count:\n            raise RuntimeError(f"Not all bots received server flight acknowledgement: {shutdown}")\n'
+          if old not in text:
+              raise SystemExit("shutdown validation target not found")
+          text = text.replace(old, new, 1)
+
+          old = '    parser.add_argument("--scenario", default="idle", choices=["idle"])\n'
+          new = '    parser.add_argument("--scenario", default="idle", choices=["idle", "chunk-fly"])\n'
+          if old not in text:
+              raise SystemExit("scenario choices target not found")
+          controller.write_text(text.replace(old, new, 1))
           PY
 
       - name: Checkout production bot revision
@@ -76,20 +108,22 @@ jobs:
       - name: Install validation dependencies
         run: python -m pip install --disable-pip-version-check psutil
 
-      - name: Run strict production chunk-fly validation
+      - name: Run production chunk-fly fleet + Spark profile
         shell: bash
-        run: python -m controller.movement_bds_only_validation --bot dist/bds-test-bot --scenario chunk-fly
+        run: python -m controller.fleet_spark_validation --bot dist/bds-test-bot --count ${{ matrix.count }} --scenario chunk-fly --profile-seconds 30
 
-      - name: Upload chunk-fly evidence
+      - name: Upload fleet evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: production-chunk-fly-${{ github.run_id }}
+          name: production-chunk-fly-${{ matrix.count }}-bots-${{ github.run_id }}
           path: |
-            bds-only-chunk-fly.log
+            fleet-${{ matrix.count }}-chunk-fly.log
+            fleet-spark-result.json
             test-results.json
             failure-diagnostics.txt
             bds.log
+            spark.log
             work/linux/bedrock_server/server.properties
           if-no-files-found: warn
           retention-days: 7
