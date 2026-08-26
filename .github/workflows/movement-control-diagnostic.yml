@@ -17,7 +17,7 @@ env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
   ENDSTONE_RUN_ID: "32770415029"
-  BOT_REF: "cbbd93deaa9fb6140ebe330235428aa1191e8337"
+  BOT_REF: "7f75c0651ac55896c3118b7ed55e4dd22cedb97e"
 
 jobs:
   movement-control:
