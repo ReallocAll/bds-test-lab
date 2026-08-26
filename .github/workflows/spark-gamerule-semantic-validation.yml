@@ -1,0 +1,125 @@
+name: Spark Gamerule Semantic Validation
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "gamerule-semantic-trigger.json"
+  workflow_dispatch:
+    inputs:
+      spark_sha:
+        description: "Exact ReallocAll/spark SHA to validate"
+        required: true
+
+concurrency:
+  group: spark-gamerule-semantic-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+  EXPECTED_SPARK_SHA: ${{ github.event.inputs.spark_sha || '' }}
+
+jobs:
+  semantic-validation:
+    name: Gamerule semantics / ${{ matrix.scenario }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario:
+          - defaults
+          - off
+          - everyone
+          - modified
+    steps:
+      - name: Checkout test lab
+        uses: actions/checkout@v7
+
+      - name: Resolve exact Spark trigger
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          value = os.environ.get("EXPECTED_SPARK_SHA", "").strip()
+          if not value:
+              trigger = Path("gamerule-semantic-trigger.json")
+              if not trigger.is_file():
+                  raise SystemExit("gamerule-semantic-trigger.json is required for push-triggered validation")
+              value = str(json.loads(trigger.read_text(encoding="utf-8")).get("spark_sha", "")).strip()
+          if len(value) != 40 or any(ch not in "0123456789abcdefABCDEF" for ch in value):
+              raise SystemExit(f"Invalid exact Spark SHA: {value!r}")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write(f"EXPECTED_SPARK_SHA={value}\n")
+          print(f"Spark SHA: {value}")
+          PY
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install validation dependencies
+        run: python -m pip install --disable-pip-version-check psutil packaging
+
+      - name: Require exact Spark artifact
+        run: >-
+          python -m controller.assert_spark_artifact
+          --platform linux
+          --expected-sha ${{ env.EXPECTED_SPARK_SHA }}
+
+      - name: Run real BDS Gamerule semantic validation
+        run: python -m controller.gamerule_semantic_validation --scenario "${{ matrix.scenario }}"
+
+      - name: Add Gamerule semantic evidence to summary
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f test-results.json ]]; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path("test-results.json").read_text())
+          metadata = json.loads(Path("metadata.json").read_text()) if Path("metadata.json").is_file() else {}
+          spark_sha = (((metadata.get("components") or {}).get("spark") or {}).get("sha"))
+          print("## Spark Gamerule semantic validation")
+          print()
+          print(f"Scenario: `{data.get('scenario')}`")
+          print(f"Status: **{data.get('status')}**")
+          print(f"Spark SHA: `{spark_sha}`")
+          print(f"BDS: `{data.get('bds_version')}`")
+          print(f"Profiler: {data.get('report_viewer_url')}")
+          print(f"Shutdown: `{data.get('shutdown_status')}`")
+          rules = data.get("validated_gamerules") or {}
+          print(f"locatorbar present: `{bool(rules.get('locatorbar'))}`")
+          if rules.get("playerwaypoints"):
+              print(f"playerwaypoints: `{rules['playerwaypoints'].get('world_values')}`")
+          PY
+          fi >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Gamerule semantic evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: spark-gamerule-semantic-${{ matrix.scenario }}-${{ github.run_id }}
+          path: |
+            metadata.json
+            bds.log
+            endstone.log
+            spark.log
+            test-results.json
+            failure-diagnostics.txt
+            gamerule-semantic-*-capture/
+            work/linux/bedrock_server/server.properties
+            work/linux/bedrock_server/version.txt
+          if-no-files-found: warn
+          retention-days: 30
