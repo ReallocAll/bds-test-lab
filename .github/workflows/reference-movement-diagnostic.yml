@@ -58,6 +58,13 @@ jobs:
         working-directory: reference-src
         run: |
           go get github.com/sandertv/gophertunnel@v1.59.0
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("gotestbds/internal/unsafe.go")
+          text = path.read_text()
+          text = text.replace("\t\tHasNetworkID:   true,\n", "")
+          path.write_text(text)
+          PY
           go mod tidy
           go build -trimpath -o ../reference-client .
 
