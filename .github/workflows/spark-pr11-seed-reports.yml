@@ -1,0 +1,149 @@
+name: Spark PR11 Seeded Online Reports
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "pr11-seed-report-trigger.json"
+
+concurrency:
+  group: spark-pr11-seed-reports-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  seeded-report:
+    name: Seed ${{ matrix.seed }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: neg5301248458077658742
+            seed: "-5301248458077658742"
+          - label: seed999
+            seed: "999"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout test lab
+        uses: actions/checkout@v7
+
+      - name: Resolve exact PR11 trigger
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          data = json.loads(Path("pr11-seed-report-trigger.json").read_text(encoding="utf-8"))
+          spark_sha = str(data.get("spark_sha", "")).strip()
+          bot_ref = str(data.get("bot_ref", "")).strip()
+          if len(spark_sha) != 40 or any(ch not in "0123456789abcdefABCDEF" for ch in spark_sha):
+              raise SystemExit(f"Invalid Spark SHA: {spark_sha!r}")
+          if not bot_ref:
+              raise SystemExit("bot_ref must not be empty")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write(f"EXPECTED_SPARK_SHA={spark_sha}\n")
+              env.write(f"BOT_REF={bot_ref}\n")
+          print(f"Spark SHA: {spark_sha}")
+          print(f"Bot ref: {bot_ref}")
+          PY
+
+      - name: Checkout Bot at exact ref
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/bds-test-bot
+          ref: ${{ env.BOT_REF }}
+          path: bot-src
+          persist-credentials: false
+
+      - name: Set up Go 1.25
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Build exact Bot revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cd bot-src
+          go mod download
+          go test ./...
+          go build -trimpath -o ../dist/bds-test-bot ./cmd/bds-test-bot
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install validation dependencies
+        run: python -m pip install --disable-pip-version-check psutil packaging
+
+      - name: Require exact PR11 Spark artifact
+        run: >-
+          python -m controller.assert_spark_artifact
+          --platform linux
+          --expected-sha ${{ env.EXPECTED_SPARK_SHA }}
+
+      - name: Run seeded PR11 online report validation
+        env:
+          SEED: ${{ matrix.seed }}
+        run: >-
+          python -m controller.pr11_seed_report_validation
+          --seed "$SEED"
+          --bot dist/bds-test-bot
+
+      - name: Add seeded report evidence to summary
+        if: always()
+        env:
+          SEED: ${{ matrix.seed }}
+        shell: bash
+        run: |
+          if [[ -f test-results.json ]]; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path("test-results.json").read_text())
+          metadata = json.loads(Path("metadata.json").read_text()) if Path("metadata.json").is_file() else {}
+          spark_sha = (((metadata.get("components") or {}).get("spark") or {}).get("sha"))
+          print("## Spark PR11 seeded online report")
+          print()
+          print(f"Seed: `{data.get('seed')}`")
+          print(f"Status: **{data.get('status')}**")
+          print(f"Spark SHA: `{spark_sha}`")
+          print(f"BDS: `{data.get('bds_version')}`")
+          print(f"Bot online: `{bool(data.get('bot_online_event'))}`")
+          print(f"Viewer: {data.get('report_viewer_url')}")
+          print(f"Shutdown: `{data.get('shutdown_status')}`")
+          PY
+          fi >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload seeded report evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: spark-pr11-seed-${{ matrix.label }}-${{ github.run_id }}
+          path: |
+            metadata.json
+            bds.log
+            endstone.log
+            spark.log
+            release-bot-linux.log
+            test-results.json
+            failure-diagnostics.txt
+            work/linux/bedrock_server/server.properties
+            work/linux/bedrock_server/version.txt
+          if-no-files-found: warn
+          retention-days: 30
