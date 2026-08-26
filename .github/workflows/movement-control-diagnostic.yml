@@ -17,7 +17,7 @@ env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
   ENDSTONE_RUN_ID: "32770415029"
-  BOT_REF: "bd0bd419a7a4674dbbf464d3a1e250bbb7c85ede"
+  BOT_REF: "1904a39a59f8dca210acb2f5d4100ab130a82d5b"
 
 jobs:
   movement-control:
@@ -56,6 +56,95 @@ jobs:
           go-version: "1.25.x"
           cache: false
 
+      - name: Patch pre-flight correction bootstrap
+        working-directory: bot-src
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("internal/bot/tick.go")
+          text = path.read_text()
+          start = text.index("func runTickLoop(")
+          replacement = r'''func runChunkFlyCorrectionBootstrap(ctx context.Context, writer packetWriter, state *playerState) error {
+          ticker := time.NewTicker(time.Second / 20)
+          defer ticker.Stop()
+
+          for !state.positionReadySnapshot() {
+              state.stepCorrectionBootstrap()
+              tick := state.nextInputTick()
+              if err := writer.WritePacket(authInputPacket(state, tick)); err != nil {
+                  if ctx.Err() != nil {
+                      return nil
+                  }
+                  return err
+              }
+              select {
+              case <-ctx.Done():
+                  return nil
+              case <-ticker.C:
+              }
+          }
+          return nil
+          }
+
+          func runTickLoop(ctx context.Context, writer packetWriter, state *playerState, cfg Config, headingYaw float32, botName string, entityRuntimeID uint64) error {
+              if cfg.Scenario == ScenarioChunkWalk {
+                  timer := time.NewTimer(movementStartDelay)
+                  select {
+                  case <-ctx.Done():
+                      if !timer.Stop() {
+                          <-timer.C
+                      }
+                      return nil
+                  case <-timer.C:
+                  }
+              }
+
+              if cfg.Scenario == ScenarioChunkFly && !state.positionReadySnapshot() {
+                  if err := runChunkFlyCorrectionBootstrap(ctx, writer, state); err != nil {
+                      return err
+                  }
+                  if ctx.Err() != nil {
+                      return nil
+                  }
+              }
+
+              ticker := time.NewTicker(time.Second / 20)
+              defer ticker.Stop()
+
+              scenarioAction, err := newScenarioAction(cfg, state, headingYaw, writer, botName, entityRuntimeID)
+              if err != nil {
+                  return err
+              }
+              runner := action.NewRunner(scenarioAction)
+              if err := runner.Start(ctx); err != nil {
+                  return err
+              }
+
+              for {
+                  select {
+                  case <-ctx.Done():
+                      return nil
+                  case <-ticker.C:
+                      tick := state.nextInputTick()
+                      if err := runner.Tick(ctx, action.TickContext{Tick: tick}); err != nil {
+                          return err
+                      }
+                      if err := writer.WritePacket(authInputPacket(state, tick)); err != nil {
+                          if ctx.Err() != nil {
+                              return nil
+                          }
+                          return err
+                      }
+                  }
+              }
+          }
+          '''
+          path.write_text(text[:start] + replacement)
+          PY
+          gofmt -w internal/bot/tick.go
+
       - name: Build exact diagnostic bot
         working-directory: bot-src
         shell: bash
@@ -82,7 +171,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: movement-bds-only-chunk-fly-correction-probe-${{ github.run_id }}
+          name: movement-bds-only-chunk-fly-preflight-bootstrap-${{ github.run_id }}
           path: |
             bds-only-chunk-fly.log
             test-results.json
