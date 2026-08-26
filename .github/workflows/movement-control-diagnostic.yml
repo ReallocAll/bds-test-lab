@@ -23,6 +23,13 @@ jobs:
   movement-control:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - wire-y
+          - wire-y-prepare
+          - prepare-old-y
 
     steps:
       - name: Checkout test lab
@@ -64,23 +71,43 @@ jobs:
           go vet ./...
           go test ./...
 
-      - name: Patch 40-frame idle rewind bootstrap
+      - name: Patch wire position and prepare sequence
         working-directory: bot-src
         shell: bash
+        env:
+          VARIANT: ${{ matrix.variant }}
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import os
+
+          variant = os.environ["VARIANT"]
 
           flight = Path("internal/bot/flight.go")
           text = flight.read_text()
           old = "\t\tfloat32(position[1]) + playerEyeHeight,\n"
-          new = "\t\tfloat32(position[1]) + playerEyeHeight - 1,\n"
+          if variant in {"wire-y", "wire-y-prepare"}:
+              # NetworkChunkPublisherUpdate block Y -> querytarget/server entity Y
+              # is +0.62 on BDS. PlayerAuthInput wire position is another +1.62
+              # above server entity position (Dragonfly's server handler subtracts
+              # 1.62 before applying movement), so the total is blockY + 2.24.
+              new = "\t\tfloat32(position[1]) + playerEyeHeight + 0.62,\n"
+          else:
+              # Control: the previously tested querytarget-aligned value.
+              new = "\t\tfloat32(position[1]) + playerEyeHeight - 1,\n"
           if old not in text:
               raise SystemExit("publisher Y conversion target not found")
           flight.write_text(text.replace(old, new, 1))
 
           bot = Path("internal/bot/bot.go")
           text = bot.read_text()
+          old = '"github.com/sandertv/gophertunnel/minecraft/protocol/login"\n'
+          new = '"github.com/sandertv/gophertunnel/minecraft/protocol"\n\t"github.com/sandertv/gophertunnel/minecraft/protocol/login"\n'
+          if variant in {"wire-y-prepare", "prepare-old-y"}:
+              if old not in text:
+                  raise SystemExit("protocol import target not found")
+              text = text.replace(old, new, 1)
+
           old = "\t\t\tif cfg.Scenario == ScenarioChunkFly && samePublisher {\n"
           new = "\t\t\tif samePublisher {\n"
           if old not in text:
@@ -91,118 +118,23 @@ jobs:
           if old not in text:
               raise SystemExit("progress scenario gate target not found")
           text = text.replace(old, new, 1)
+
           old = "\tgame := conn.GameData()\n\tstats.StartPosition = game.PlayerPosition\n"
           new = "\tgame := conn.GameData()\n\tif err := out.Emit(\"movement_settings\", map[string]any{\"rewind_history_size\": game.PlayerMovementSettings.RewindHistorySize, \"server_authoritative_block_breaking\": game.PlayerMovementSettings.ServerAuthoritativeBlockBreaking, \"world_time\": game.Time}); err != nil {\n\t\treturn stageError(ExitRuntime, \"output\", err)\n\t}\n\tstats.StartPosition = game.PlayerPosition\n"
           if old not in text:
-              raise SystemExit("game data telemetry target not found")
-          bot.write_text(text.replace(old, new, 1))
-
-          tick = Path("internal/bot/tick.go")
-          text = tick.read_text()
-          old = "const chunkWalkStepPerTick = float32(0.18)\n"
-          new = "const chunkWalkStepPerTick = float32(4.317 / 20)\n"
-          if old not in text:
-              raise SystemExit("walk speed target not found")
+              raise SystemExit("movement settings target not found")
           text = text.replace(old, new, 1)
-          baseline = "\tflags.Set(packet.InputFlagBlockBreakingDelayEnabled)\n"
-          if baseline not in text:
-              raise SystemExit("baseline input flag target not found")
-          text = text.replace(baseline, "", 1)
-          state_ctor = "\treturn &playerState{\n\t\tposition:"
-          if state_ctor not in text:
-              raise SystemExit("player state constructor target not found")
-          text = text.replace(state_ctor, "\treturn &playerState{\n\t\tserverTick: 1,\n\t\tposition:", 1)
 
-          start = text.index("func runTickLoop(")
-          replacement = r'''func runTickLoop(ctx context.Context, writer packetWriter, state *playerState, cfg Config, headingYaw float32, botName string, entityRuntimeID uint64) error {
-              if cfg.Scenario == ScenarioChunkWalk {
-                  positionDeadline := time.NewTimer(2 * time.Second)
-                  positionPoll := time.NewTicker(10 * time.Millisecond)
-                  for !state.positionReadySnapshot() {
-                      select {
-                      case <-ctx.Done():
-                          positionDeadline.Stop()
-                          positionPoll.Stop()
-                          return nil
-                      case <-positionDeadline.C:
-                          positionPoll.Stop()
-                          return context.DeadlineExceeded
-                      case <-positionPoll.C:
-                      }
-                  }
-                  if !positionDeadline.Stop() {
-                      select {
-                      case <-positionDeadline.C:
-                      default:
-                      }
-                  }
-                  positionPoll.Stop()
+          if variant in {"wire-y-prepare", "prepare-old-y"}:
+              marker = '''\tif err := out.Emit("spawned", map[string]any{\n\t\t"x": game.PlayerPosition[0], "y": game.PlayerPosition[1], "z": game.PlayerPosition[2],\n\t}); err != nil {\n\t\treturn stageError(ExitRuntime, "output", err)\n\t}\n\n'''
+              prepare = marker + '''\t// Mirror go-test-bds Actor.prepare(): these packets are sent immediately\n\t// after DoSpawn and before its two-second movement settle.\n\tfor _, pk := range []packet.Packet{\n\t\t&packet.ServerBoundLoadingScreen{Type: packet.LoadingScreenTypeStart},\n\t\t&packet.Interact{ActionType: packet.InteractActionMouseOverEntity},\n\t\t&packet.ServerBoundLoadingScreen{Type: packet.LoadingScreenTypeEnd},\n\t\t&packet.PlayerAction{EntityRuntimeID: game.EntityRuntimeID, ActionType: protocol.PlayerActionRespawn, BlockFace: -1},\n\t\t&packet.Interact{ActionType: packet.InteractActionMouseOverEntity},\n\t\t&packet.ClientCameraAimAssist{Action: packet.ClientCameraAimAssistActionClear},\n\t} {\n\t\tif err := conn.WritePacket(pk); err != nil {\n\t\t\treturn stageError(ExitRuntime, "prepare", err)\n\t\t}\n\t}\n\tif err := out.Emit("client_prepared", map[string]any{"sequence": "go-test-bds"}); err != nil {\n\t\treturn stageError(ExitRuntime, "output", err)\n\t}\n\n'''
+              if marker not in text:
+                  raise SystemExit("prepare insertion target not found")
+              text = text.replace(marker, prepare, 1)
 
-                  idleTicker := time.NewTicker(time.Second / 20)
-                  for i := 0; i < 40; i++ {
-                      select {
-                      case <-ctx.Done():
-                          idleTicker.Stop()
-                          return nil
-                      case <-idleTicker.C:
-                          tick := state.nextInputTick()
-                          if err := writer.WritePacket(authInputPacket(state, tick)); err != nil {
-                              idleTicker.Stop()
-                              if ctx.Err() != nil {
-                                  return nil
-                              }
-                              return err
-                          }
-                      }
-                  }
-                  idleTicker.Stop()
-              }
-
-              if cfg.Scenario == ScenarioChunkFly {
-                  tick := state.nextInputTick()
-                  if err := writer.WritePacket(authInputPacket(state, tick)); err != nil {
-                      if ctx.Err() != nil {
-                          return nil
-                      }
-                      return err
-                  }
-              }
-
-              ticker := time.NewTicker(time.Second / 20)
-              defer ticker.Stop()
-
-              scenarioAction, err := newScenarioAction(cfg, state, headingYaw, writer, botName, entityRuntimeID)
-              if err != nil {
-                  return err
-              }
-              runner := action.NewRunner(scenarioAction)
-              if err := runner.Start(ctx); err != nil {
-                  return err
-              }
-
-              for {
-                  select {
-                  case <-ctx.Done():
-                      return nil
-                  case <-ticker.C:
-                      tick := state.nextInputTick()
-                      if err := runner.Tick(ctx, action.TickContext{Tick: tick}); err != nil {
-                          return err
-                      }
-                      if err := writer.WritePacket(authInputPacket(state, tick)); err != nil {
-                          if ctx.Err() != nil {
-                              return nil
-                          }
-                          return err
-                      }
-                  }
-              }
-          }
-          '''
-          text = text[:start] + replacement
-          tick.write_text(text)
+          bot.write_text(text)
           PY
-          gofmt -w internal/bot/flight.go internal/bot/bot.go internal/bot/tick.go
+          gofmt -w internal/bot/flight.go internal/bot/bot.go
           go vet ./...
           mkdir -p ../dist
           go build -trimpath -o ../dist/bds-test-bot ./cmd/bds-test-bot
@@ -223,7 +155,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: movement-bds-only-chunk-walk-rewind-bootstrap-${{ github.run_id }}
+          name: movement-bds-only-chunk-walk-${{ matrix.variant }}-${{ github.run_id }}
           path: |
             bds-only-chunk-walk.log
             test-results.json
