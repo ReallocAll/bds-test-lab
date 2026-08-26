@@ -122,6 +122,7 @@ class BytebinCapture:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._payloads: list[bytes] = []
+        self._started = False
         capture = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -160,11 +161,16 @@ class BytebinCapture:
 
     def start(self) -> None:
         self.thread.start()
+        self._started = True
 
     def stop(self) -> None:
+        if not self._started:
+            self.server.server_close()
+            return
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=5)
+        self._started = False
 
     def count(self) -> int:
         with self._lock:
@@ -250,8 +256,14 @@ class BlockActorValidation(IntegrationTest):
         deadline = time.monotonic() + timeout
         last: dict[str, Any] | None = None
         last_count = 0
+        last_decode_error: str | None = None
         while time.monotonic() < deadline:
-            sample, count = self.capture_world_info()
+            try:
+                sample, count = self.capture_world_info()
+            except ProtoDecodeError as exc:
+                last_decode_error = str(exc)
+                time.sleep(5)
+                continue
             last, last_count = sample, count
             if count > min_sample_count and predicate(sample):
                 self._record_world_sample(phase, sample, count)
@@ -259,7 +271,7 @@ class BlockActorValidation(IntegrationTest):
             time.sleep(5)
         raise RuntimeError(
             f"timed out waiting for world-info phase {phase}; last_sample={last}, sample_count={last_count}, "
-            f"minimum_sample_count={min_sample_count}"
+            f"minimum_sample_count={min_sample_count}, last_decode_error={last_decode_error}"
         )
 
     def command(self, command: str) -> list[str]:
