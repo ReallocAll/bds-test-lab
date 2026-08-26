@@ -1,0 +1,102 @@
+name: Spark BlockActor Real BDS Validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      spark_sha:
+        description: "Exact ReallocAll/spark SHA to validate"
+        required: true
+
+concurrency:
+  group: spark-block-actor-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+  EXPECTED_SPARK_SHA: ${{ github.event.inputs.spark_sha }}
+
+jobs:
+  block-actor-validation:
+    name: BlockActor lifecycle (Linux BDS)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout test lab
+        uses: actions/checkout@v7
+
+      - name: Validate exact Spark SHA
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          value = os.environ.get("EXPECTED_SPARK_SHA", "").strip()
+          if len(value) != 40 or any(ch not in "0123456789abcdefABCDEF" for ch in value):
+              raise SystemExit(f"Invalid exact Spark SHA: {value!r}")
+          print(f"Spark SHA: {value}")
+          PY
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install validation dependencies
+        run: python -m pip install --disable-pip-version-check psutil packaging
+
+      - name: Require exact Spark artifact
+        run: >-
+          python -m controller.assert_spark_artifact
+          --platform linux
+          --expected-sha ${{ env.EXPECTED_SPARK_SHA }}
+
+      - name: Run real BDS BlockActor lifecycle validation
+        run: python -m controller.block_actor_validation
+
+      - name: Add BlockActor evidence to summary
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f test-results.json ]]; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path("test-results.json").read_text())
+          metadata = json.loads(Path("metadata.json").read_text()) if Path("metadata.json").is_file() else {}
+          spark_sha = (((metadata.get("components") or {}).get("spark") or {}).get("sha"))
+          print("## Spark BlockActor real BDS validation")
+          print()
+          print(f"Status: **{data.get('status')}**")
+          print(f"Spark SHA: `{spark_sha}`")
+          print(f"BDS: `{data.get('bds_version')}`")
+          print(f"Shutdown: `{data.get('shutdown_status')}`")
+          print("World-info lifecycle:")
+          for sample in data.get("world_info_samples") or []:
+              print(f"- `{sample.get('phase')}`: tile_entities={sample.get('tile_entities')}, present={sample.get('tile_entities_present')}, chunks={sample.get('chunks')}")
+          print("Reconcile MSPT evidence:")
+          for sample in data.get("reconcile_mspt_max") or []:
+              print(f"- `{sample.get('phase')}`: 10s max MSPT={sample.get('mspt_10s_max')} ms")
+          PY
+          fi >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload BlockActor evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: spark-block-actor-${{ github.run_id }}
+          path: |
+            metadata.json
+            bds.log
+            endstone.log
+            spark.log
+            test-results.json
+            failure-diagnostics.txt
+            health-captures/
+            work/linux/bedrock_server/server.properties
+            work/linux/bedrock_server/version.txt
+          if-no-files-found: warn
+          retention-days: 30
