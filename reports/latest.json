@@ -1,14 +1,14 @@
 {
-  "completed_at": "2026-08-26T14:21:17.738777Z",
+  "completed_at": "2026-08-26T14:22:32.998028Z",
   "components": {
     "endstone": {
       "platforms": {
         "linux": {
-          "artifact": "endstone-0.11.10.dev386-linux-x86_64.zip",
-          "artifact_id": 9610511104,
-          "run_id": 32976737411,
-          "run_url": "https://github.com/EndstoneMC/endstone/actions/runs/32976737411",
-          "sha": "27cc2e04d843bd70f089b0814ddba3054d4c55ef",
+          "artifact": "endstone-0.11.7.dev180-linux-x86_64.zip",
+          "artifact_id": 8778647063,
+          "run_id": 30591024207,
+          "run_url": "https://github.com/EndstoneMC/endstone/actions/runs/30591024207",
+          "sha": "e20c19b0db4b8af3b1e5d9a7b260539e872fcc98",
           "workflow": "Build"
         },
         "windows": {
@@ -20,9 +20,15 @@
           "workflow": "Build"
         }
       },
-      "run_id": 32976737411,
-      "run_url": "https://github.com/EndstoneMC/endstone/actions/runs/32976737411",
-      "sha": "27cc2e04d843bd70f089b0814ddba3054d4c55ef"
+      "run_id": [
+        30591024207,
+        32976737411
+      ],
+      "run_url": null,
+      "sha": [
+        "27cc2e04d843bd70f089b0814ddba3054d4c55ef",
+        "e20c19b0db4b8af3b1e5d9a7b260539e872fcc98"
+      ]
     },
     "spark": {
       "platforms": {
@@ -48,22 +54,25 @@
       "sha": "43a72153291eba0a46389cf90d8a861aaf48678c"
     }
   },
-  "endstone_sha": "27cc2e04d843bd70f089b0814ddba3054d4c55ef",
-  "lab_commit": "44e5a1d324ade1b15eb656846e75cbe115e265ea",
-  "lab_run_id": "32979626684",
-  "lab_run_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/32979626684",
+  "endstone_sha": [
+    "27cc2e04d843bd70f089b0814ddba3054d4c55ef",
+    "e20c19b0db4b8af3b1e5d9a7b260539e872fcc98"
+  ],
+  "lab_commit": "3906e4cad7b2f58090f96a550d62e12eefc95926",
+  "lab_run_id": "32979696485",
+  "lab_run_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/32979696485",
   "platforms": {
     "linux": {
-      "actions_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/32979626684",
+      "actions_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/32979696485",
       "allocation_profile_viewer_url": null,
-      "bds_version": "26.44",
+      "bds_version": "26.33",
       "checks": [
         {
           "name": "artifact-discovery",
           "status": "PASS"
         },
         {
-          "detail": "downloads/endstone/payload/endstone-0.11.10.dev386-linux-x86_64/endstone-0.11.10.dev386-cp313-cp313-manylinux_2_31_x86_64.whl",
+          "detail": "downloads/endstone/payload/endstone-0.11.7.dev180-linux-x86_64/endstone-0.11.7.dev180-cp313-cp313-manylinux_2_31_x86_64.whl",
           "name": "endstone-wheel-located",
           "status": "PASS"
         },
@@ -88,41 +97,12 @@
           "detail": "spark profiler info",
           "name": "spark-profiler-info",
           "status": "PASS"
-        },
-        {
-          "detail": "spark tps",
-          "name": "spark-tps",
-          "status": "PASS"
-        },
-        {
-          "detail": "spark health",
-          "name": "spark-health",
-          "status": "PASS"
-        },
-        {
-          "detail": "spark activity",
-          "name": "spark-activity",
-          "status": "PASS"
-        },
-        {
-          "name": "execution-profiler",
-          "status": "PASS",
-          "viewer_url": "https://spark.lucko.me/zv0zGMw0EL"
         }
       ],
-      "error_summary": null,
-      "execution_profile_viewer_url": "https://spark.lucko.me/zv0zGMw0EL",
-      "failed_stage": null,
-      "profiles": [
-        {
-          "duration_seconds": 12,
-          "kind": "execution",
-          "notes": "Headless execution profiler",
-          "profile_key": "zv0zGMw0EL",
-          "server_version": "26.44",
-          "url": "https://spark.lucko.me/zv0zGMw0EL"
-        }
-      ],
+      "error_summary": "RuntimeError: Server exited while running console command: spark tps",
+      "execution_profile_viewer_url": null,
+      "failed_stage": "spark-basic-commands",
+      "profiles": [],
       "recovery": {
         "crash_replay": "not_started",
         "journal_segments_before_restart": 0,
@@ -143,10 +123,10 @@
         "threads_peak": null,
         "threads_start": null
       },
-      "status": "running"
+      "status": "FAIL"
     },
     "windows": {
-      "actions_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/32979626684",
+      "actions_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/32979696485",
       "allocation_profile_viewer_url": null,
       "bds_version": null,
       "checks": [
