@@ -1,0 +1,358 @@
+name: Spark Allocation Rate Load Comparison
+
+on:
+  push:
+    branches:
+      - test/allocation-rate-metrics-validation
+    paths:
+      - "release-trigger.json"
+      - ".github/workflows/allocation-rate-comparison.yml"
+      - "controller/allocation_rate_scenario_validation.py"
+      - "controller/cross_platform_fleet_validation.py"
+      - "controller/fleet_spark_validation.py"
+      - "controller/bot_validation.py"
+      - "controller/run_test.py"
+      - "providers/artifact_provider.py"
+  workflow_dispatch:
+    inputs:
+      spark_sha:
+        description: "Exact ReallocAll/spark SHA to compare"
+        required: false
+        default: ""
+      bot_ref:
+        description: "Exact ReallocAll/bds-test-bot ref"
+        required: false
+        default: "a0a83240e9e8f12d4806ba31194fb1807d7b5dd1"
+      profile_seconds:
+        description: "Execution profile duration per scenario"
+        required: false
+        default: "30"
+
+concurrency:
+  group: spark-allocation-rate-comparison-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+  EXPECTED_SPARK_SHA: ${{ github.event.inputs.spark_sha || '' }}
+  BOT_REF: ${{ github.event.inputs.bot_ref || 'a0a83240e9e8f12d4806ba31194fb1807d7b5dd1' }}
+  PROFILE_SECONDS: ${{ github.event.inputs.profile_seconds || '30' }}
+
+jobs:
+  compare:
+    name: ${{ matrix.platform }} idle/chunk allocation + overhead
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            os: ubuntu-24.04
+            bot_name: bds-test-bot
+          - platform: windows
+            os: windows-2022
+            bot_name: bds-test-bot.exe
+
+    steps:
+      - name: Checkout test lab
+        uses: actions/checkout@v7
+
+      - name: Resolve exact candidate
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          sha = os.environ.get("EXPECTED_SPARK_SHA", "").strip()
+          bot = os.environ.get("BOT_REF", "").strip()
+          if not sha:
+              data = json.loads(Path("release-trigger.json").read_text(encoding="utf-8"))
+              sha = str(data.get("spark_sha", "")).strip()
+              bot = str(data.get("bot_ref", bot)).strip()
+          if len(sha) != 40 or any(c not in "0123456789abcdefABCDEF" for c in sha):
+              raise SystemExit(f"invalid Spark SHA: {sha!r}")
+          if not bot:
+              raise SystemExit("bot ref must not be empty")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write(f"EXPECTED_SPARK_SHA={sha}\n")
+              env.write(f"BOT_REF={bot}\n")
+          print(f"Spark SHA: {sha}")
+          print(f"Bot ref: {bot}")
+          PY
+
+      - name: Checkout Bot at exact ref
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/bds-test-bot
+          ref: ${{ env.BOT_REF }}
+          path: bot-src
+          persist-credentials: false
+
+      - name: Checkout exact Spark schema
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/spark
+          ref: ${{ env.EXPECTED_SPARK_SHA }}
+          path: spark-src
+          persist-credentials: false
+          sparse-checkout: proto
+
+      - name: Set up Go 1.25
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Build exact Bot revision
+        shell: bash
+        env:
+          BOT_NAME: ${{ matrix.bot_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cd bot-src
+          go mod download
+          go test ./...
+          go build -trimpath -o "../dist/${BOT_NAME}" ./cmd/bds-test-bot
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install validation dependencies
+        run: python -m pip install --disable-pip-version-check psutil packaging requests protobuf grpcio-tools
+
+      - name: Require exact Spark artifact
+        run: >-
+          python -m controller.assert_spark_artifact
+          --platform ${{ matrix.platform }}
+          --expected-sha ${{ env.EXPECTED_SPARK_SHA }}
+
+      - name: Generate exact protobuf bindings
+        shell: bash
+        run: |
+          mkdir -p generated/spark
+          touch generated/spark/__init__.py
+          python -m grpc_tools.protoc \
+            -I spark-src/proto \
+            --python_out=generated \
+            spark-src/proto/spark/spark.proto
+
+      - name: Baseline 20-player chunk-walk
+        shell: bash
+        env:
+          SPARK_ALLOCATIONRATEMETRICS: "false"
+        run: |
+          set -euo pipefail
+          python -m controller.allocation_rate_scenario_validation \
+            --platform ${{ matrix.platform }} \
+            --bot dist/${{ matrix.bot_name }} \
+            --scenario chunk-walk \
+            --profile-seconds "${PROFILE_SECONDS}"
+          mkdir -p comparison/baseline-chunk
+          cp fleet-spark-result.json metadata.json test-results.json comparison/baseline-chunk/
+          cp "fleet-${{ matrix.platform }}-20-chunk-walk.log" comparison/baseline-chunk/ || true
+          rm -rf "work/${{ matrix.platform }}"
+
+      - name: Enabled 20-player chunk-walk
+        shell: bash
+        env:
+          SPARK_ALLOCATIONRATEMETRICS: "true"
+        run: |
+          set -euo pipefail
+          python -m controller.allocation_rate_scenario_validation \
+            --platform ${{ matrix.platform }} \
+            --bot dist/${{ matrix.bot_name }} \
+            --scenario chunk-walk \
+            --profile-seconds "${PROFILE_SECONDS}"
+          mkdir -p comparison/enabled-chunk
+          cp fleet-spark-result.json metadata.json test-results.json comparison/enabled-chunk/
+          cp "fleet-${{ matrix.platform }}-20-chunk-walk.log" comparison/enabled-chunk/ || true
+          rm -rf "work/${{ matrix.platform }}"
+
+      - name: Enabled 20-player idle
+        shell: bash
+        env:
+          SPARK_ALLOCATIONRATEMETRICS: "true"
+        run: |
+          set -euo pipefail
+          python -m controller.allocation_rate_scenario_validation \
+            --platform ${{ matrix.platform }} \
+            --bot dist/${{ matrix.bot_name }} \
+            --scenario idle \
+            --profile-seconds "${PROFILE_SECONDS}"
+          mkdir -p comparison/enabled-idle
+          cp fleet-spark-result.json metadata.json test-results.json comparison/enabled-idle/
+          cp "fleet-${{ matrix.platform }}-20-idle.log" comparison/enabled-idle/ || true
+
+      - name: Decode allocation rates and compare overhead
+        shell: bash
+        run: |
+          python - <<'PY'
+          import gzip
+          import json
+          import math
+          import os
+          from pathlib import Path
+          import statistics
+          import sys
+
+          import requests
+          from google.protobuf.message import DecodeError
+
+          sys.path.insert(0, str(Path("generated").resolve()))
+          from spark import spark_pb2
+
+          expected_sha = os.environ["EXPECTED_SPARK_SHA"]
+
+          def read_result(name):
+              root = Path("comparison") / name
+              result = json.loads((root / "fleet-spark-result.json").read_text(encoding="utf-8"))
+              metadata = json.loads((root / "metadata.json").read_text(encoding="utf-8"))
+              actual_sha = (((metadata.get("components") or {}).get("spark") or {}).get("sha"))
+              if actual_sha != expected_sha:
+                  raise SystemExit(f"{name}: Spark SHA mismatch {actual_sha} != {expected_sha}")
+              if result.get("status") != "PASS":
+                  raise SystemExit(f"{name}: scenario is not PASS: {result.get('error_summary')}")
+              if int(((result.get("fleet_online_event") or {}).get("online")) or 0) != 20:
+                  raise SystemExit(f"{name}: did not establish 20 online bots")
+              return result
+
+          def health_allocation(result, required):
+              url = str(result.get("health_upload_viewer_url") or "").strip()
+              if not url:
+                  raise SystemExit("missing health viewer URL")
+              key = url.rstrip("/").rsplit("/", 1)[-1]
+              response = requests.get(f"https://spark-usercontent.lucko.me/{key}", timeout=30)
+              response.raise_for_status()
+              health = spark_pb2.HealthData()
+              try:
+                  health.ParseFromString(response.content)
+              except DecodeError:
+                  health.ParseFromString(gzip.decompress(response.content))
+              series = health.metadata.metrics.memory_allocation
+              values = list(series.values)
+              if required:
+                  if len(values) < 2 or max(values, default=0.0) <= 0:
+                      raise SystemExit(f"{result.get('scenario')}: insufficient real allocation-rate samples: {values}")
+                  if any(not math.isfinite(v) or v < 0 for v in values):
+                      raise SystemExit(f"{result.get('scenario')}: invalid allocation-rate values: {values}")
+                  ordered = sorted(values)
+                  p95 = ordered[max(0, math.ceil(len(ordered) * 0.95) - 1)]
+                  return {
+                      "viewer_url": url,
+                      "samples": len(values),
+                      "mean": statistics.fmean(values),
+                      "median": statistics.median(values),
+                      "p95": p95,
+                      "min": min(values),
+                      "max": max(values),
+                  }
+              return {"viewer_url": url, "samples": len(values), "values_present": bool(values)}
+
+          baseline = read_result("baseline-chunk")
+          chunk = read_result("enabled-chunk")
+          idle = read_result("enabled-idle")
+          versions = {str(x.get("bds_version")) for x in (baseline, chunk, idle)}
+          if len(versions) != 1:
+              raise SystemExit(f"BDS version mismatch across same-run comparisons: {versions}")
+
+          baseline_alloc = health_allocation(baseline, False)
+          chunk_alloc = health_allocation(chunk, True)
+          idle_alloc = health_allocation(idle, True)
+
+          bm = baseline.get("metrics") or {}
+          em = chunk.get("metrics") or {}
+          btps = float(((bm.get("tps") or {}).get("10s")) or 0.0)
+          etps = float(((em.get("tps") or {}).get("10s")) or 0.0)
+          bmspt = bm.get("mspt_10s") or {}
+          emspt = em.get("mspt_10s") or {}
+          bcpu = float(((bm.get("process_cpu_percent") or {}).get("10s")) or 0.0)
+          ecpu = float(((em.get("process_cpu_percent") or {}).get("10s")) or 0.0)
+          brss = float(((bm.get("memory_rss_bytes") or {}).get("mean")) or 0.0)
+          erss = float(((em.get("memory_rss_bytes") or {}).get("mean")) or 0.0)
+
+          obvious = []
+          if btps >= 19.0 and etps < btps - 1.0:
+              obvious.append(f"TPS 10s fell from {btps} to {etps}")
+          bp95 = float(bmspt.get("p95") or 0.0)
+          ep95 = float(emspt.get("p95") or 0.0)
+          if ep95 > bp95 * 3.0 + 2.0:
+              obvious.append(f"MSPT p95 rose from {bp95} to {ep95}")
+          if ecpu > bcpu + 25.0:
+              obvious.append(f"process CPU 10s rose from {bcpu}% to {ecpu}%")
+          if brss > 0 and erss > brss + 512 * 1024 * 1024:
+              obvious.append(f"mean RSS rose by {(erss - brss) / (1024*1024):.1f} MiB")
+
+          evidence = {
+              "platform": chunk.get("platform"),
+              "spark_sha": expected_sha,
+              "bds_version": next(iter(versions)),
+              "baseline_chunk": {"metrics": bm, "allocation": baseline_alloc},
+              "enabled_chunk": {"metrics": em, "allocation": chunk_alloc},
+              "enabled_idle": {"metrics": idle.get("metrics") or {}, "allocation": idle_alloc},
+              "allocation_comparison": {
+                  "chunk_minus_idle_mean": chunk_alloc["mean"] - idle_alloc["mean"],
+                  "chunk_minus_idle_median": chunk_alloc["median"] - idle_alloc["median"],
+                  "chunk_minus_idle_p95": chunk_alloc["p95"] - idle_alloc["p95"],
+                  "note": "Both scenarios must be real and non-zero; chunk-walk is not required to strictly exceed idle because allocator activity is noisy.",
+              },
+              "overhead": {
+                  "tps_10s_delta": etps - btps,
+                  "mspt_mean_delta": float(emspt.get("mean") or 0.0) - float(bmspt.get("mean") or 0.0),
+                  "mspt_p95_delta": ep95 - bp95,
+                  "mspt_max_delta": float(emspt.get("max") or 0.0) - float(bmspt.get("max") or 0.0),
+                  "process_cpu_10s_delta_pp": ecpu - bcpu,
+                  "system_cpu_10s_delta_pp": float(((em.get("system_cpu_percent") or {}).get("10s")) or 0.0) - float(((bm.get("system_cpu_percent") or {}).get("10s")) or 0.0),
+                  "rss_mean_delta_bytes": int(erss - brss),
+                  "assessment": "potential-obvious-regression" if obvious else "no-obvious-regression",
+                  "reasons": obvious,
+              },
+          }
+          Path("allocation-rate-comparison.json").write_text(
+              json.dumps(evidence, indent=2, sort_keys=True), encoding="utf-8"
+          )
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          if obvious:
+              raise SystemExit("obvious real-BDS allocation-rate overhead detected: " + "; ".join(obvious))
+          PY
+
+      - name: Add comparison summary
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f allocation-rate-comparison.json ]]; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path("allocation-rate-comparison.json").read_text())
+          overhead = data.get("overhead") or {}
+          print(f"## {data.get('platform')} allocation-rate comparison")
+          print()
+          print(f"Spark SHA: `{data.get('spark_sha')}`")
+          print(f"BDS: `{data.get('bds_version')}`")
+          print(f"Idle allocation: {data.get('enabled_idle', {}).get('allocation')}")
+          print(f"Chunk allocation: {data.get('enabled_chunk', {}).get('allocation')}")
+          print(f"Overhead: {overhead}")
+          PY
+          fi >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload comparison evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: spark-allocation-rate-comparison-${{ matrix.platform }}-${{ github.run_id }}
+          path: |
+            allocation-rate-comparison.json
+            comparison/
+            failure-diagnostics.txt
+          if-no-files-found: warn
+          retention-days: 30
