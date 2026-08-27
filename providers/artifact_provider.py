@@ -4,7 +4,8 @@
 Discovery deliberately runs inside the GitHub Actions runner and uses GH_TOKEN.
 No artifact name is hard-coded: artifacts are ranked for the current platform.
 By default, development artifacts come from the configured branch. Release and
-pre-merge validation can pin Spark to an exact successful workflow head SHA.
+pre-merge validation can pin Endstone and Spark to exact successful workflow
+head SHAs.
 """
 
 from __future__ import annotations
@@ -239,17 +240,24 @@ def resolve_artifacts(
     output_dir: pathlib.Path | str = "downloads",
     metadata_path: pathlib.Path | str = "metadata.json",
     spark_sha: str | None = None,
+    endstone_sha: str | None = None,
 ) -> dict[str, Any]:
     if platform_name not in {"linux", "windows"}:
         raise ValueError(f"Unsupported platform: {platform_name}")
 
     exact_spark_sha = (spark_sha or os.environ.get("EXPECTED_SPARK_SHA", "")).strip() or None
+    exact_endstone_sha = (endstone_sha or os.environ.get("EXPECTED_ENDSTONE_SHA", "")).strip() or None
     root = pathlib.Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
     result: dict[str, Any] = {"platform": platform_name, "components": {}}
 
     for component, config in COMPONENTS.items():
-        expected_sha = exact_spark_sha if component == "spark" else None
+        if component == "spark":
+            expected_sha = exact_spark_sha
+        elif component == "endstone":
+            expected_sha = exact_endstone_sha
+        else:
+            expected_sha = None
         run, artifact = discover(component, platform_name, expected_sha=expected_sha)
         info = _metadata(component, config["repo"], run, artifact)
         result["components"][component] = info
@@ -272,5 +280,16 @@ if __name__ == "__main__":
     parser.add_argument("--platform", required=True, choices=["linux", "windows"])
     parser.add_argument("--output-dir", default="downloads")
     parser.add_argument("--spark-sha", default=None)
+    parser.add_argument("--endstone-sha", default=None)
     args = parser.parse_args()
-    print(json.dumps(resolve_artifacts(args.platform, args.output_dir, spark_sha=args.spark_sha), indent=2))
+    print(
+        json.dumps(
+            resolve_artifacts(
+                args.platform,
+                args.output_dir,
+                spark_sha=args.spark_sha,
+                endstone_sha=args.endstone_sha,
+            ),
+            indent=2,
+        )
+    )
