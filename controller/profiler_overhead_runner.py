@@ -12,6 +12,7 @@ from controller.bot_validation import patch_server_properties
 from controller.fleet_spark_validation import set_server_property
 from controller.profiler_overhead_validation import (
     BOT_COUNT,
+    ENTITY_GROUPS,
     TIME_VALUE_RE,
     WORLD_NAME,
     ProfilerOverheadValidation,
@@ -213,6 +214,41 @@ class ResilientProfilerOverheadValidation(ProfilerOverheadValidation):
                     retry_delay_seconds=retry_delay,
                 )
                 time.sleep(retry_delay)
+
+    def spawn_entity_load(self) -> None:
+        assert self.server is not None
+        start = self.server.command("kill @e[type=!player]")
+        self.server.wait_command_output(start, 5)
+        start_index = len(self.server.snapshot())
+        species_index = 0
+        for entity_type, count in ENTITY_GROUPS:
+            for index in range(count):
+                x = (index % 20) - 10
+                z = ((index // 20) % 20) - 10
+                # Bedrock's `execute at` only changes position and preserves the
+                # console/Null executor. Summon the mobs as an actual online player,
+                # then move the execution origin to that player's position.
+                command = (
+                    f'execute as @a[c=1] at @s run summon {entity_type} "SparkBench{species_index}" ~{x} ~ ~{z}'
+                )
+                self.server.command(command)
+            species_index += 1
+        time.sleep(20)
+        output = self.server.snapshot()[start_index:]
+        failures = [
+            line
+            for line in output
+            if "syntax error" in line.lower()
+            or "failed to execute" in line.lower()
+            or "no targets matched" in line.lower()
+        ]
+        if failures:
+            raise RuntimeError("Entity load generation failed: " + " | ".join(failures[:20]))
+        self.check(
+            "high-entity-load-created",
+            "PASS",
+            f"issued {sum(count for _, count in ENTITY_GROUPS)} named mob summons as the first online player",
+        )
 
     def stop_load(self) -> None:
         if self.bot is None:
