@@ -9,6 +9,7 @@ on:
       - "controller/assert_spark_artifact.py"
       - "controller/profiler_overhead_validation.py"
       - "controller/profiler_overhead_runner.py"
+      - "controller/profiler_overhead_runner_v2.py"
       - "providers/artifact_provider.py"
   workflow_dispatch:
     inputs:
@@ -118,9 +119,9 @@ jobs:
           --platform ${{ matrix.platform }}
           --expected-sha ${{ env.EXPECTED_SPARK_SHA }}
 
-      - name: Run real-BDS profiler overhead benchmark
+      - name: Run real-BDS paired profiler overhead benchmark
         run: >-
-          python -m controller.profiler_overhead_runner
+          python -m controller.profiler_overhead_runner_v2
           --platform ${{ matrix.platform }}
           --bot dist/${{ matrix.bot_name }}
           --window-seconds ${{ env.BENCH_WINDOW_SECONDS }}
