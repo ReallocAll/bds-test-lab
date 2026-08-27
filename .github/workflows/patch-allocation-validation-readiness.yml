@@ -1,0 +1,74 @@
+name: Patch Allocation Validation Readiness
+
+on:
+  push:
+    branches:
+      - ci/fix-allocation-validation-readiness
+    paths:
+      - ".github/workflows/patch-allocation-validation-readiness.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout validation branch
+        uses: actions/checkout@v7
+        with:
+          ref: test/allocation-rate-metrics-validation
+          path: validation
+          fetch-depth: 0
+
+      - name: Patch readiness and exact Endstone pin
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          root = Path('validation')
+          run_test = root / 'controller/run_test.py'
+          text = run_test.read_text(encoding='utf-8')
+          text = text.replace(
+              'SPARK_LOAD_HINTS = ("enabling spark", "enabled spark", "spark v", "loaded spark")\n',
+              ''
+          )
+          old = '        self.server.wait_for(lambda lines: any("spark" in line.lower() and any(hint in line.lower() for hint in SPARK_LOAD_HINTS) for line in lines), 30, "Spark enable")\n'
+          new = '''        self.server.wait_for(\n            lambda lines: any(\n                "spark" in line.lower()\n                and "enabled" in line.lower()\n                and "enabling" not in line.lower()\n                for line in lines\n            ),\n            30,\n            "Spark enable",\n        )\n'''
+          if old not in text:
+              raise SystemExit('run_test.py readiness pattern not found')
+          run_test.write_text(text.replace(old, new), encoding='utf-8')
+
+          provider = root / 'providers/artifact_provider.py'
+          text = provider.read_text(encoding='utf-8')
+          old = '    exact_spark_sha = (spark_sha or os.environ.get("EXPECTED_SPARK_SHA", "")).strip() or None\n'
+          new = old + '    exact_endstone_sha = os.environ.get("EXPECTED_ENDSTONE_SHA", "").strip() or None\n'
+          if old not in text:
+              raise SystemExit('artifact provider exact Spark pattern not found')
+          text = text.replace(old, new, 1)
+          old = '        expected_sha = exact_spark_sha if component == "spark" else None\n'
+          new = '''        expected_sha = (\n            exact_spark_sha\n            if component == "spark"\n            else exact_endstone_sha if component == "endstone" else None\n        )\n'''
+          if old not in text:
+              raise SystemExit('artifact provider component pattern not found')
+          provider.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          workflow = root / '.github/workflows/spark-v06-release-validation.yml'
+          text = workflow.read_text(encoding='utf-8')
+          anchor = '  SPARK_ALLOCATIONRATEMETRICS: "true"\n'
+          addition = anchor + '  EXPECTED_ENDSTONE_SHA: "c76c814289ee3be8a7236389b6bdeb5728b154e4"\n'
+          if anchor not in text:
+              raise SystemExit('validation workflow env anchor not found')
+          workflow.write_text(text.replace(anchor, addition, 1), encoding='utf-8')
+          PY
+
+      - name: Commit validation harness fix
+        working-directory: validation
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add controller/run_test.py providers/artifact_provider.py .github/workflows/spark-v06-release-validation.yml
+          git diff --cached --check
+          git commit -m 'test: stabilize allocation-rate validation bootstrap'
+          git push origin HEAD:test/allocation-rate-metrics-validation
