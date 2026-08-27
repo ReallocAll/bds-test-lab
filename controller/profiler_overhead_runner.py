@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import os
 import pathlib
+import shutil
 import time
 from typing import Any
 
@@ -32,6 +33,7 @@ class ResilientProfilerOverheadValidation(ProfilerOverheadValidation):
                     "the generic 1s command-output stability wait is intentionally bypassed"
                 ),
                 "profile_metrics": "Spark TPS/MSPT/CPU is captured before profiler stop while profiling is still active",
+                "world": "fresh deterministic FLAT world (seed 1) isolates profiler overhead from terrain/liquid event noise",
             }
         )
         self._write_results()
@@ -50,6 +52,46 @@ class ResilientProfilerOverheadValidation(ProfilerOverheadValidation):
         self.server.close()
         self.server = None
 
+    def start_server_mode(self, expect_spark: bool) -> None:
+        """Start BDS and reject the known Windows post-start command-channel stall.
+
+        The sixth benchmark run observed an otherwise-ready Windows BDS stop replying to
+        console commands around Spark's first 10-second metrics interval. A hung instance
+        is not a valid benchmark sample, so give Windows/Spark one bounded clean restart
+        before any load or timed measurement begins.
+        """
+        attempts = 2 if self.platform == "windows" and expect_spark else 1
+        for attempt in range(attempts):
+            super().start_server_mode(expect_spark)
+            if not (self.platform == "windows" and expect_spark):
+                return
+
+            # Cross the first 10-second Spark metrics interval before accepting the
+            # process as benchmark-ready; this is outside every measured window.
+            time.sleep(12)
+            try:
+                gametime = self.query_gametime()
+                self.check(
+                    "windows-spark-command-channel-ready",
+                    "PASS",
+                    "BDS console remained responsive beyond Spark's first metrics interval",
+                    startup_attempt=attempt + 1,
+                    gametime=gametime,
+                )
+                return
+            except RuntimeError as exc:
+                alive = self.server is not None and self.server.is_alive()
+                if attempt + 1 >= attempts or not alive:
+                    raise
+                self.check(
+                    "windows-spark-command-channel-restart",
+                    "WARN",
+                    f"discarding unresponsive pre-benchmark BDS instance: {str(exc)[:500]}",
+                    startup_attempt=attempt + 1,
+                )
+                self._stop_server()
+                time.sleep(3)
+
     def bootstrap_world(self) -> None:
         # Provision/configure the benchmark world without Spark. This keeps a Spark
         # shutdown anomaly from being mistaken for a benchmark harness bootstrap failure.
@@ -61,10 +103,19 @@ class ResilientProfilerOverheadValidation(ProfilerOverheadValidation):
         patch_server_properties(properties)
         set_server_property(properties, "max-players", "30")
         set_server_property(properties, "level-name", WORLD_NAME)
+        set_server_property(properties, "level-type", "FLAT")
+        set_server_property(properties, "level-seed", "1")
         set_server_property(properties, "allow-cheats", "true")
         set_server_property(properties, "player-idle-timeout", "0")
         set_server_property(properties, "view-distance", "12")
         set_server_property(properties, "tick-distance", "6")
+
+        # Never inherit a partially generated/default-terrain benchmark world from a
+        # previous bootstrap attempt. The flat world avoids the unrelated Endstone
+        # LiquidBlock::_trySpreadTo event-registration crash seen with Spark disabled.
+        world = self.server_dir / "worlds" / WORLD_NAME
+        if world.exists():
+            shutil.rmtree(world)
 
         self.start_server_mode(False)
         assert self.server is not None
@@ -78,7 +129,11 @@ class ResilientProfilerOverheadValidation(ProfilerOverheadValidation):
         ):
             self.command_check("bootstrap-" + command.split()[0] + "-" + str(len(self.result["checks"])), command)
         self._stop_server()
-        self.check("benchmark-world-bootstrap", "PASS", "fixed world and gamerules prepared with Spark disabled")
+        self.check(
+            "benchmark-world-bootstrap",
+            "PASS",
+            "fresh deterministic flat world (seed 1) and fixed gamerules prepared with Spark disabled",
+        )
 
     def query_gametime(self) -> int:
         """Return the tick value as soon as BDS emits the matching command response.
@@ -140,10 +195,16 @@ class ResilientProfilerOverheadValidation(ProfilerOverheadValidation):
                 return
             except RuntimeError as exc:
                 text = str(exc)
-                retryable = "Bot exited with code" in text or "dial raknet" in text or "fleet_online" in text
+                server_alive = self.server is not None and self.server.is_alive()
+                retryable = server_alive and (
+                    "Bot exited with code" in text or "dial raknet" in text or "fleet_online" in text
+                )
+                # Always clean up the bot process before propagating the original
+                # exception. Previously, a dead BDS could leave self.bot set and a
+                # later finally-block cleanup exception could mask the real crash.
+                self._discard_failed_fleet()
                 if attempt != 0 or not retryable:
                     raise
-                self._discard_failed_fleet()
                 retry_delay = 30.0 if self.platform == "windows" else 10.0
                 self.check(
                     "fleet-connect-retry",
@@ -155,6 +216,11 @@ class ResilientProfilerOverheadValidation(ProfilerOverheadValidation):
 
     def stop_load(self) -> None:
         if self.bot is None:
+            return
+        if self.server is None or not self.server.is_alive():
+            # Preserve the real BDS failure instead of allowing fleet teardown to
+            # replace it with a secondary socket/process error from a finally block.
+            self._discard_failed_fleet()
             return
         try:
             self.stop_fleet()
