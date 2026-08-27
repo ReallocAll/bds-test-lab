@@ -32,6 +32,7 @@ env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
   SPARK_ALLOCATIONRATEMETRICS: "true"
+  EXPECTED_ENDSTONE_SHA: "c76c814289ee3be8a7236389b6bdeb5728b154e4"
   EXPECTED_SPARK_SHA: ${{ github.event.inputs.spark_sha || '' }}
   BOT_REF: ${{ github.event.inputs.bot_ref || 'a0a83240e9e8f12d4806ba31194fb1807d7b5dd1' }}
   SOAK_MINUTES: ${{ github.event.inputs.soak_minutes || '60' }}
@@ -87,6 +88,7 @@ jobs:
               env.write(f"BOT_REF={bot_ref}\n")
               env.write(f"SOAK_MINUTES={soak}\n")
           print(f"Spark SHA: {expected}")
+          print(f"Endstone SHA: {os.environ['EXPECTED_ENDSTONE_SHA']}")
           print(f"Bot ref: {bot_ref}")
           print(f"Soak minutes: {soak}")
           print("SPARK_ALLOCATIONRATEMETRICS=true")
@@ -151,11 +153,13 @@ jobs:
           data = json.loads(Path("test-results.json").read_text())
           metadata = json.loads(Path("metadata.json").read_text()) if Path("metadata.json").is_file() else {}
           spark_sha = (((metadata.get("components") or {}).get("spark") or {}).get("sha"))
+          endstone_sha = (((metadata.get("components") or {}).get("endstone") or {}).get("sha"))
           print("## Allocation rate release validation")
           print()
           print(f"Platform: **{data.get('platform')}**")
           print(f"Status: **{data.get('status')}**")
           print(f"Spark SHA: `{spark_sha}`")
+          print(f"Endstone SHA: `{endstone_sha}`")
           print("Allocation-rate metrics: **enabled**")
           print(f"BDS: `{data.get('bds_version')}`")
           print(f"Endstone: `{data.get('installed_endstone_version')}`")
