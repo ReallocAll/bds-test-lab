@@ -1,0 +1,314 @@
+name: Spark Allocation Rate Combined E2E
+
+on:
+  push:
+    branches:
+      - test/allocation-rate-metrics-validation
+    paths:
+      - "release-trigger.json"
+      - ".github/workflows/allocation-rate-combined-e2e.yml"
+      - "controller/combined_pack_gamerule_fleet_validation.py"
+      - "controller/cross_platform_fleet_validation.py"
+      - "controller/fleet_spark_validation.py"
+      - "controller/gamerule_fallback_validation.py"
+      - "controller/block_actor_validation.py"
+      - "controller/bot_validation.py"
+      - "controller/run_test.py"
+      - "providers/artifact_provider.py"
+  workflow_dispatch:
+    inputs:
+      spark_sha:
+        description: "Exact ReallocAll/spark SHA to validate"
+        required: false
+        default: ""
+      bot_ref:
+        description: "Exact ReallocAll/bds-test-bot ref"
+        required: false
+        default: "a0a83240e9e8f12d4806ba31194fb1807d7b5dd1"
+      profile_seconds:
+        description: "Seconds for execution/allocation profiles"
+        required: false
+        default: "30"
+
+concurrency:
+  group: spark-allocation-rate-combined-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+  SPARK_ALLOCATIONRATEMETRICS: "true"
+  EXPECTED_SPARK_SHA: ${{ github.event.inputs.spark_sha || '' }}
+  BOT_REF: ${{ github.event.inputs.bot_ref || 'a0a83240e9e8f12d4806ba31194fb1807d7b5dd1' }}
+  PROFILE_SECONDS: ${{ github.event.inputs.profile_seconds || '30' }}
+
+jobs:
+  combined-allocation-rate:
+    name: ${{ matrix.platform }} allocation rate + packs + gamerules + 20 players
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            os: ubuntu-24.04
+            bot_name: bds-test-bot
+          - platform: windows
+            os: windows-2022
+            bot_name: bds-test-bot.exe
+
+    steps:
+      - name: Checkout test lab
+        uses: actions/checkout@v7
+
+      - name: Resolve exact candidate
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          sha = os.environ.get("EXPECTED_SPARK_SHA", "").strip()
+          bot = os.environ.get("BOT_REF", "").strip()
+          trigger = Path("release-trigger.json")
+          if not sha:
+              if not trigger.is_file():
+                  raise SystemExit("release-trigger.json is required for push-triggered validation")
+              data = json.loads(trigger.read_text(encoding="utf-8"))
+              sha = str(data.get("spark_sha", "")).strip()
+              bot = str(data.get("bot_ref", bot)).strip()
+          if len(sha) != 40 or any(c not in "0123456789abcdefABCDEF" for c in sha):
+              raise SystemExit(f"invalid exact Spark SHA: {sha!r}")
+          if not bot:
+              raise SystemExit("bot ref must not be empty")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write(f"EXPECTED_SPARK_SHA={sha}\n")
+              env.write(f"BOT_REF={bot}\n")
+          print(f"Spark SHA: {sha}")
+          print(f"Bot ref: {bot}")
+          print("SPARK_ALLOCATIONRATEMETRICS=true")
+          PY
+
+      - name: Checkout Bot at exact ref
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/bds-test-bot
+          ref: ${{ env.BOT_REF }}
+          path: bot-src
+          persist-credentials: false
+
+      - name: Checkout exact Spark schema
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/spark
+          ref: ${{ env.EXPECTED_SPARK_SHA }}
+          path: spark-src
+          persist-credentials: false
+          sparse-checkout: proto
+
+      - name: Set up Go 1.25
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Build exact Bot revision
+        shell: bash
+        env:
+          BOT_NAME: ${{ matrix.bot_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cd bot-src
+          go mod download
+          go test ./...
+          go build -trimpath -o "../dist/${BOT_NAME}" ./cmd/bds-test-bot
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install validation dependencies
+        run: python -m pip install --disable-pip-version-check psutil packaging requests protobuf grpcio-tools
+
+      - name: Require exact Spark artifact
+        run: >-
+          python -m controller.assert_spark_artifact
+          --platform ${{ matrix.platform }}
+          --expected-sha ${{ env.EXPECTED_SPARK_SHA }}
+
+      - name: Run real BDS combined scenario
+        run: >-
+          python -m controller.combined_pack_gamerule_fleet_validation
+          --platform ${{ matrix.platform }}
+          --bot dist/${{ matrix.bot_name }}
+          --profile-seconds ${{ env.PROFILE_SECONDS }}
+
+      - name: Generate exact protobuf bindings
+        shell: bash
+        run: |
+          mkdir -p generated/spark
+          touch generated/spark/__init__.py
+          python -m grpc_tools.protoc \
+            -I spark-src/proto \
+            --python_out=generated \
+            spark-src/proto/spark/spark.proto
+
+      - name: Verify field 7 and rolling allocation rates
+        shell: bash
+        run: |
+          python - <<'PY'
+          import gzip
+          import json
+          import math
+          import os
+          from pathlib import Path
+          import sys
+
+          import requests
+          from google.protobuf.message import DecodeError
+
+          sys.path.insert(0, str(Path("generated").resolve()))
+          from spark import spark_pb2
+
+          data = json.loads(Path("fleet-spark-result.json").read_text(encoding="utf-8"))
+          metadata = json.loads(Path("metadata.json").read_text(encoding="utf-8"))
+          expected_sha = os.environ["EXPECTED_SPARK_SHA"]
+          actual_sha = (((metadata.get("components") or {}).get("spark") or {}).get("sha"))
+          if actual_sha != expected_sha:
+              raise SystemExit(f"Spark SHA mismatch: {actual_sha} != {expected_sha}")
+          if data.get("status") != "PASS":
+              raise SystemExit(f"combined real-BDS scenario is not PASS: {data.get('error_summary')}")
+          if int(data.get("local_metadata_players") or 0) != 20:
+              raise SystemExit(f"expected 20 metadata players, got {data.get('local_metadata_players')}")
+          packs = data.get("behavior_pack_metadata") or []
+          if len(packs) != 3:
+              raise SystemExit(f"expected 3 active behavior packs, got {len(packs)}")
+          rules = data.get("validated_gamerules") or {}
+          if len(rules) < 6:
+              raise SystemExit(f"expected modified gamerule evidence, got {rules}")
+
+          viewer_url = str(data.get("health_upload_viewer_url") or "").strip()
+          if not viewer_url:
+              raise SystemExit("missing public health viewer URL")
+          key = viewer_url.rstrip("/").rsplit("/", 1)[-1]
+          response = requests.get(f"https://spark-usercontent.lucko.me/{key}", timeout=30)
+          response.raise_for_status()
+          payload = response.content
+          health = spark_pb2.HealthData()
+          try:
+              health.ParseFromString(payload)
+          except DecodeError:
+              health.ParseFromString(gzip.decompress(payload))
+
+          series = health.metadata.metrics.memory_allocation
+          values = list(series.values)
+          deltas = list(series.timestamp_deltas_ms)
+          if len(values) < 2:
+              raise SystemExit(f"Metrics.memory_allocation field 7 has only {len(values)} samples")
+          if series.start_timestamp_ms <= 0:
+              raise SystemExit(f"invalid allocation series start timestamp: {series.start_timestamp_ms}")
+          if len(deltas) != len(values) - 1:
+              raise SystemExit(f"timestamp delta count mismatch: values={len(values)} deltas={len(deltas)}")
+          if any(delta <= 0 for delta in deltas):
+              raise SystemExit(f"non-positive timestamp delta(s): {deltas}")
+          if any(not math.isfinite(v) or v < 0 for v in values):
+              raise SystemExit(f"invalid allocation rates: {values}")
+          if max(values) <= 0:
+              raise SystemExit("real active BDS produced no positive allocation-rate sample")
+
+          memory = health.metadata.platform_statistics.memory
+          rolling = {}
+          for field in ("alloc_bps_last1m", "alloc_bps_last5m", "alloc_bps_last15m"):
+              if not memory.HasField(field):
+                  raise SystemExit(f"PlatformStatistics.Memory.{field} is absent")
+              stats = getattr(memory, field)
+              vals = [stats.mean, stats.max, stats.min, stats.median, stats.percentile95]
+              if any(not math.isfinite(v) or v < 0 for v in vals):
+                  raise SystemExit(f"{field} contains invalid values: {vals}")
+              if stats.mean <= 0 or stats.max <= 0:
+                  raise SystemExit(f"{field} is not positive under real active load: mean={stats.mean} max={stats.max}")
+              if not (stats.min <= stats.median <= stats.percentile95 <= stats.max):
+                  raise SystemExit(
+                      f"{field} distribution ordering invalid: min={stats.min} median={stats.median} "
+                      f"p95={stats.percentile95} max={stats.max}"
+                  )
+              rolling[field] = {
+                  "mean": stats.mean,
+                  "max": stats.max,
+                  "min": stats.min,
+                  "median": stats.median,
+                  "p95": stats.percentile95,
+              }
+
+          evidence = {
+              "platform": data.get("platform"),
+              "spark_sha": actual_sha,
+              "health_viewer_url": viewer_url,
+              "execution_profile_viewer_url": data.get("execution_profile_viewer_url"),
+              "allocation_profile_viewer_url": data.get("allocation_profile_viewer_url"),
+              "players": data.get("local_metadata_players"),
+              "behavior_packs": [p.get("name") for p in packs],
+              "gamerules": rules,
+              "memory_allocation_samples": len(values),
+              "memory_allocation_values": values,
+              "timestamp_deltas_ms": deltas,
+              "rolling": rolling,
+              "metrics": data.get("metrics") or {},
+          }
+          Path("allocation-rate-evidence.json").write_text(
+              json.dumps(evidence, indent=2, sort_keys=True), encoding="utf-8"
+          )
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+
+      - name: Add allocation evidence to summary
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f allocation-rate-evidence.json ]]; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path("allocation-rate-evidence.json").read_text())
+          print(f"## {data.get('platform')} allocation-rate combined E2E")
+          print()
+          print(f"Spark SHA: `{data.get('spark_sha')}`")
+          print(f"Players: **{data.get('players')}**")
+          print(f"Behavior packs: {data.get('behavior_packs')}")
+          print(f"Health: {data.get('health_viewer_url')}")
+          print(f"Execution: {data.get('execution_profile_viewer_url')}")
+          print(f"Allocation: {data.get('allocation_profile_viewer_url')}")
+          print(f"Field 7 samples: {data.get('memory_allocation_samples')}")
+          print(f"Rolling: {data.get('rolling')}")
+          PY
+          fi >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload combined allocation evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: spark-allocation-rate-${{ matrix.platform }}-20p-${{ github.run_id }}
+          path: |
+            metadata.json
+            bds.log
+            endstone.log
+            spark.log
+            fleet-${{ matrix.platform }}-20-chunk-walk-local.log
+            fleet-${{ matrix.platform }}-20-chunk-walk-public.log
+            test-results.json
+            fleet-spark-result.json
+            allocation-rate-evidence.json
+            failure-diagnostics.txt
+            combined-health-capture-${{ matrix.platform }}/
+            work/${{ matrix.platform }}/bedrock_server/server.properties
+            work/${{ matrix.platform }}/bedrock_server/version.txt
+          if-no-files-found: warn
+          retention-days: 30
