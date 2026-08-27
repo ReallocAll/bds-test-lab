@@ -1,11 +1,42 @@
 from __future__ import annotations
 
+import pathlib
+import tempfile
 import unittest
 
-from controller.chunk_traversal_validation import authoritative_failures, collect_publisher_evidence
+from controller.chunk_traversal_validation import (
+    DETERMINISTIC_LEVEL_SEED,
+    authoritative_failures,
+    collect_publisher_evidence,
+    configure_deterministic_world,
+)
 
 
 class ChunkTraversalEvidenceTest(unittest.TestCase):
+    def test_configures_flat_world_before_real_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            server_dir = pathlib.Path(temp)
+            properties = server_dir / "server.properties"
+            properties.write_text(
+                "online-mode=true\nlevel-type=DEFAULT\nlevel-seed=\nmax-players=10\n",
+                encoding="utf-8",
+            )
+            old_world = server_dir / "worlds" / "Bedrock level"
+            old_world.mkdir(parents=True)
+            (old_world / "level.dat").write_bytes(b"old-random-world")
+
+            configured = configure_deterministic_world(server_dir)
+
+            self.assertEqual(configured, properties)
+            text = properties.read_text(encoding="utf-8")
+            self.assertIn("online-mode=false", text)
+            self.assertIn("gamemode=creative", text)
+            self.assertIn("force-gamemode=true", text)
+            self.assertIn("max-players=30", text)
+            self.assertIn("level-type=FLAT", text)
+            self.assertIn(f"level-seed={DETERMINISTIC_LEVEL_SEED}", text)
+            self.assertFalse((server_dir / "worlds").exists())
+
     def test_collects_server_publisher_displacement(self) -> None:
         events = [
             {"event": "chunk_publisher", "bot": "TestBot", "x": 0, "y": 0, "z": 0},
