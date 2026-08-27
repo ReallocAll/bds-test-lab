@@ -244,12 +244,17 @@ def resolve_artifacts(
         raise ValueError(f"Unsupported platform: {platform_name}")
 
     exact_spark_sha = (spark_sha or os.environ.get("EXPECTED_SPARK_SHA", "")).strip() or None
+    exact_endstone_sha = os.environ.get("EXPECTED_ENDSTONE_SHA", "").strip() or None
     root = pathlib.Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
     result: dict[str, Any] = {"platform": platform_name, "components": {}}
 
     for component, config in COMPONENTS.items():
-        expected_sha = exact_spark_sha if component == "spark" else None
+        expected_sha = (
+            exact_spark_sha
+            if component == "spark"
+            else exact_endstone_sha if component == "endstone" else None
+        )
         run, artifact = discover(component, platform_name, expected_sha=expected_sha)
         info = _metadata(component, config["repo"], run, artifact)
         result["components"][component] = info

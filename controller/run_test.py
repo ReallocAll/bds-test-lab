@@ -24,7 +24,6 @@ from providers.artifact_provider import resolve_artifacts
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 VIEWER_RE = re.compile(r"https://spark\.lucko\.me/[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+")
 READY_HINTS = ("server started.", "server started in", "server started")
-SPARK_LOAD_HINTS = ("enabling spark", "enabled spark", "spark v", "loaded spark")
 
 
 def now_iso() -> str:
@@ -243,7 +242,16 @@ class IntegrationTest:
         self.server.wait_for(lambda lines: any(any(hint in line.lower() for hint in READY_HINTS) for line in lines), 240, "BDS ready")
         self.check("bds-start", "PASS")
         self.check("ready", "PASS")
-        self.server.wait_for(lambda lines: any("spark" in line.lower() and any(hint in line.lower() for hint in SPARK_LOAD_HINTS) for line in lines), 30, "Spark enable")
+        self.server.wait_for(
+            lambda lines: any(
+                "spark" in line.lower()
+                and "enabled" in line.lower()
+                and "enabling" not in line.lower()
+                for line in lines
+            ),
+            30,
+            "Spark enable",
+        )
         self.check("spark-load-enable", "PASS")
         version_file = self.server_dir / "version.txt"
         if version_file.exists():
