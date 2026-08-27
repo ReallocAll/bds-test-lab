@@ -101,12 +101,19 @@ class GameruleSemanticValidation(IntegrationTest):
         player_waypoints = rules.get("playerwaypoints")
         if player_waypoints is None:
             raise RuntimeError("playerwaypoints is absent from current BDS report metadata")
-        if player_waypoints["default_present"]:
+        if not player_waypoints["default_present"] or player_waypoints["default"] != "everyone":
             raise RuntimeError(
-                f"playerwaypoints default must remain unknown without a runtime default API, got {player_waypoints['default']!r}"
+                "playerwaypoints current default mismatch: "
+                + repr(None if player_waypoints is None else player_waypoints["default"])
             )
+        self.check(
+            "playerwaypoints-current-default",
+            "PASS",
+            expected="everyone",
+            actual=player_waypoints["default"],
+        )
 
-        expected_waypoints = "Off" if self.scenario == "off" else "Everyone"
+        expected_waypoints = "off" if self.scenario == "off" else "everyone"
         actual_waypoints = self.single_world_value(rules, "playerwaypoints")
         if actual_waypoints != expected_waypoints:
             raise RuntimeError(
