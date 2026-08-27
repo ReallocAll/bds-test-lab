@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import os
 import pathlib
+import time
 from typing import Any
 
 from controller.profiler_overhead_runner import ResilientProfilerOverheadValidation
@@ -26,8 +27,8 @@ class PairedProfilerOverheadValidation(ResilientProfilerOverheadValidation):
                     "was compared only with a single baseline collected minutes earlier"
                 ),
                 "entity_load": (
-                    "400 AI mobs are summoned by the privileged console at the position of one online bot; "
-                    "execute-at supplies coordinates without downgrading command permission to the bot"
+                    "400 AI mobs are summoned directly by the privileged console on a deterministic 20x20 grid; "
+                    "20 bots are teleported to the same area so the entities stay active without name tags"
                 ),
             }
         )
@@ -38,23 +39,28 @@ class PairedProfilerOverheadValidation(ResilientProfilerOverheadValidation):
         # Clear any previous synthetic/non-player entities. No-target is harmless here.
         start = self.server.command("kill @e[type=!player]")
         self.server.wait_command_output(start, 5)
+
+        # Put every bot beside the synthetic load, then use absolute coordinates so
+        # /summon runs directly as the privileged console. This avoids both failure
+        # modes already observed in BDS 26.44: `execute at` retaining a Null executor
+        # for the name-tag summon form, and `execute as` downgrading to a normal bot
+        # that lacks Game-Director permission for /summon.
+        move_at = self.server.command("tp @a 0 10 0")
+        move_output = self.server.wait_command_output(move_at, 5)
+        if any("no targets matched" in line.lower() or "error" in line.lower() for line in move_output):
+            raise RuntimeError("Unable to position bots for entity load: " + " | ".join(move_output[-20:]))
+
         start_index = len(self.server.snapshot())
-
-        # Keep console/Game-Director permission. `execute as @a` changes the executor
-        # to a normal bot player, which is not permitted to run /summon. `execute at`
-        # changes only the execution position, so relative coordinates remain useful.
-        # Name tags are unnecessary because all mobs remain within a few blocks of 20
-        # online players for the duration of the benchmark.
+        global_index = 0
         for entity_type, count in ENTITY_GROUPS:
-            for index in range(count):
-                x = (index % 20) - 10
-                z = ((index // 20) % 20) - 10
-                self.server.command(f"execute at @a[c=1] run summon {entity_type} ~{x} ~ ~{z}")
+            for _ in range(count):
+                x = (global_index % 20) - 10
+                z = ((global_index // 20) % 20) - 10
+                self.server.command(f"summon {entity_type} {x} 10 {z}")
+                global_index += 1
 
-        # Let command execution, entity initialization, AI and collision state settle
-        # before the first timed window.
-        import time
-
+        # Let commands execute and allow the mobs/players to fall onto the flat world,
+        # then wait for AI/collision state to settle before the first timed window.
         time.sleep(20)
         output = self.server.snapshot()[start_index:]
         failures = [
