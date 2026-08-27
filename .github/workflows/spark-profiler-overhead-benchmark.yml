@@ -1,0 +1,142 @@
+name: Spark Profiler Overhead Benchmark
+
+on:
+  push:
+    branches:
+      - test/spark-profiler-overhead-benchmark
+    paths:
+      - ".github/workflows/spark-profiler-overhead-benchmark.yml"
+      - "controller/profiler_overhead_validation.py"
+  workflow_dispatch:
+    inputs:
+      spark_sha:
+        description: "Exact ReallocAll/spark SHA to benchmark"
+        required: false
+        default: "359aecfffcb52dfe7e8d5517cf7dfa46c46e61b5"
+      bot_ref:
+        description: "Exact ReallocAll/bds-test-bot ref"
+        required: false
+        default: "a0a83240e9e8f12d4806ba31194fb1807d7b5dd1"
+      window_seconds:
+        description: "Seconds per measurement window"
+        required: false
+        default: "20"
+      repeats:
+        description: "Measurement windows per phase"
+        required: false
+        default: "3"
+
+concurrency:
+  group: spark-profiler-overhead-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+  EXPECTED_SPARK_SHA: ${{ github.event.inputs.spark_sha || '359aecfffcb52dfe7e8d5517cf7dfa46c46e61b5' }}
+  BOT_REF: ${{ github.event.inputs.bot_ref || 'a0a83240e9e8f12d4806ba31194fb1807d7b5dd1' }}
+  BENCH_WINDOW_SECONDS: ${{ github.event.inputs.window_seconds || '20' }}
+  BENCH_REPEATS: ${{ github.event.inputs.repeats || '3' }}
+
+jobs:
+  benchmark:
+    name: ${{ matrix.platform }} profiler overhead
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            os: ubuntu-24.04
+            bot_name: bds-test-bot
+          - platform: windows
+            os: windows-2022
+            bot_name: bds-test-bot.exe
+
+    steps:
+      - name: Checkout benchmark branch
+        uses: actions/checkout@v7
+
+      - name: Checkout Bot at exact ref
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/bds-test-bot
+          ref: ${{ env.BOT_REF }}
+          path: bot-src
+          persist-credentials: false
+
+      - name: Set up Go 1.25
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Build exact Bot revision
+        shell: bash
+        env:
+          BOT_NAME: ${{ matrix.bot_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cd bot-src
+          go mod download
+          go test ./...
+          go build -trimpath -o "../dist/${BOT_NAME}" ./cmd/bds-test-bot
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install benchmark dependencies
+        run: python -m pip install --disable-pip-version-check psutil packaging
+
+      - name: Require exact Spark artifact
+        run: >-
+          python -m controller.assert_spark_artifact
+          --platform ${{ matrix.platform }}
+          --expected-sha ${{ env.EXPECTED_SPARK_SHA }}
+
+      - name: Run real-BDS profiler overhead benchmark
+        run: >-
+          python -m controller.profiler_overhead_validation
+          --platform ${{ matrix.platform }}
+          --bot dist/${{ matrix.bot_name }}
+          --window-seconds ${{ env.BENCH_WINDOW_SECONDS }}
+          --repeats ${{ env.BENCH_REPEATS }}
+
+      - name: Add benchmark report to summary
+        if: always()
+        shell: bash
+        run: |
+          report="profiler-overhead-${{ matrix.platform }}.md"
+          if [[ -f "$report" ]]; then
+            cat "$report" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: spark-profiler-overhead-${{ matrix.platform }}-${{ github.run_id }}
+          path: |
+            profiler-overhead-${{ matrix.platform }}.json
+            profiler-overhead-${{ matrix.platform }}.md
+            test-results.json
+            fleet-spark-result.json
+            metadata.json
+            bds.log
+            endstone.log
+            spark.log
+            profiler-overhead-${{ matrix.platform }}-idle.log
+            profiler-overhead-${{ matrix.platform }}-chunk-walk.log
+            failure-diagnostics.txt
+            work/${{ matrix.platform }}/bedrock_server/server.properties
+            work/${{ matrix.platform }}/bedrock_server/version.txt
+          if-no-files-found: warn
+          retention-days: 14
