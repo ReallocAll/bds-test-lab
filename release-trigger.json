@@ -1,6 +1,6 @@
 {
-  "spark_sha": "11af67007c0cb4fb8ac17c697fdef8ed62ca39ab",
+  "spark_sha": "ed07ec6c5a82768f1c865ce62f220cc2b0ffb177",
   "bot_ref": "a0a83240e9e8f12d4806ba31194fb1807d7b5dd1",
   "soak_minutes": 60,
-  "attempt": 21
+  "attempt": 22
 }
