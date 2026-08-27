@@ -55,6 +55,7 @@ def decode_gamerules(health_data: bytes) -> dict[str, dict[str, Any]]:
             if world_name is not None and value is not None:
                 world_values[world_name] = value
         rules[name.lower()] = {
+            "name": name,
             "default": default_value,
             "default_present": default_value is not None,
             "world_values": world_values,
