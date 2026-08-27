@@ -399,7 +399,7 @@ class ProfilerOverheadValidation(CrossPlatformFleetSparkValidation):
                 z = ((index // 20) % 20) - 10
                 # A name tag keeps the synthetic mobs from normal distance despawn.
                 command = (
-                    f'execute at @a[c=1] run summon {entity_type} ~{x} ~ ~{z} SparkBench{species_index}'
+                    f'execute at @a[c=1] run summon {entity_type} "SparkBench{species_index}" ~{x} ~ ~{z}'
                 )
                 self.server.command(command)
             species_index += 1
