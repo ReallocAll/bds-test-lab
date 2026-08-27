@@ -14,17 +14,60 @@ WALK_MIN_MOVING_DISTANCE = 1.0
 WALK_REQUIRED_MAX_DISTANCE = 8.0
 
 
+def _publisher_sample(event: dict[str, Any]) -> dict[str, Any] | None:
+    event_name = event.get("event")
+    if event_name == "chunk_publisher":
+        sample = {
+            "x": event.get("x"),
+            "y": event.get("y"),
+            "z": event.get("z"),
+            "chunk_x": event.get("chunk_x"),
+            "chunk_z": event.get("chunk_z"),
+            "updates": event.get("updates"),
+            "source": "chunk_publisher",
+        }
+    elif event_name == "bot_progress":
+        position = event.get("publisher_position")
+        if not isinstance(position, list) or len(position) < 3:
+            return None
+        updates = event.get("publisher_updates")
+        if updates is None or int(updates) <= 0:
+            return None
+        chunk = event.get("publisher_chunk")
+        sample = {
+            "x": position[0],
+            "y": position[1],
+            "z": position[2],
+            "chunk_x": chunk[0] if isinstance(chunk, list) and len(chunk) >= 2 else None,
+            "chunk_z": chunk[1] if isinstance(chunk, list) and len(chunk) >= 2 else None,
+            "updates": updates,
+            "source": "bot_progress.publisher_position",
+        }
+    else:
+        return None
+
+    try:
+        coordinates = tuple(float(sample[axis]) for axis in ("x", "y", "z"))
+    except (TypeError, ValueError):
+        return None
+    if coordinates == (0.0, 0.0, 0.0):
+        return None
+    return sample
+
+
 def collect_publisher_evidence(events: list[dict[str, Any]], expected_names: list[str]) -> dict[str, Any]:
     grouped: dict[str, list[dict[str, Any]]] = {name: [] for name in expected_names}
     for event in events:
-        if event.get("event") != "chunk_publisher":
-            continue
         bot = str(event.get("bot", ""))
         if bot not in grouped:
             continue
-        if all(float(event.get(axis, 0)) == 0.0 for axis in ("x", "y", "z")):
+        sample = _publisher_sample(event)
+        if sample is None:
             continue
-        grouped[bot].append(event)
+        samples = grouped[bot]
+        if samples and all(samples[-1].get(key) == sample.get(key) for key in ("x", "y", "z", "updates")):
+            continue
+        samples.append(sample)
 
     bots: dict[str, dict[str, Any]] = {}
     distances: list[float] = []
@@ -50,6 +93,7 @@ def collect_publisher_evidence(events: list[dict[str, Any]], expected_names: lis
                 "chunk_x": first.get("chunk_x"),
                 "chunk_z": first.get("chunk_z"),
                 "updates": first.get("updates"),
+                "source": first.get("source"),
             },
             "last": {
                 "x": last.get("x"),
@@ -58,6 +102,7 @@ def collect_publisher_evidence(events: list[dict[str, Any]], expected_names: lis
                 "chunk_x": last.get("chunk_x"),
                 "chunk_z": last.get("chunk_z"),
                 "updates": last.get("updates"),
+                "source": last.get("source"),
             },
         }
 
