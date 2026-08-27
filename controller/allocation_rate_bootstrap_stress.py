@@ -89,6 +89,15 @@ def install_pinned_artifacts(test: IntegrationTest) -> None:
     test.check("spark-allocation-shim-deployed", "PASS", str(shim_target.relative_to(test.root)))
 
 
+def spark_fully_enabled(lines: list[str]) -> bool:
+    return any(
+        "spark" in line.lower()
+        and "enabled" in line.lower()
+        and "enabling" not in line.lower()
+        for line in lines
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cycles", type=int, default=12)
@@ -113,8 +122,11 @@ def main() -> int:
         for cycle in range(1, args.cycles + 1):
             started = time.monotonic()
             test.start_server()
-            enabled = time.monotonic()
             assert test.server is not None
+            test.server.wait_for(spark_fully_enabled, 30, "completed Spark enable")
+            enabled = time.monotonic()
+            if cycle == 1 and test.result.get("bds_version") != "1.26.44.3":
+                raise RuntimeError(f"unexpected BDS version: {test.result.get('bds_version')!r}")
             stop_started = time.monotonic()
             graceful = test.server.graceful_stop(60)
             stop_finished = time.monotonic()
