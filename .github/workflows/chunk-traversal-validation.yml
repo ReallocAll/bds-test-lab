@@ -18,6 +18,8 @@ permissions:
 env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
+  BOT_REF: "b8c4875bb1fafaa5dd9b8e91b16b613af47bf37a"
+  EXPECTED_SPARK_SHA: "6a32a1d05ca50ddb106a0fdcfa0a1762de018acd"
 
 jobs:
   unit:
@@ -53,11 +55,11 @@ jobs:
       - name: Checkout test lab
         uses: actions/checkout@v7
 
-      - name: Checkout production bot main
+      - name: Checkout production bot exact merge
         uses: actions/checkout@v7
         with:
           repository: ReallocAll/bds-test-bot
-          ref: main
+          ref: ${{ env.BOT_REF }}
           path: bot-src
           persist-credentials: false
 
@@ -72,6 +74,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BOT_REF"
           echo "BOT_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           go mod download
           go vet ./...
@@ -108,6 +111,8 @@ jobs:
           path = Path("traversal-metadata.json")
           path.write_text(json.dumps({
               "bot_sha": os.environ.get("BOT_SHA"),
+              "expected_bot_sha": os.environ.get("BOT_REF"),
+              "expected_spark_sha": os.environ.get("EXPECTED_SPARK_SHA"),
               "lab_sha": os.environ.get("GITHUB_SHA"),
               "scenario": "${{ matrix.scenario }}",
               "count": ${{ matrix.count }},
