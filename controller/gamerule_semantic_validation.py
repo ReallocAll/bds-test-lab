@@ -22,6 +22,50 @@ EXPECTED_MODIFIED_VALUES = {
     "spawnradius": "4",
 }
 
+# Names are presentation metadata and follow Minecraft Wiki's Bedrock Edition
+# spelling/casing. Values are intentionally not copied from the Wiki; the
+# assertions below use values measured by bds-test-lab against current BDS.
+EXPECTED_CANONICAL_NAMES = {
+    "commandblockoutput": "commandBlockOutput",
+    "commandblocksenabled": "commandBlocksEnabled",
+    "dodaylightcycle": "doDaylightCycle",
+    "doentitydrops": "doEntityDrops",
+    "dofiretick": "doFireTick",
+    "doimmediaterespawn": "doImmediateRespawn",
+    "doinsomnia": "doInsomnia",
+    "dolimitedcrafting": "doLimitedCrafting",
+    "domobloot": "doMobLoot",
+    "domobspawning": "doMobSpawning",
+    "dotiledrops": "doTileDrops",
+    "doweathercycle": "doWeatherCycle",
+    "drowningdamage": "drowningDamage",
+    "falldamage": "fallDamage",
+    "firedamage": "fireDamage",
+    "freezedamage": "freezeDamage",
+    "functioncommandlimit": "functionCommandLimit",
+    "keepinventory": "keepInventory",
+    "maxcommandchainlength": "maxCommandChainLength",
+    "mobgriefing": "mobGriefing",
+    "naturalregeneration": "naturalRegeneration",
+    "playerssleepingpercentage": "playersSleepingPercentage",
+    "playerwaypoints": "playerWaypoints",
+    "projectilescanbreakblocks": "projectilesCanBreakBlocks",
+    "pvp": "pvp",
+    "randomtickspeed": "randomTickSpeed",
+    "recipesunlock": "recipesUnlock",
+    "respawnblocksexplode": "respawnBlocksExplode",
+    "sendcommandfeedback": "sendCommandFeedback",
+    "showbordereffect": "showBorderEffect",
+    "showcoordinates": "showCoordinates",
+    "showdaysplayed": "showDaysPlayed",
+    "showdeathmessages": "showDeathMessages",
+    "showrecipemessages": "showRecipeMessages",
+    "showtags": "showTags",
+    "spawnradius": "spawnRadius",
+    "tntexplodes": "tntExplodes",
+    "tntexplosiondropdecay": "tntExplosionDropDecay",
+}
+
 
 class GameruleSemanticValidation(IntegrationTest):
     def __init__(self, scenario: str) -> None:
@@ -98,12 +142,27 @@ class GameruleSemanticValidation(IntegrationTest):
             raise RuntimeError("deprecated locatorbar must not be exported on current BDS")
         self.check("locatorbar-current-omitted", "PASS", "locatorbar absent from current BDS report metadata")
 
+        for lookup_name, expected_name in EXPECTED_CANONICAL_NAMES.items():
+            rule = rules.get(lookup_name)
+            if rule is None:
+                raise RuntimeError(f"expected Gamerule {expected_name!r} is absent from current BDS report metadata")
+            actual_name = rule.get("name")
+            if actual_name != expected_name:
+                raise RuntimeError(
+                    f"Gamerule canonical name mismatch for {lookup_name!r}: expected {expected_name!r}, got {actual_name!r}"
+                )
+        self.check(
+            "canonical-bedrock-gamerule-names",
+            "PASS",
+            count=len(EXPECTED_CANONICAL_NAMES),
+        )
+
         player_waypoints = rules.get("playerwaypoints")
         if player_waypoints is None:
-            raise RuntimeError("playerwaypoints is absent from current BDS report metadata")
+            raise RuntimeError("playerWaypoints is absent from current BDS report metadata")
         if not player_waypoints["default_present"] or player_waypoints["default"] != "everyone":
             raise RuntimeError(
-                "playerwaypoints current default mismatch: "
+                "playerWaypoints current default mismatch: "
                 + repr(None if player_waypoints is None else player_waypoints["default"])
             )
         self.check(
@@ -117,7 +176,7 @@ class GameruleSemanticValidation(IntegrationTest):
         actual_waypoints = self.single_world_value(rules, "playerwaypoints")
         if actual_waypoints != expected_waypoints:
             raise RuntimeError(
-                f"playerwaypoints semantic mismatch for {self.scenario}: expected {expected_waypoints!r}, got {actual_waypoints!r}"
+                f"playerWaypoints semantic mismatch for {self.scenario}: expected {expected_waypoints!r}, got {actual_waypoints!r}"
             )
         self.check(
             "playerwaypoints-semantic-value",
@@ -127,10 +186,29 @@ class GameruleSemanticValidation(IntegrationTest):
             actual=actual_waypoints,
         )
 
+        players_sleeping = rules.get("playerssleepingpercentage")
+        if players_sleeping is None or not players_sleeping["default_present"] or players_sleeping["default"] != "100":
+            raise RuntimeError(
+                "playersSleepingPercentage current default mismatch: "
+                + repr(None if players_sleeping is None else players_sleeping["default"])
+            )
+        actual_sleeping = self.single_world_value(rules, "playerssleepingpercentage")
+        if actual_sleeping != "100":
+            raise RuntimeError(
+                f"playersSleepingPercentage fresh-world value mismatch: expected '100', got {actual_sleeping!r}"
+            )
+        self.check(
+            "playerssleepingpercentage-current-default",
+            "PASS",
+            expected="100",
+            actual=players_sleeping["default"],
+            world_value=actual_sleeping,
+        )
+
         max_chain = rules.get("maxcommandchainlength")
         if max_chain is None or max_chain["default"] != "65535":
             raise RuntimeError(
-                "maxcommandchainlength current fallback mismatch: "
+                "maxCommandChainLength current fallback mismatch: "
                 + repr(None if max_chain is None else max_chain["default"])
             )
         self.check("maxcommandchainlength-current-default", "PASS", expected="65535", actual=max_chain["default"])
