@@ -34,6 +34,7 @@ env:
   EXPECTED_SPARK_SHA: ${{ github.event.inputs.spark_sha || '' }}
   BOT_REF: ${{ github.event.inputs.bot_ref || 'a0a83240e9e8f12d4806ba31194fb1807d7b5dd1' }}
   SOAK_MINUTES: ${{ github.event.inputs.soak_minutes || '30' }}
+  SPARK_ALLOCATIONRATEMETRICS: "true"
 
 jobs:
   release-validation:
@@ -88,6 +89,7 @@ jobs:
           print(f"Spark SHA: {expected}")
           print(f"Bot ref: {bot_ref}")
           print(f"Soak minutes: {soak}")
+          print("Allocation rate metrics: enabled")
           PY
 
       - name: Checkout Bot at exact ref
@@ -138,6 +140,12 @@ jobs:
           --bot dist/${{ matrix.bot_name }}
           --soak-minutes ${{ env.SOAK_MINUTES }}
 
+      - name: Validate allocation-rate Protobuf evidence
+        run: >-
+          python -m controller.allocation_rate_payload
+          --results test-results.json
+          --output allocation-rate-protobuf.json
+
       - name: Add release evidence to summary
         if: always()
         shell: bash
@@ -149,6 +157,7 @@ jobs:
           data = json.loads(Path("test-results.json").read_text())
           metadata = json.loads(Path("metadata.json").read_text()) if Path("metadata.json").is_file() else {}
           spark_sha = (((metadata.get("components") or {}).get("spark") or {}).get("sha"))
+          protobuf = json.loads(Path("allocation-rate-protobuf.json").read_text()) if Path("allocation-rate-protobuf.json").is_file() else {}
           print("## Spark v0.6 release validation")
           print()
           print(f"Platform: **{data.get('platform')}**")
@@ -159,8 +168,14 @@ jobs:
           print(f"Execution profile: {data.get('execution_profile_viewer_url')}")
           print(f"Allocation profile: {data.get('allocation_profile_viewer_url')}")
           print(f"Health upload: {data.get('health_upload_viewer_url')}")
+          print(f"Post-soak health upload: {data.get('post_soak_health_upload_viewer_url')}")
           print(f"Health dashboard: {data.get('health_dashboard_viewer_url')}")
           print(f"Shutdown: `{data.get('shutdown_status')}`")
+          if protobuf:
+              print(f"Allocation metric samples: `{protobuf.get('allocation_metric_samples')}`")
+              print(f"Allocation B/s 1m mean: `{protobuf.get('alloc_bps_last1m_mean')}`")
+              print(f"Allocation B/s 5m mean: `{protobuf.get('alloc_bps_last5m_mean')}`")
+              print(f"Allocation B/s 15m mean: `{protobuf.get('alloc_bps_last15m_mean')}`")
           PY
           fi >> "$GITHUB_STEP_SUMMARY"
 
@@ -176,6 +191,7 @@ jobs:
             spark.log
             release-bot-${{ matrix.platform }}.log
             test-results.json
+            allocation-rate-protobuf.json
             failure-diagnostics.txt
             work/${{ matrix.platform }}/bedrock_server/server.properties
             work/${{ matrix.platform }}/bedrock_server/version.txt
