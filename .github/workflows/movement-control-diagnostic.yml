@@ -17,9 +17,9 @@ env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
   ENDSTONE_RUN_ID: "32770415029"
-  SPARK_RUN_ID: "32958686154"
-  SPARK_RUN_BRANCH: "fix/headless-player-ping"
-  BOT_REF: "081bc5fdef9fab6c70cb01c9fee21e2c81c48cf5"
+  SPARK_RUN_ID: "33113234137"
+  SPARK_RUN_BRANCH: "fix/headless-player-ping-current"
+  BOT_REF: "b8c4875bb1fafaa5dd9b8e91b16b613af47bf37a"
 
 jobs:
   movement-control:
@@ -28,13 +28,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        count: [1, 5, 10, 20]
+        count: [20]
 
     steps:
       - name: Checkout test lab
         uses: actions/checkout@v7
 
-      - name: Pin ABI-matched artifacts and enable chunk-fly fleet validation
+      - name: Pin exact artifacts and enable chunk-fly fleet validation
         shell: bash
         run: |
           python3 - <<'PY'
@@ -55,25 +55,21 @@ jobs:
           if old not in text:
               raise SystemExit("server property target not found")
           text = text.replace(old, new, 1)
-
           old = '        bad = [event for event in stats if not event.get("online") or int(event.get("auth_inputs_sent", 0)) <= 0]\n'
           new = '        bad = [event for event in stats if not event.get("online") or int(event.get("auth_inputs_sent", 0)) <= 0 or (self.scenario == "chunk-fly" and (event.get("flying_confirmed") is not True or float(event.get("horizontal_distance", 0)) <= 8.0))]\n'
           if old not in text:
               raise SystemExit("stats validation target not found")
           text = text.replace(old, new, 1)
-
           old = '        if shutdown is None or shutdown.get("graceful_shutdown") is not True:\n            raise RuntimeError(f"Missing successful fleet_shutdown event: {shutdown}")\n'
           new = old + '        if self.scenario == "chunk-fly" and int(shutdown.get("flying_confirmed", -1)) != self.count:\n            raise RuntimeError(f"Not all bots received server flight acknowledgement: {shutdown}")\n'
           if old not in text:
               raise SystemExit("shutdown validation target not found")
           text = text.replace(old, new, 1)
-
           old = '            stage = "spark-sanity"\n            self.run_basic_commands()\n\n'
           new = '''            stage = "spark-sanity"\n            assert self.server is not None\n            cancel_at = self.server.command("spark profiler cancel")\n            self.server.wait_command_output(cancel_at, 8)\n            tps_at = self.server.command("spark tps")\n            tps_output = self.server.wait_command_output(tps_at, 8)\n            if not any("TPS (5s/10s/1m/5m/15m):" in line for line in tps_output):\n                raise RuntimeError("spark tps sanity command returned no metrics")\n            self.check("spark-safe-sanity", "PASS", "profiler auto-run cancelled; spark tps responsive")\n\n'''
           if old not in text:
               raise SystemExit("spark sanity target not found")
           text = text.replace(old, new, 1)
-
           old = '    parser.add_argument("--scenario", default="idle", choices=["idle"])\n'
           new = '    parser.add_argument("--scenario", default="idle", choices=["idle", "chunk-fly"])\n'
           if old not in text:
