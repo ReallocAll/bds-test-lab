@@ -25,46 +25,50 @@ EXPECTED_MODIFIED_VALUES = {
 # Names are presentation metadata and follow Minecraft Wiki's Bedrock Edition
 # spelling/casing. Values are intentionally not copied from the Wiki; the
 # assertions below use values measured by bds-test-lab against current BDS.
-EXPECTED_CANONICAL_NAMES = {
-    "commandblockoutput": "commandBlockOutput",
-    "commandblocksenabled": "commandBlocksEnabled",
-    "dodaylightcycle": "doDaylightCycle",
-    "doentitydrops": "doEntityDrops",
-    "dofiretick": "doFireTick",
-    "doimmediaterespawn": "doImmediateRespawn",
-    "doinsomnia": "doInsomnia",
-    "dolimitedcrafting": "doLimitedCrafting",
-    "domobloot": "doMobLoot",
-    "domobspawning": "doMobSpawning",
-    "dotiledrops": "doTileDrops",
-    "doweathercycle": "doWeatherCycle",
-    "drowningdamage": "drowningDamage",
-    "falldamage": "fallDamage",
-    "firedamage": "fireDamage",
-    "freezedamage": "freezeDamage",
-    "functioncommandlimit": "functionCommandLimit",
-    "keepinventory": "keepInventory",
-    "maxcommandchainlength": "maxCommandChainLength",
-    "mobgriefing": "mobGriefing",
-    "naturalregeneration": "naturalRegeneration",
-    "playerssleepingpercentage": "playersSleepingPercentage",
-    "playerwaypoints": "playerWaypoints",
-    "projectilescanbreakblocks": "projectilesCanBreakBlocks",
-    "pvp": "pvp",
-    "randomtickspeed": "randomTickSpeed",
-    "recipesunlock": "recipesUnlock",
-    "respawnblocksexplode": "respawnBlocksExplode",
-    "sendcommandfeedback": "sendCommandFeedback",
-    "showbordereffect": "showBorderEffect",
-    "showcoordinates": "showCoordinates",
-    "showdaysplayed": "showDaysPlayed",
-    "showdeathmessages": "showDeathMessages",
-    "showrecipemessages": "showRecipeMessages",
-    "showtags": "showTags",
-    "spawnradius": "spawnRadius",
-    "tntexplodes": "tntExplodes",
-    "tntexplosiondropdecay": "tntExplosionDropDecay",
-}
+# Lookup keys are derived from the canonical names to avoid maintaining a
+# second hand-written lowercase spelling.
+CANONICAL_BEDROCK_GAMERULE_NAMES = (
+    "commandBlockOutput",
+    "commandBlocksEnabled",
+    "doDaylightCycle",
+    "doEntityDrops",
+    "doFireTick",
+    "doImmediateRespawn",
+    "doInsomnia",
+    "doLimitedCrafting",
+    "doMobLoot",
+    "doMobSpawning",
+    "doTileDrops",
+    "doWeatherCycle",
+    "drowningDamage",
+    "fallDamage",
+    "fireDamage",
+    "freezeDamage",
+    "functionCommandLimit",
+    "keepInventory",
+    "maxCommandChainLength",
+    "mobGriefing",
+    "naturalRegeneration",
+    "playersSleepingPercentage",
+    "playerWaypoints",
+    "projectilesCanBreakBlocks",
+    "pvp",
+    "randomTickSpeed",
+    "recipesUnlock",
+    "respawnBlocksExplode",
+    "sendCommandFeedback",
+    "showBorderEffect",
+    "showCoordinates",
+    "showDaysPlayed",
+    "showDeathMessages",
+    "showRecipeMessages",
+    "showTags",
+    "spawnRadius",
+    "tntExplodes",
+    "tntExplosionDropDecay",
+)
+EXPECTED_CANONICAL_NAMES = {name.lower(): name for name in CANONICAL_BEDROCK_GAMERULE_NAMES}
+PLAYERS_SLEEPING_KEY = "playersSleepingPercentage".lower()
 
 
 class GameruleSemanticValidation(IntegrationTest):
@@ -186,13 +190,13 @@ class GameruleSemanticValidation(IntegrationTest):
             actual=actual_waypoints,
         )
 
-        players_sleeping = rules.get("playerssleepingpercentage")
+        players_sleeping = rules.get(PLAYERS_SLEEPING_KEY)
         if players_sleeping is None or not players_sleeping["default_present"] or players_sleeping["default"] != "100":
             raise RuntimeError(
                 "playersSleepingPercentage current default mismatch: "
                 + repr(None if players_sleeping is None else players_sleeping["default"])
             )
-        actual_sleeping = self.single_world_value(rules, "playerssleepingpercentage")
+        actual_sleeping = self.single_world_value(rules, PLAYERS_SLEEPING_KEY)
         if actual_sleeping != "100":
             raise RuntimeError(
                 f"playersSleepingPercentage fresh-world value mismatch: expected '100', got {actual_sleeping!r}"
