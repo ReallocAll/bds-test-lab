@@ -180,7 +180,7 @@ def main() -> int:
         pathlib.Path(args.bot),
         args.profile_seconds,
     )
-    code = validator.execute()
+    code = validator.execute_combined()
     if code != 0:
         print(json.dumps(validator.result, indent=2, sort_keys=True), flush=True)
         return code
