@@ -1,0 +1,157 @@
+name: Spark Behavior Pack Metadata E2E
+
+on:
+  push:
+    branches:
+      - ci/behavior-pack-metadata-e2e-c43a6e1
+    paths:
+      - ".github/workflows/spark-behavior-pack-metadata-e2e.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+  EXPECTED_SPARK_SHA: "c43a6e1f668862ba9e7604d31912444c58ba74f4"
+
+jobs:
+  e2e:
+    name: Exact-SHA BDS E2E (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            os: ubuntu-24.04
+          - platform: windows
+            os: windows-2022
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout test lab
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install validation dependencies
+        run: python -m pip install --disable-pip-version-check psutil
+
+      - name: Require exact Spark artifact
+        run: >-
+          python -m controller.assert_spark_artifact
+          --platform ${{ matrix.platform }}
+          --expected-sha ${{ env.EXPECTED_SPARK_SHA }}
+
+      - name: Seed active behavior pack
+        shell: bash
+        env:
+          E2E_PLATFORM: ${{ matrix.platform }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          platform = os.environ["E2E_PLATFORM"]
+          server = Path("work") / platform / "bedrock_server"
+          world = server / "worlds" / "Bedrock level"
+          pack = world / "behavior_packs" / "spark-behavior-pack-e2e"
+          pack.mkdir(parents=True, exist_ok=True)
+
+          header_uuid = "7f3dc3ef-b16f-4ec9-99db-ec682c94769b"
+          module_uuid = "acb572ef-b564-4573-b5bc-39714bfc4520"
+          (world / "world_behavior_packs.json").write_text(
+              json.dumps([{"pack_id": header_uuid, "version": [1, 0, 0]}], indent=2) + "\n",
+              encoding="utf-8",
+          )
+          (pack / "manifest.json").write_text(
+              json.dumps(
+                  {
+                      "format_version": 2,
+                      "header": {
+                          "name": "Spark Behavior Pack E2E",
+                          "description": "active behavior pack metadata fixture",
+                          "uuid": header_uuid,
+                          "version": [1, 0, 0],
+                          "min_engine_version": [1, 21, 0],
+                      },
+                      "modules": [
+                          {
+                              "type": "data",
+                              "uuid": module_uuid,
+                              "version": [1, 0, 0],
+                          }
+                      ],
+                  },
+                  indent=2,
+              ) + "\n",
+              encoding="utf-8",
+          )
+          print(f"seeded active behavior pack under {world}")
+          PY
+
+      - name: Run real BDS E2E
+        run: python -m controller.run_test --platform ${{ matrix.platform }}
+
+      - name: Verify exact SHA, fixture, and successful shutdown
+        if: always()
+        shell: bash
+        env:
+          E2E_PLATFORM: ${{ matrix.platform }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          expected = "c43a6e1f668862ba9e7604d31912444c58ba74f4"
+          metadata = json.loads(Path("metadata.json").read_text()) if Path("metadata.json").is_file() else {}
+          result = json.loads(Path("test-results.json").read_text()) if Path("test-results.json").is_file() else {}
+          actual = (((metadata.get("components") or {}).get("spark") or {}).get("sha"))
+          if actual != expected:
+              raise SystemExit(f"exact SHA mismatch: expected {expected}, got {actual}")
+          if result.get("status") != "PASS":
+              raise SystemExit(f"BDS E2E status is not PASS: {result.get('status')}")
+          if result.get("shutdown_status") != "graceful":
+              raise SystemExit(f"shutdown is not graceful: {result.get('shutdown_status')}")
+
+          server = Path("work") / os.environ["E2E_PLATFORM"] / "bedrock_server"
+          world = server / "worlds" / "Bedrock level"
+          ref_path = world / "world_behavior_packs.json"
+          manifest_path = world / "behavior_packs" / "spark-behavior-pack-e2e" / "manifest.json"
+          if not ref_path.is_file() or not manifest_path.is_file():
+              raise SystemExit("behavior pack fixture did not survive the real BDS run")
+          refs = json.loads(ref_path.read_text(encoding="utf-8"))
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          expected_uuid = "7f3dc3ef-b16f-4ec9-99db-ec682c94769b"
+          if not any(item.get("pack_id") == expected_uuid for item in refs):
+              raise SystemExit("active behavior pack reference missing after BDS run")
+          if (manifest.get("header") or {}).get("uuid") != expected_uuid:
+              raise SystemExit("behavior pack manifest UUID changed or is missing")
+          print(f"validated Spark exact SHA {actual} with active behavior pack fixture")
+          PY
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: spark-behavior-pack-metadata-${{ matrix.platform }}-${{ github.run_id }}
+          path: |
+            metadata.json
+            bds.log
+            endstone.log
+            spark.log
+            test-results.json
+            failure-diagnostics.txt
+            work/${{ matrix.platform }}/bedrock_server/server.properties
+            work/${{ matrix.platform }}/bedrock_server/version.txt
+            work/${{ matrix.platform }}/bedrock_server/worlds/Bedrock level/world_behavior_packs.json
+            work/${{ matrix.platform }}/bedrock_server/worlds/Bedrock level/behavior_packs/spark-behavior-pack-e2e/manifest.json
+          if-no-files-found: warn
+          retention-days: 14
