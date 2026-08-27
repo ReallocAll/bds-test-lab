@@ -1,15 +1,15 @@
-name: Spark v0.6 Release Validation
+name: Spark Allocation Rate Validation
 
 on:
   push:
     branches:
-      - test/spark-v0.6-release-validation
+      - test/spark-allocation-rate-validation
     paths:
       - "release-trigger.json"
   workflow_dispatch:
     inputs:
       spark_sha:
-        description: "Exact ReallocAll/spark develop SHA to validate"
+        description: "Exact ReallocAll/spark candidate SHA to validate"
         required: true
       bot_ref:
         description: "Exact ReallocAll/bds-test-bot ref"
@@ -18,10 +18,10 @@ on:
       soak_minutes:
         description: "BDS soak duration per platform"
         required: false
-        default: "30"
+        default: "60"
 
 concurrency:
-  group: spark-v06-release-${{ github.ref }}
+  group: spark-allocation-rate-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -31,13 +31,14 @@ permissions:
 env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
+  SPARK_ALLOCATIONRATEMETRICS: "true"
   EXPECTED_SPARK_SHA: ${{ github.event.inputs.spark_sha || '' }}
   BOT_REF: ${{ github.event.inputs.bot_ref || 'a0a83240e9e8f12d4806ba31194fb1807d7b5dd1' }}
-  SOAK_MINUTES: ${{ github.event.inputs.soak_minutes || '30' }}
+  SOAK_MINUTES: ${{ github.event.inputs.soak_minutes || '60' }}
 
 jobs:
   release-validation:
-    name: Spark v0.6 release validation (${{ matrix.platform }})
+    name: Spark allocation rate validation (${{ matrix.platform }})
     strategy:
       fail-fast: false
       matrix:
@@ -50,7 +51,7 @@ jobs:
             bot_name: bds-test-bot.exe
 
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    timeout-minutes: 150
 
     steps:
       - name: Checkout test lab
@@ -66,7 +67,7 @@ jobs:
 
           expected = os.environ.get("EXPECTED_SPARK_SHA", "").strip()
           bot_ref = os.environ.get("BOT_REF", "").strip()
-          soak = os.environ.get("SOAK_MINUTES", "30").strip()
+          soak = os.environ.get("SOAK_MINUTES", "60").strip()
           trigger = Path("release-trigger.json")
           if not expected:
               if not trigger.is_file():
@@ -79,8 +80,10 @@ jobs:
               raise SystemExit(f"Invalid exact Spark SHA: {expected!r}")
           if not bot_ref:
               raise SystemExit("Bot ref must not be empty")
-          if not soak.isdigit() or int(soak) < 30:
-              raise SystemExit(f"Soak duration must be at least 30 minutes: {soak!r}")
+          if not soak.isdigit() or int(soak) < 60:
+              raise SystemExit(f"Allocation-rate soak duration must be at least 60 minutes: {soak!r}")
+          if os.environ.get("SPARK_ALLOCATIONRATEMETRICS") != "true":
+              raise SystemExit("SPARK_ALLOCATIONRATEMETRICS must be enabled for this validation")
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
               env.write(f"EXPECTED_SPARK_SHA={expected}\n")
               env.write(f"BOT_REF={bot_ref}\n")
@@ -88,6 +91,7 @@ jobs:
           print(f"Spark SHA: {expected}")
           print(f"Bot ref: {bot_ref}")
           print(f"Soak minutes: {soak}")
+          print("Allocation rate metrics: enabled")
           PY
 
       - name: Checkout Bot at exact ref
@@ -131,7 +135,7 @@ jobs:
           --platform ${{ matrix.platform }}
           --expected-sha ${{ env.EXPECTED_SPARK_SHA }}
 
-      - name: Run Spark v0.6 release validation
+      - name: Run Spark allocation rate validation
         run: >-
           python -m controller.release_validation
           --platform ${{ matrix.platform }}
@@ -149,11 +153,12 @@ jobs:
           data = json.loads(Path("test-results.json").read_text())
           metadata = json.loads(Path("metadata.json").read_text()) if Path("metadata.json").is_file() else {}
           spark_sha = (((metadata.get("components") or {}).get("spark") or {}).get("sha"))
-          print("## Spark v0.6 release validation")
+          print("## Spark allocation rate validation")
           print()
           print(f"Platform: **{data.get('platform')}**")
           print(f"Status: **{data.get('status')}**")
           print(f"Spark SHA: `{spark_sha}`")
+          print("Allocation rate metrics: **enabled**")
           print(f"BDS: `{data.get('bds_version')}`")
           print(f"Endstone: `{data.get('installed_endstone_version')}`")
           print(f"Execution profile: {data.get('execution_profile_viewer_url')}")
@@ -168,7 +173,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: spark-v06-release-${{ matrix.platform }}-${{ github.run_id }}
+          name: spark-allocation-rate-${{ matrix.platform }}-${{ github.run_id }}
           path: |
             metadata.json
             bds.log
