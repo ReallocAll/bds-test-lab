@@ -34,6 +34,7 @@ class SparkReleaseValidation(ExtendedIntegrationTest):
                 "bot_disconnect_propagation_seconds": None,
                 "health_upload_viewer_url": None,
                 "health_dashboard_viewer_url": None,
+                "post_soak_health_upload_viewer_url": None,
                 "player_health_output": None,
             }
         )
@@ -143,6 +144,18 @@ class SparkReleaseValidation(ExtendedIntegrationTest):
         self.result["health_upload_viewer_url"] = url
         self.check("health-upload-with-player", "PASS", viewer_url=url)
 
+    def validate_post_soak_health_upload(self) -> None:
+        assert self.server is not None
+        start = self.server.command("spark health upload")
+        url = self._wait_health_url(start, "health report uploaded!", "health report upload failed", 75)
+        self.result["post_soak_health_upload_viewer_url"] = url
+        self.check(
+            "post-soak-allocation-rate-health-upload",
+            "PASS",
+            f"health report captured after {self.soak_minutes}-minute soak",
+            viewer_url=url,
+        )
+
     def validate_health_dashboard(self) -> None:
         assert self.server is not None
         start = self.server.command("spark health")
@@ -207,6 +220,9 @@ class SparkReleaseValidation(ExtendedIntegrationTest):
 
             stage = "soak"
             self.run_soak()
+
+            stage = "post-soak-health-upload"
+            self.validate_post_soak_health_upload()
 
             stage = "shutdown"
             self.shutdown()
