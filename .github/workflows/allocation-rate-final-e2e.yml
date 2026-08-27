@@ -8,6 +8,7 @@ on:
       - "release-trigger.json"
       - ".github/workflows/allocation-rate-final-e2e.yml"
       - "controller/allocation_rate_combined_validation.py"
+      - "controller/viewer_allocation_validation.py"
       - "controller/combined_pack_gamerule_fleet_validation.py"
       - "controller/cross_platform_fleet_validation.py"
       - "controller/fleet_spark_validation.py"
@@ -36,7 +37,6 @@ permissions:
 env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
-  SPARK_ALLOCATIONRATEMETRICS: "true"
   EXPECTED_SPARK_SHA: ${{ github.event.inputs.spark_sha || '' }}
   BOT_REF: ${{ github.event.inputs.bot_ref || 'a0a83240e9e8f12d4806ba31194fb1807d7b5dd1' }}
 
@@ -82,6 +82,7 @@ jobs:
               env.write(f"BOT_REF={bot}\n")
           print(f"Spark SHA: {sha}")
           print(f"Bot ref: {bot}")
+          print("allocationRateMetrics must come from the Spark default; no SPARK_ALLOCATIONRATEMETRICS override is set")
           PY
 
       - name: Checkout Bot at exact ref
@@ -116,7 +117,10 @@ jobs:
           python-version: "3.13"
 
       - name: Install validation dependencies
-        run: python -m pip install --disable-pip-version-check psutil packaging requests
+        run: python -m pip install --disable-pip-version-check psutil packaging requests playwright
+
+      - name: Install Chromium for online viewer validation
+        run: python -m playwright install chromium
 
       - name: Require exact Spark artifact
         run: >-
@@ -131,27 +135,41 @@ jobs:
           --bot dist/${{ matrix.bot_name }}
           --profile-seconds 30
 
+      - name: Verify online spark viewer allocation metric
+        run: >-
+          python -m controller.viewer_allocation_validation
+          --evidence allocation-rate-evidence.json
+          --output viewer-allocation-evidence.json
+          --screenshots viewer-screenshots
+
       - name: Add evidence to summary
         if: always()
         shell: bash
         run: |
-          if [[ -f allocation-rate-evidence.json ]]; then
-            python - <<'PY'
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json
           from pathlib import Path
-          data = json.loads(Path("allocation-rate-evidence.json").read_text(encoding="utf-8"))
-          print(f"## {data.get('platform')} final allocation-rate E2E")
-          print()
-          print(f"Spark SHA: `{data.get('spark_sha')}`")
-          print(f"Players: **{data.get('players')}**")
-          print(f"Health: {data.get('health_viewer_url')}")
-          print(f"Execution: {data.get('execution_profile_viewer_url')}")
-          print(f"Allocation: {data.get('allocation_profile_viewer_url')}")
-          print(f"Field 7 samples: {data.get('memory_allocation_samples')}")
-          print(f"Timestamp deltas: {data.get('timestamp_deltas_ms')}")
-          print(f"Rolling: {data.get('rolling')}")
+          evidence = Path("allocation-rate-evidence.json")
+          viewer = Path("viewer-allocation-evidence.json")
+          if evidence.is_file():
+              data = json.loads(evidence.read_text(encoding="utf-8"))
+              print(f"## {data.get('platform')} final allocation-rate E2E")
+              print()
+              print(f"Spark SHA: `{data.get('spark_sha')}`")
+              print(f"Players: **{data.get('players')}**")
+              print(f"Health: {data.get('health_viewer_url')}")
+              print(f"Execution: {data.get('execution_profile_viewer_url')}")
+              print(f"Allocation: {data.get('allocation_profile_viewer_url')}")
+              print(f"Field 7 samples: {data.get('memory_allocation_samples')}")
+              print(f"Timestamp deltas: {data.get('timestamp_deltas_ms')}")
+              print(f"Rolling: {data.get('rolling')}")
+          if viewer.is_file():
+              visual = json.loads(viewer.read_text(encoding="utf-8"))
+              health = (visual.get("pages") or {}).get("health") or {}
+              print(f"Viewer DOM: **{visual.get('status')}**")
+              print(f"Rendered allocation heading: `{health.get('allocation_heading')}`")
+              print(f"Rendered allocation legend/card: `{health.get('allocation_card_text')}`")
           PY
-          fi >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload final evidence
         if: always()
@@ -161,9 +179,13 @@ jobs:
           path: |
             metadata.json
             bds.log
+            endstone.log
+            spark.log
             test-results.json
             fleet-spark-result.json
             allocation-rate-evidence.json
+            viewer-allocation-evidence.json
+            viewer-screenshots/
             failure-diagnostics.txt
             combined-health-capture-${{ matrix.platform }}/
             fleet-${{ matrix.platform }}-20-chunk-walk-local.log
