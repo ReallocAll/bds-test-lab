@@ -4,14 +4,32 @@ from __future__ import annotations
 import argparse
 import math
 import pathlib
+import shutil
 from typing import Any
 
-from controller.fleet_spark_validation import FleetSparkValidation
+from controller.bot_validation import patch_server_properties
+from controller.fleet_spark_validation import FleetSparkValidation, set_server_property
 
 
 FLY_MIN_PUBLISHER_DISTANCE = 32.0
 WALK_MIN_MOVING_DISTANCE = 1.0
 WALK_REQUIRED_MAX_DISTANCE = 8.0
+DETERMINISTIC_LEVEL_SEED = "8675309"
+
+
+def configure_deterministic_world(server_dir: pathlib.Path) -> pathlib.Path:
+    """Prepare the second BDS start to create the same unobstructed world every run."""
+    properties = server_dir / "server.properties"
+    patch_server_properties(properties)
+    set_server_property(properties, "max-players", "30")
+    set_server_property(properties, "level-type", "FLAT")
+    set_server_property(properties, "level-seed", DETERMINISTIC_LEVEL_SEED)
+
+    # The bootstrap start has already created a random default world. Removing
+    # it after shutdown is required: changing level-type on an existing world
+    # does not regenerate its terrain.
+    shutil.rmtree(server_dir / "worlds", ignore_errors=True)
+    return properties
 
 
 def _publisher_sample(event: dict[str, Any]) -> dict[str, Any] | None:
@@ -134,6 +152,25 @@ def authoritative_failures(evidence: dict[str, Any], scenario: str, count: int) 
 
 
 class ChunkTraversalValidation(FleetSparkValidation):
+    def bootstrap_offline_server(self) -> None:
+        self.start_server()
+        assert self.server is not None
+        self.wait_post_start_initialization()
+        if not self.server.graceful_stop(60):
+            self.server.force_kill_tree()
+            raise RuntimeError("BDS did not stop after server.properties bootstrap")
+        self.server.close()
+        self.server = None
+
+        configure_deterministic_world(self.server_dir)
+        self.check(
+            "fleet-server-properties",
+            "PASS",
+            f"offline creative flat world, fixed seed={DETERMINISTIC_LEVEL_SEED}, idle timeout disabled, max-players=30",
+        )
+        self.start_server()
+        self.wait_post_start_initialization()
+
     def run_basic_commands(self) -> None:
         assert self.server is not None
         cancel_at = self.server.command("spark profiler cancel")
