@@ -19,7 +19,7 @@ env:
   ENDSTONE_RUN_ID: "32770415029"
   SPARK_RUN_ID: "32958686154"
   SPARK_RUN_BRANCH: "fix/headless-player-ping"
-  BOT_REF: "605c63af9300b21862b0d76169ede5d27106cbbd"
+  BOT_REF: "081bc5fdef9fab6c70cb01c9fee21e2c81c48cf5"
 
 jobs:
   movement-control:
