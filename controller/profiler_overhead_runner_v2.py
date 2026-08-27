@@ -7,6 +7,7 @@ import pathlib
 import time
 from typing import Any
 
+from controller.fleet_spark_validation import set_server_property
 from controller.profiler_overhead_runner import ResilientProfilerOverheadValidation
 from controller.profiler_overhead_validation import BOT_COUNT, ENTITY_GROUPS
 
@@ -30,21 +31,47 @@ class PairedProfilerOverheadValidation(ResilientProfilerOverheadValidation):
                     "400 AI mobs are summoned directly by the privileged console on a deterministic 20x20 grid; "
                     "20 bots are teleported to the same area so the entities stay active without name tags"
                 ),
+                "difficulty": (
+                    "normal is persisted in server.properties and reasserted immediately before synthetic mob "
+                    "generation so hostile AI entities remain valid across BDS restarts"
+                ),
             }
+        )
+        self._write_results()
+
+    def bootstrap_world(self) -> None:
+        super().bootstrap_world()
+        # The /difficulty command used during bootstrap only affected that process in
+        # previous benchmark runs. BDS subsequently restarted from difficulty=peaceful,
+        # making hostile /summon commands invalid. Persist the benchmark difficulty.
+        properties = self.server_dir / "server.properties"
+        set_server_property(properties, "difficulty", "normal")
+        self.check(
+            "benchmark-difficulty-persisted",
+            "PASS",
+            "server.properties difficulty fixed to normal for every benchmark restart",
         )
         self._write_results()
 
     def spawn_entity_load(self) -> None:
         assert self.server is not None
+
+        # Reassert at runtime as well as in server.properties. This makes the synthetic
+        # load independent of any level-state difficulty value retained by BDS.
+        difficulty_at = self.server.command("difficulty normal")
+        difficulty_output = self.server.wait_command_output(difficulty_at, 5)
+        difficulty_text = "\n".join(difficulty_output).lower()
+        if "error" in difficulty_text or "failed" in difficulty_text:
+            raise RuntimeError("Unable to set normal difficulty for entity load: " + " | ".join(difficulty_output[-20:]))
+
         # Clear any previous synthetic/non-player entities. No-target is harmless here.
         start = self.server.command("kill @e[type=!player]")
         self.server.wait_command_output(start, 5)
 
         # Put every bot beside the synthetic load, then use absolute coordinates so
         # /summon runs directly as the privileged console. This avoids both failure
-        # modes already observed in BDS 26.44: `execute at` retaining a Null executor
-        # for the name-tag summon form, and `execute as` downgrading to a normal bot
-        # that lacks Game-Director permission for /summon.
+        # modes already observed in BDS 26.44: a Null executor through execute-at and
+        # execute-as downgrading to a normal bot that lacks Game-Director permission.
         move_at = self.server.command("tp @a 0 10 0")
         move_output = self.server.wait_command_output(move_at, 5)
         if any("no targets matched" in line.lower() or "error" in line.lower() for line in move_output):
@@ -58,6 +85,9 @@ class PairedProfilerOverheadValidation(ResilientProfilerOverheadValidation):
                 z = ((global_index // 20) % 20) - 10
                 self.server.command(f"summon {entity_type} {x} 10 {z}")
                 global_index += 1
+                # Avoid turning stdin command flooding into part of the benchmark.
+                if global_index % 25 == 0:
+                    time.sleep(0.1)
 
         # Let commands execute and allow the mobs/players to fall onto the flat world,
         # then wait for AI/collision state to settle before the first timed window.
