@@ -1,0 +1,89 @@
+name: Spark Server Properties E2E
+
+on:
+  push:
+    branches:
+      - ci/spark-server-properties-e2e-067c1bf
+    paths:
+      - ".github/workflows/spark-server-properties-e2e.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+  EXPECTED_SPARK_SHA: "067c1bffa0181cd03ede88c63fbc6acdc0f9896e"
+
+jobs:
+  e2e:
+    name: Exact-SHA BDS E2E (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            os: ubuntu-24.04
+          - platform: windows
+            os: windows-2022
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout test lab
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install validation dependencies
+        run: python -m pip install --disable-pip-version-check psutil
+
+      - name: Require exact Spark artifact
+        run: >-
+          python -m controller.assert_spark_artifact
+          --platform ${{ matrix.platform }}
+          --expected-sha ${{ env.EXPECTED_SPARK_SHA }}
+
+      - name: Run real BDS E2E
+        run: python -m controller.run_test --platform ${{ matrix.platform }}
+
+      - name: Verify exact SHA and successful shutdown
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          expected = "067c1bffa0181cd03ede88c63fbc6acdc0f9896e"
+          metadata = json.loads(Path("metadata.json").read_text()) if Path("metadata.json").is_file() else {}
+          result = json.loads(Path("test-results.json").read_text()) if Path("test-results.json").is_file() else {}
+          actual = (((metadata.get("components") or {}).get("spark") or {}).get("sha"))
+          if actual != expected:
+              raise SystemExit(f"exact SHA mismatch: expected {expected}, got {actual}")
+          if result.get("status") != "PASS":
+              raise SystemExit(f"BDS E2E status is not PASS: {result.get('status')}")
+          if result.get("shutdown_status") != "graceful":
+              raise SystemExit(f"shutdown is not graceful: {result.get('shutdown_status')}")
+          print(f"validated Spark exact SHA {actual}")
+          PY
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: spark-server-properties-${{ matrix.platform }}-${{ github.run_id }}
+          path: |
+            metadata.json
+            bds.log
+            endstone.log
+            spark.log
+            test-results.json
+            failure-diagnostics.txt
+            work/${{ matrix.platform }}/bedrock_server/server.properties
+            work/${{ matrix.platform }}/bedrock_server/version.txt
+          if-no-files-found: warn
+          retention-days: 14
