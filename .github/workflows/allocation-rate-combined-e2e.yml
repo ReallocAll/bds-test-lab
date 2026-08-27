@@ -215,10 +215,13 @@ jobs:
               raise SystemExit(f"Metrics.memory_allocation field 7 has only {len(values)} samples")
           if series.start_timestamp_ms <= 0:
               raise SystemExit(f"invalid allocation series start timestamp: {series.start_timestamp_ms}")
-          if len(deltas) != len(values) - 1:
+          # Spark mirrors upstream MetricSeries encoding: timestamp_deltas_ms
+          # contains one entry per value, with a zero delta for the first value
+          # because start_timestamp_ms carries that sample's absolute timestamp.
+          if len(deltas) != len(values):
               raise SystemExit(f"timestamp delta count mismatch: values={len(values)} deltas={len(deltas)}")
-          if any(delta <= 0 for delta in deltas):
-              raise SystemExit(f"non-positive timestamp delta(s): {deltas}")
+          if not deltas or deltas[0] != 0 or any(delta <= 0 for delta in deltas[1:]):
+              raise SystemExit(f"invalid timestamp delta(s): {deltas}")
           if any(not math.isfinite(v) or v < 0 for v in values):
               raise SystemExit(f"invalid allocation rates: {values}")
           if max(values) <= 0:
