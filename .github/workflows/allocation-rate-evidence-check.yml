@@ -3,7 +3,7 @@ name: Allocation Rate Evidence Check
 on:
   push:
     branches:
-      - test/allocation-rate-metrics-validation
+      - test/allocation-rate-evidence-final
     paths:
       - ".github/workflows/allocation-rate-evidence-check.yml"
 
@@ -12,8 +12,8 @@ permissions:
   actions: read
 
 env:
-  SOURCE_RUN_ID: "33053087426"
-  EXPECTED_SPARK_SHA: "d31e8d7001ad8842ca5dda6999c47e35f387f9f4"
+  SOURCE_RUN_ID: "33065846585"
+  EXPECTED_SPARK_SHA: "3fcbfc8dfe1561cbd20bc86a2b89d1b834ad89e3"
 
 jobs:
   verify-health-protobuf:
