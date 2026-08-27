@@ -21,7 +21,7 @@ jobs:
           path: validation
           fetch-depth: 0
 
-      - name: Patch readiness and exact Endstone pin
+      - name: Patch readiness and exact Endstone pin support
         shell: bash
         run: |
           python - <<'PY'
@@ -52,14 +52,6 @@ jobs:
           if old not in text:
               raise SystemExit('artifact provider component pattern not found')
           provider.write_text(text.replace(old, new, 1), encoding='utf-8')
-
-          workflow = root / '.github/workflows/spark-v06-release-validation.yml'
-          text = workflow.read_text(encoding='utf-8')
-          anchor = '  SPARK_ALLOCATIONRATEMETRICS: "true"\n'
-          addition = anchor + '  EXPECTED_ENDSTONE_SHA: "c76c814289ee3be8a7236389b6bdeb5728b154e4"\n'
-          if anchor not in text:
-              raise SystemExit('validation workflow env anchor not found')
-          workflow.write_text(text.replace(anchor, addition, 1), encoding='utf-8')
           PY
 
       - name: Commit validation harness fix
@@ -68,7 +60,7 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add controller/run_test.py providers/artifact_provider.py .github/workflows/spark-v06-release-validation.yml
+          git add controller/run_test.py providers/artifact_provider.py
           git diff --cached --check
           git commit -m 'test: stabilize allocation-rate validation bootstrap'
           git push origin HEAD:test/allocation-rate-metrics-validation
