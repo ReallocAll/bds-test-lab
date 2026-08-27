@@ -84,7 +84,8 @@ class ProfilerOverheadValidation(CrossPlatformFleetSparkValidation):
     def _write_results(self) -> None:
         write_json(self.result_path, self.result)
         write_json(self.fleet_result, self.result)
-        write_json(self.benchmark_result, self.result)
+        if hasattr(self, "benchmark_result"):
+            write_json(self.benchmark_result, self.result)
 
     def install_artifacts(self) -> None:
         super().install_artifacts()
