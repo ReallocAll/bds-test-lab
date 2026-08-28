@@ -1,0 +1,92 @@
+name: Spark Python 3.11 Fallback Real BDS
+
+on:
+  push:
+    branches:
+      - test/python-attribution-validation
+    paths:
+      - ".github/workflows/python311-attribution-fallback.yml"
+      - "controller/python311_fallback_validation.py"
+  workflow_dispatch:
+    inputs:
+      spark_sha:
+        description: "Exact ReallocAll/spark SHA to validate"
+        required: false
+        default: "95dd8e8404afd76ddfea37473d58e9635744c494"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+  EXPECTED_SPARK_SHA: ${{ github.event.inputs.spark_sha || '95dd8e8404afd76ddfea37473d58e9635744c494' }}
+
+jobs:
+  fallback:
+    name: Linux / CPython 3.11 / native-only fallback
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout test lab
+        uses: actions/checkout@v7
+
+      - name: Wait for exact Spark CI
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 80); do
+            json="$(gh api "repos/ReallocAll/spark/actions/runs?head_sha=${EXPECTED_SPARK_SHA}&per_page=30")"
+            build="$(jq -r '[.workflow_runs[] | select(.name == "Build")][0].conclusion // ""' <<<"$json")"
+            python_ci="$(jq -r '[.workflow_runs[] | select(.name == "Python attribution")][0].conclusion // ""' <<<"$json")"
+            echo "Spark CI attempt ${attempt}: Build=${build:-pending} Python=${python_ci:-pending}"
+            if [[ "$build" == success && "$python_ci" == success ]]; then
+              exit 0
+            fi
+            for conclusion in "$build" "$python_ci"; do
+              if [[ "$conclusion" == failure || "$conclusion" == cancelled || "$conclusion" == timed_out ]]; then
+                echo "Exact Spark CI failed: Build=$build Python=$python_ci" >&2
+                exit 1
+              fi
+            done
+            sleep 15
+          done
+          exit 1
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install validation dependencies
+        run: python -m pip install --disable-pip-version-check psutil packaging hatchling
+
+      - name: Require exact Spark artifact
+        run: >-
+          python -m controller.assert_spark_artifact
+          --platform linux
+          --expected-sha ${{ env.EXPECTED_SPARK_SHA }}
+
+      - name: Run real BDS Python 3.11 fallback profile
+        run: python -m controller.python311_fallback_validation --profile-seconds 60
+
+      - name: Upload fallback evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-attribution-linux-cp311-fallback-${{ github.run_id }}
+          path: |
+            metadata.json
+            bds.log
+            endstone.log
+            spark.log
+            test-results.json
+            python-attribution-result.json
+            python-attribution-profile-summary.json
+            python-attribution.sparkprofile
+            failure-diagnostics.txt
+            work/linux/bedrock_server/server.properties
+            work/linux/bedrock_server/version.txt
+          if-no-files-found: warn
+          retention-days: 30
