@@ -7,14 +7,15 @@ import sys
 
 from controller.python_attribution_performance import PythonAttributionPerformance, main
 from controller.python_attribution_validation import PLUGIN_SOURCE
-from controller.run_test import run_checked
+from controller.run_test import IntegrationTest, run_checked
 
 
 def _install_real_endstone_plugin(self: PythonAttributionPerformance) -> None:
-    # Keep the benchmark deployment identical to the correctness E2E: Spark and
-    # Endstone first, then hand the hotspot wheel to Endstone's normal plugin
-    # loader instead of importing it from the runner's global site-packages.
-    super(PythonAttributionPerformance, self).install_artifacts()
+    # Install only Endstone + Spark through the base integration harness. Calling
+    # PythonAttributionValidation.install_artifacts here would also pip-install
+    # the hotspot package into the runner interpreter, then deploy the same wheel
+    # to the server plugin directory and create an ambiguous duplicate plugin.
+    IntegrationTest.install_artifacts(self)
     wheel_dir = self.root / "hotspot-wheel"
     shutil.rmtree(wheel_dir, ignore_errors=True)
     wheel_dir.mkdir(parents=True, exist_ok=True)
