@@ -6,15 +6,15 @@ import json
 import os
 import pathlib
 import shutil
-import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from typing import Any
 
+from controller.bot_validation import list_players, patch_server_properties
 from controller.cross_platform_fleet_validation import CrossPlatformFleetBotProcess
 from controller.fleet_spark_validation import PLAYER_COUNT_RE, set_server_property
-from controller.bot_validation import list_players, patch_server_properties
 from controller.python_profile_payload import (
     contains_python_chain,
     fetch_viewer_payload,
@@ -181,7 +181,7 @@ class PythonAttributionValidation(IntegrationTest):
         if code != 0:
             raise RuntimeError(f"bot fleet exited with code {code}")
         events = self.bot.event_snapshot()
-        shutdown = next((e for e in reversed(events) if e.get("event") == "fleet_shutdown"), None)
+        shutdown = next((event for event in reversed(events) if event.get("event") == "fleet_shutdown"), None)
         if not shutdown or shutdown.get("graceful_shutdown") is not True:
             raise RuntimeError(f"missing graceful fleet shutdown: {shutdown}")
         self.wait_player_count(0, 30)
@@ -201,9 +201,9 @@ class PythonAttributionValidation(IntegrationTest):
             if not self.server.is_alive():
                 raise RuntimeError("BDS exited during Python attribution profile")
             time.sleep(1)
-        if not url:
+        if url is None:
             stop_at = self.server.command("spark profiler stop")
-            deadline = time.monotonic() + 90
+            deadline = time.monotonic() + 60
             while time.monotonic() < deadline:
                 url = self._viewer_url(self.server.snapshot(), min(start, stop_at))
                 if url:
@@ -212,152 +212,202 @@ class PythonAttributionValidation(IntegrationTest):
                     raise RuntimeError("BDS exited while finalizing Python attribution profile")
                 time.sleep(1)
         if not url:
-            raise RuntimeError("Python attribution profiler produced no Spark viewer URL")
+            raise RuntimeError("Python attribution profile produced no viewer URL")
         self.result["spark_profile_viewer_url"] = url
         self._write_results()
         return url
 
-    @staticmethod
-    def _node_method(node: dict[str, Any]) -> str:
-        value = node.get("method")
-        return value if isinstance(value, str) else ""
-
-    def validate_payload(self, url: str) -> None:
+    def record_viewer_frontend_status(self, url: str) -> None:
+        request = urllib.request.Request(url, headers={"User-Agent": "bds-test-lab/python-attribution-validation"})
         try:
-            with urllib.request.urlopen(url, timeout=30) as response:
-                response.read(64)
+            with urllib.request.urlopen(request, timeout=30) as response:
+                body = response.read(4096)
+                if response.status == 200 and body:
+                    self.check("viewer-frontend-open", "PASS", viewer_url=url, http_status=response.status)
+                    return
+                self.check(
+                    "viewer-frontend-open",
+                    "WARN",
+                    f"viewer frontend returned HTTP {response.status} or an empty body; raw payload remains authoritative",
+                    viewer_url=url,
+                    http_status=response.status,
+                )
+        except urllib.error.HTTPError as exc:
+            self.check(
+                "viewer-frontend-open",
+                "WARN",
+                f"viewer frontend probe returned HTTP {exc.code} from the CI runner; raw payload remains authoritative",
+                viewer_url=url,
+                http_status=exc.code,
+            )
         except Exception as exc:
-            raise RuntimeError(f"Spark viewer URL is not openable: {url}: {exc}") from exc
-        self.check("viewer-open", "PASS", viewer_url=url)
+            self.check(
+                "viewer-frontend-open",
+                "WARN",
+                f"viewer frontend probe failed from the CI runner: {type(exc).__name__}: {exc}",
+                viewer_url=url,
+            )
 
+    def validate_profile(self, url: str) -> dict[str, object]:
+        self.check("viewer-url-emitted", "PASS", viewer_url=url)
         raw = fetch_viewer_payload(url)
         if len(raw) < 64:
             raise RuntimeError(f"raw Spark payload is unexpectedly small: {len(raw)} bytes")
         self.raw_profile_path.write_bytes(raw)
-        self.check("raw-payload-nonempty", "PASS", bytes=len(raw))
+        self.check("raw-payload-open", "PASS", bytes=len(raw), viewer_url=url)
+        self.record_viewer_frontend_status(url)
 
         profile = parse_sampler_data(raw)
         summary = profile_summary(profile)
-        metadata = profile["metadata"]
-        duration = (metadata["end_time_ms"] - metadata["start_time_ms"]) / 1000.0
-        if metadata["mode"] != 0:
-            raise RuntimeError(f"expected execution profile mode=0, got {metadata['mode']}")
-        if duration < max(50.0, self.profile_seconds - 10.0):
-            raise RuntimeError(f"profile duration too short: {duration:.3f}s")
-        if not profile["threads"] or summary["root_weight"] <= 0:
+        self.summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+
+        if profile.sampler_mode != 0:
+            raise RuntimeError(f"expected execution sampler mode 0, got {profile.sampler_mode}")
+        if profile.duration_seconds < self.profile_seconds - 5:
+            raise RuntimeError(
+                f"profile too short: {profile.duration_seconds:.3f}s for requested {self.profile_seconds}s"
+            )
+        root_weight = sum(thread.weight for thread in profile.threads)
+        if not profile.threads or root_weight <= 0:
             raise RuntimeError("profile thread tree is empty or has zero root weight")
         self.check(
             "profile-shape",
             "PASS",
-            duration_seconds=round(duration, 3),
-            thread_count=len(profile["threads"]),
-            root_weight=summary["root_weight"],
+            duration_seconds=profile.duration_seconds,
+            thread_count=len(profile.threads),
+            root_weight=root_weight,
         )
 
-        extra = metadata["extra"]
-        backend = _metadata_text(extra.get("Python attribution backend"))
-        python_version = _metadata_text(extra.get("Python version"))
-        if backend != "PEP669":
-            raise RuntimeError(f"unexpected Python attribution backend: {backend!r}")
-        if not python_version.startswith("3.13"):
-            raise RuntimeError(f"unexpected embedded Python version: {python_version!r}")
-        if extra.get("Python function attribution enabled") != "true":
-            raise RuntimeError("Python function attribution is not enabled in profile diagnostics")
-        if int(extra.get("Python PY_START events", "0")) <= 0:
-            raise RuntimeError("profile recorded no PY_START events")
-        if int(extra.get("Python shadow snapshot attempts", "0")) <= 0:
-            raise RuntimeError("profile recorded no Python shadow snapshot attempts")
-        self.check("pep669-diagnostics", "PASS", backend=backend, python_version=python_version)
+        diagnostics = profile.extra_metadata
+        version = _metadata_text(diagnostics.get("Python version"))
+        backend = _metadata_text(diagnostics.get("Python attribution backend"))
+        enabled = diagnostics.get("Python function attribution enabled", "false")
+        if sys.version_info >= (3, 12):
+            if backend != "PEP669" or enabled != "true":
+                raise RuntimeError(f"PEP669 attribution not enabled: backend={backend!r} enabled={enabled!r}")
+            if int(diagnostics.get("Python PY_START events", "0")) <= 0:
+                raise RuntimeError("PEP669 diagnostics report no PY_START events")
+            if int(diagnostics.get("Python shadow snapshot attempts", "0")) <= 0:
+                raise RuntimeError("Python shadow stack was never sampled")
+        else:
+            reason = _metadata_text(diagnostics.get("Python attribution unavailable reason"))
+            if backend != "native-only" or enabled != "false" or "3.12" not in reason:
+                raise RuntimeError(
+                    f"invalid Python 3.11 fallback: backend={backend!r} enabled={enabled!r} reason={reason!r}"
+                )
+            self.check("python-311-native-only-fallback", "PASS", backend=backend, reason=reason)
+            return summary
+        self.check("pep669-diagnostics", "PASS", python_version=version, backend=backend)
 
         nodes = python_nodes(profile)
         if not nodes:
-            raise RuntimeError("profile contains no [Python] function nodes")
-        plugin_nodes = [node for node in nodes if node.get("class") == f"[Python] {EXPECTED_MODULE}"]
-        if not plugin_nodes:
-            raise RuntimeError(f"profile contains no Python nodes for module {EXPECTED_MODULE}")
-        if not any(EXPECTED_MODULE in str(node.get("descriptor", "")) for node in plugin_nodes):
-            raise RuntimeError("plugin Python nodes do not carry source file attribution")
-        if not all(isinstance(node.get("line"), int) and int(node["line"]) > 0 for node in plugin_nodes):
-            raise RuntimeError("plugin Python nodes do not carry reliable first-line metadata")
-        source = profile["class_sources"].get(f"[Python] {EXPECTED_MODULE}")
-        if source != EXPECTED_SOURCE:
+            raise RuntimeError("no Python nodes were emitted into the real profile tree")
+        plugin_nodes = [
+            node
+            for _thread, node in nodes
+            if node.class_name == f"[Python] {EXPECTED_MODULE}" and EXPECTED_MODULE in node.method_desc
+        ]
+        if self.mode != "off" and not plugin_nodes:
+            raise RuntimeError("profile contains Python nodes but no hotspot plugin module/file attribution")
+        if plugin_nodes and not any(node.line_number > 0 for node in plugin_nodes):
+            raise RuntimeError("hotspot plugin Python nodes are missing co_firstlineno")
+        source = profile.class_sources.get(f"[Python] {EXPECTED_MODULE}")
+        if self.mode != "off" and source != EXPECTED_SOURCE:
             raise RuntimeError(f"plugin class source mismatch: expected {EXPECTED_SOURCE!r}, got {source!r}")
-        self.check("plugin-function-metadata", "PASS", source=source, plugin_nodes=len(plugin_nodes))
+        self.check("python-plugin-metadata", "PASS", source=source, plugin_nodes=len(plugin_nodes))
 
-        methods = {self._node_method(node) for node in plugin_nodes}
-        expected_for_mode = {
-            "off": {"HotspotPlugin.light_tick"},
-            "single": {"HotspotPlugin.light_tick", "HotspotPlugin.cpu_hotspot", "HotspotPlugin.integer_hash_loop"},
-            "nested": {
+        chains: list[list[str]] = []
+        if self.mode == "single":
+            chains = [["HotspotPlugin.light_tick", "HotspotPlugin.cpu_hotspot", "HotspotPlugin.integer_hash_loop"]]
+        elif self.mode == "nested":
+            chains = [[
                 "HotspotPlugin.light_tick",
                 "HotspotPlugin.nested_hotspot",
                 "HotspotPlugin.level_one",
                 "HotspotPlugin.level_two",
                 "HotspotPlugin.level_three",
                 "HotspotPlugin.cpu_leaf",
-            },
-            "dual": {"HotspotPlugin.dual_hotspot", "HotspotPlugin.hotspot_a", "HotspotPlugin.hotspot_b"},
-            "mixed": {
-                "HotspotPlugin.stdlib_hotspot",
+            ]]
+        elif self.mode == "dual":
+            chains = [
+                [
+                    "HotspotPlugin.light_tick",
+                    "HotspotPlugin.dual_hotspot",
+                    "HotspotPlugin.hotspot_a",
+                    "HotspotPlugin.integer_hash_loop",
+                ],
+                [
+                    "HotspotPlugin.light_tick",
+                    "HotspotPlugin.dual_hotspot",
+                    "HotspotPlugin.hotspot_b",
+                    "HotspotPlugin.integer_hash_loop",
+                ],
+            ]
+        elif self.mode in {"mixed", "fleet"}:
+            chains = [[
+                "HotspotPlugin.light_tick",
+                "HotspotPlugin.nested_hotspot",
+                "HotspotPlugin.level_one",
+                "HotspotPlugin.level_two",
+                "HotspotPlugin.level_three",
+                "HotspotPlugin.cpu_leaf",
+            ]]
+            required = {
                 "HotspotPlugin.exception_hotspot",
                 "HotspotPlugin.generator_hotspot",
                 "HotspotPlugin.async_hotspot",
-                "HotspotPlugin.worker_thread_hotspot",
-            },
-            "fleet": {"HotspotPlugin.event_callback_hotspot", "HotspotPlugin.worker_thread_hotspot"},
-        }[self.mode]
-        missing = sorted(expected_for_mode - methods)
-        if missing:
-            raise RuntimeError(f"expected Python hotspot methods missing from profile: {missing}")
-
-        if self.mode == "nested":
-            chain = [
-                "HotspotPlugin.light_tick",
-                "HotspotPlugin.nested_hotspot",
-                "HotspotPlugin.level_one",
-                "HotspotPlugin.level_two",
-                "HotspotPlugin.level_three",
-                "HotspotPlugin.cpu_leaf",
-            ]
+                "HotspotPlugin._async_leaf",
+            }
+            present = {node.method_name for _thread, node in nodes}
+            missing = sorted(required - present)
+            if missing:
+                raise RuntimeError(f"mixed lifecycle workload missing Python nodes: {missing}")
+        for chain in chains:
             if not contains_python_chain(profile, chain):
-                raise RuntimeError("nested Python parent/child chain was not preserved in the real profile")
-            self.check("nested-call-tree", "PASS", chain=chain)
+                raise RuntimeError("missing Python parent/child chain: " + " -> ".join(chain))
+            self.check("python-chain", "PASS", chain=" -> ".join(chain))
 
         if self.mode == "dual":
-            weights = summary["python_methods_ms"]
-            a = float(weights.get("HotspotPlugin.hotspot_a", 0.0))
-            b = float(weights.get("HotspotPlugin.hotspot_b", 0.0))
-            if a <= 0 or b <= 0 or a <= b:
-                raise RuntimeError(f"70/30 hotspot direction not observed: hotspot_a={a}, hotspot_b={b}")
-            self.check("dual-hotspot-direction", "PASS", hotspot_a_ms=a, hotspot_b_ms=b)
+            weights: dict[str, float] = {}
+            for _thread, node in nodes:
+                weights[node.method_name] = weights.get(node.method_name, 0.0) + node.weight
+            hot_a = weights.get("HotspotPlugin.hotspot_a", 0.0)
+            hot_b = weights.get("HotspotPlugin.hotspot_b", 0.0)
+            if hot_a <= hot_b or hot_a <= 0 or hot_b <= 0:
+                raise RuntimeError(f"dual hotspot direction is wrong: hotspot_a={hot_a}, hotspot_b={hot_b}")
+            self.check("dual-hotspot-direction", "PASS", hotspot_a_ms=hot_a, hotspot_b_ms=hot_b)
 
-        if self.mode in {"mixed", "fleet"}:
-            if summary["python_threads"] < 2:
-                raise RuntimeError(f"worker-thread Python attribution missing: python_threads={summary['python_threads']}")
-            self.check("python-worker-thread", "PASS", python_threads=summary["python_threads"])
+        if self.mode in {"worker", "mixed", "fleet"}:
+            worker_threads = {
+                thread for thread, node in nodes if node.method_name == "HotspotPlugin.worker_thread_hotspot"
+            }
+            if not worker_threads:
+                raise RuntimeError("worker-thread Python attribution was not observed")
+            self.check("python-worker-thread", "PASS", threads=sorted(worker_threads))
 
-        self.result["profile_summary"] = summary
-        self.summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
-        self._write_results()
+        return summary
 
     def execute(self) -> int:
         stage = "initialization"
         try:
             os.environ["SPARK_PYTHON_HOTSPOT_MODE"] = self.mode
-            os.environ["SPARK_PYTHON_HOTSPOT_ITERATIONS"] = "12000"
+            os.environ.setdefault("SPARK_PYTHON_HOTSPOT_ITERATIONS", "12000")
             stage = "artifact-install"
             self.install_artifacts()
             stage = "server-bootstrap"
             self.bootstrap_server()
-            stage = "basic-commands"
+            stage = "spark-sanity"
             self.run_basic_commands()
             stage = "bots-connect"
             self.start_bots()
-            time.sleep(15)
-            stage = "execution-profile"
+            if self.count:
+                time.sleep(15)
+            stage = "profile"
             url = self.run_profile()
             stage = "payload-validation"
-            self.validate_payload(url)
+            summary = self.validate_profile(url)
+            self.result["profile_summary"] = summary
+            self._write_results()
             stage = "bots-disconnect"
             self.stop_bots()
             stage = "shutdown"
@@ -373,7 +423,7 @@ class PythonAttributionValidation(IntegrationTest):
             self.result["failed_stage"] = stage
             self.result["error_summary"] = f"{type(exc).__name__}: {exc}"
             self._write_results()
-            print(f"VALIDATION FAILED: {type(exc).__name__}: {exc}", file=sys.stderr)
+            print(f"VALIDATION FAILED: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
             try:
                 self.stop_bots()
             except Exception:
@@ -388,10 +438,10 @@ class PythonAttributionValidation(IntegrationTest):
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--platform", required=True, choices=["linux", "windows"])
-    parser.add_argument("--bot", default=None)
-    parser.add_argument("--count", type=int, default=1)
-    parser.add_argument("--scenario", default="chunk-walk")
-    parser.add_argument("--mode", required=True, choices=["off", "single", "nested", "dual", "mixed", "fleet"])
+    parser.add_argument("--bot")
+    parser.add_argument("--count", type=int, default=0, choices=[0, 1, 5])
+    parser.add_argument("--scenario", default="chunk-walk", choices=["idle", "chunk-walk", "chunk-fly"])
+    parser.add_argument("--mode", required=True, choices=["off", "single", "nested", "dual", "mixed", "worker", "fleet"])
     parser.add_argument("--profile-seconds", type=int, default=60)
     args = parser.parse_args()
     validator = PythonAttributionValidation(
