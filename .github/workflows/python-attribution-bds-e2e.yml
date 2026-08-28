@@ -14,7 +14,7 @@ on:
       spark_sha:
         description: "Exact ReallocAll/spark SHA to validate"
         required: false
-        default: "023e70c46d75c539fbf0a8c3c7f67c25ac3ef4e6"
+        default: "b10964200f8dc3ed64e434da8edac08eabb84c41"
       bot_ref:
         description: "Exact ReallocAll/bds-test-bot ref"
         required: false
@@ -35,7 +35,7 @@ permissions:
 env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
-  EXPECTED_SPARK_SHA: ${{ github.event.inputs.spark_sha || '023e70c46d75c539fbf0a8c3c7f67c25ac3ef4e6' }}
+  EXPECTED_SPARK_SHA: ${{ github.event.inputs.spark_sha || 'b10964200f8dc3ed64e434da8edac08eabb84c41' }}
   BOT_REF: ${{ github.event.inputs.bot_ref || 'b8c4875bb1fafaa5dd9b8e91b16b613af47bf37a' }}
   PROFILE_SECONDS: ${{ github.event.inputs.profile_seconds || '60' }}
 
