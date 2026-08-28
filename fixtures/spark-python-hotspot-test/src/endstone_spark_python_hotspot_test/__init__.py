@@ -87,7 +87,11 @@ class HotspotPlugin(Plugin):
         elif mode == "worker":
             self.cpu_hotspot(self.iterations // 8)
         elif mode == "stress":
-            self.small_call_stress(256)
+            # Deliberately stress the function-event path rather than arithmetic:
+            # one tiny Python call produces a PY_START/PY_RETURN pair. At the
+            # default 12,000 calls/tick this generates roughly 480k lifecycle
+            # events/s at 20 TPS, while keeping the workload deterministic.
+            self.small_call_stress(max(4096, self.iterations))
 
     def cpu_hotspot(self, iterations: int | None = None) -> int:
         return self.integer_hash_loop(iterations or self.iterations)
