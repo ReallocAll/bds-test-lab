@@ -12,7 +12,7 @@ on:
       spark_sha:
         description: "Exact ReallocAll/spark SHA to validate"
         required: false
-        default: "023e70c46d75c539fbf0a8c3c7f67c25ac3ef4e6"
+        default: "b10964200f8dc3ed64e434da8edac08eabb84c41"
 
 permissions:
   contents: read
@@ -21,7 +21,7 @@ permissions:
 env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
-  EXPECTED_SPARK_SHA: ${{ github.event.inputs.spark_sha || '023e70c46d75c539fbf0a8c3c7f67c25ac3ef4e6' }}
+  EXPECTED_SPARK_SHA: ${{ github.event.inputs.spark_sha || 'b10964200f8dc3ed64e434da8edac08eabb84c41' }}
 
 jobs:
   fallback:
