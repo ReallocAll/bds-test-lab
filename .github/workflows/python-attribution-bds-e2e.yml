@@ -1,0 +1,229 @@
+name: Spark Python Attribution Real BDS
+
+on:
+  push:
+    branches:
+      - test/python-attribution-validation
+    paths:
+      - ".github/workflows/python-attribution-bds-e2e.yml"
+      - "controller/python_attribution_validation.py"
+      - "controller/python_profile_payload.py"
+      - "fixtures/spark-python-hotspot-test/**"
+  workflow_dispatch:
+    inputs:
+      spark_sha:
+        description: "Exact ReallocAll/spark SHA to validate"
+        required: false
+        default: "08db07ffcc4e90d149ba8fb9e0dcf8ac848b2fdc"
+      bot_ref:
+        description: "Exact ReallocAll/bds-test-bot ref"
+        required: false
+        default: "b8c4875bb1fafaa5dd9b8e91b16b613af47bf37a"
+      profile_seconds:
+        description: "Seconds per Spark execution profile"
+        required: false
+        default: "60"
+
+concurrency:
+  group: spark-python-attribution-bds-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+  EXPECTED_SPARK_SHA: ${{ github.event.inputs.spark_sha || '08db07ffcc4e90d149ba8fb9e0dcf8ac848b2fdc' }}
+  BOT_REF: ${{ github.event.inputs.bot_ref || 'b8c4875bb1fafaa5dd9b8e91b16b613af47bf37a' }}
+  PROFILE_SECONDS: ${{ github.event.inputs.profile_seconds || '60' }}
+
+jobs:
+  profile:
+    name: ${{ matrix.platform }} / ${{ matrix.mode }} / ${{ matrix.count }} bot(s)
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            os: ubuntu-24.04
+            bot_name: bds-test-bot
+            mode: off
+            scenario: chunk-walk
+            count: 1
+          - platform: linux
+            os: ubuntu-24.04
+            bot_name: bds-test-bot
+            mode: single
+            scenario: chunk-walk
+            count: 1
+          - platform: linux
+            os: ubuntu-24.04
+            bot_name: bds-test-bot
+            mode: nested
+            scenario: chunk-walk
+            count: 1
+          - platform: linux
+            os: ubuntu-24.04
+            bot_name: bds-test-bot
+            mode: dual
+            scenario: chunk-walk
+            count: 1
+          - platform: linux
+            os: ubuntu-24.04
+            bot_name: bds-test-bot
+            mode: mixed
+            scenario: chunk-walk
+            count: 1
+          - platform: linux
+            os: ubuntu-24.04
+            bot_name: bds-test-bot
+            mode: fleet
+            scenario: chunk-walk
+            count: 5
+          - platform: windows
+            os: windows-2022
+            bot_name: bds-test-bot.exe
+            mode: single
+            scenario: chunk-walk
+            count: 1
+          - platform: windows
+            os: windows-2022
+            bot_name: bds-test-bot.exe
+            mode: dual
+            scenario: chunk-walk
+            count: 1
+          - platform: windows
+            os: windows-2022
+            bot_name: bds-test-bot.exe
+            mode: fleet
+            scenario: chunk-walk
+            count: 5
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout test lab
+        uses: actions/checkout@v7
+
+      - name: Wait for exact Spark CI
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 80); do
+            json="$(gh api "repos/ReallocAll/spark/actions/runs?head_sha=${EXPECTED_SPARK_SHA}&per_page=30")"
+            build="$(jq -r '[.workflow_runs[] | select(.name == "Build")][0].conclusion // ""' <<<"$json")"
+            python_ci="$(jq -r '[.workflow_runs[] | select(.name == "Python attribution")][0].conclusion // ""' <<<"$json")"
+            echo "Spark CI attempt ${attempt}: Build=${build:-pending} Python=${python_ci:-pending}"
+            if [[ "$build" == success && "$python_ci" == success ]]; then
+              exit 0
+            fi
+            for conclusion in "$build" "$python_ci"; do
+              if [[ "$conclusion" == failure || "$conclusion" == cancelled || "$conclusion" == timed_out ]]; then
+                echo "Exact Spark CI failed: Build=$build Python=$python_ci" >&2
+                exit 1
+              fi
+            done
+            sleep 15
+          done
+          echo "Timed out waiting for exact Spark CI" >&2
+          exit 1
+
+      - name: Checkout Bot at exact ref
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/bds-test-bot
+          ref: ${{ env.BOT_REF }}
+          path: bot-src
+          persist-credentials: false
+
+      - name: Set up Go 1.25
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Build exact Bot revision
+        shell: bash
+        env:
+          BOT_NAME: ${{ matrix.bot_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cd bot-src
+          test "$(git rev-parse HEAD)" = "$BOT_REF"
+          go mod download
+          go test ./...
+          go build -trimpath -o "../dist/${BOT_NAME}" ./cmd/bds-test-bot
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install validation dependencies
+        run: python -m pip install --disable-pip-version-check psutil packaging hatchling
+
+      - name: Require exact Spark artifact
+        run: >-
+          python -m controller.assert_spark_artifact
+          --platform ${{ matrix.platform }}
+          --expected-sha ${{ env.EXPECTED_SPARK_SHA }}
+
+      - name: Run real BDS Python attribution profile
+        run: >-
+          python -m controller.python_attribution_validation
+          --platform ${{ matrix.platform }}
+          --bot dist/${{ matrix.bot_name }}
+          --count ${{ matrix.count }}
+          --scenario ${{ matrix.scenario }}
+          --mode ${{ matrix.mode }}
+          --profile-seconds ${{ env.PROFILE_SECONDS }}
+
+      - name: Add profile evidence to summary
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f python-attribution-result.json ]]; then
+            python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          data = json.loads(Path('python-attribution-result.json').read_text())
+          summary = data.get('profile_summary') or {}
+          print(f"## {data.get('platform')} / {data.get('hotspot_mode')} / {data.get('bot_count')} bot(s)")
+          print()
+          print(f"Status: **{data.get('status')}**")
+          print(f"BDS: `{data.get('bds_version')}`")
+          print(f"Python: `{data.get('python_version')}`")
+          print(f"Spark URL: {data.get('spark_profile_viewer_url')}")
+          print(f"Duration: {summary.get('duration_seconds')}")
+          print(f"Root weight: {summary.get('root_weight')}")
+          print(f"Python nodes: {summary.get('python_node_count')}")
+          print(f"Python threads: {summary.get('python_threads')}")
+          print(f"Top Python methods: {summary.get('python_methods_ms')}")
+          print(f"Python diagnostics: {summary.get('python_diagnostics')}")
+          PY
+          fi
+
+      - name: Upload profile evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-attribution-${{ matrix.platform }}-${{ matrix.mode }}-${{ matrix.count }}-${{ github.run_id }}
+          path: |
+            metadata.json
+            bds.log
+            endstone.log
+            spark.log
+            test-results.json
+            python-attribution-result.json
+            python-attribution-profile-summary.json
+            python-attribution.sparkprofile
+            python-attribution-bots-${{ matrix.platform }}-${{ matrix.count }}-${{ matrix.scenario }}.log
+            failure-diagnostics.txt
+            work/${{ matrix.platform }}/bedrock_server/server.properties
+            work/${{ matrix.platform }}/bedrock_server/version.txt
+          if-no-files-found: warn
+          retention-days: 30
