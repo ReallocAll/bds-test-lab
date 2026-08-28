@@ -22,7 +22,14 @@ from controller.python_profile_payload import (
     profile_summary,
     python_nodes,
 )
-from controller.run_test import IntegrationTest, run_checked, write_json
+from controller.run_test import (
+    READY_HINTS,
+    SPARK_LOAD_HINTS,
+    IntegrationTest,
+    ServerProcess,
+    run_checked,
+    write_json,
+)
 
 
 PLUGIN_SOURCE = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "spark-python-hotspot-test"
@@ -82,6 +89,32 @@ class PythonAttributionValidation(IntegrationTest):
     def check(self, name: str, status: str, detail: str | None = None, **extra: Any) -> None:
         super().check(name, status, detail, **extra)
         self._write_results()
+
+    def start_server(self) -> None:
+        """Use a larger startup budget only for the slow Windows validation runners."""
+        cmd = [sys.executable, "-m", "endstone", "--yes", "--server-folder", str(self.server_dir)]
+        self.server = ServerProcess(cmd, self.root, self.log_path)
+        self.server.start()
+        ready_timeout = 420 if self.platform == "windows" else 240
+        self.server.wait_for(
+            lambda lines: any(any(hint in line.lower() for hint in READY_HINTS) for line in lines),
+            ready_timeout,
+            "BDS ready",
+        )
+        self.check("bds-start", "PASS")
+        self.check("ready", "PASS")
+        self.server.wait_for(
+            lambda lines: any(
+                "spark" in line.lower() and any(hint in line.lower() for hint in SPARK_LOAD_HINTS) for line in lines
+            ),
+            30,
+            "Spark enable",
+        )
+        self.check("spark-load-enable", "PASS")
+        version_file = self.server_dir / "version.txt"
+        if version_file.exists():
+            self.result["bds_version"] = version_file.read_text(encoding="utf-8").strip()
+            self._write_results()
 
     def install_artifacts(self) -> None:
         super().install_artifacts()
@@ -285,6 +318,16 @@ class PythonAttributionValidation(IntegrationTest):
         if sys.version_info >= (3, 12):
             if backend != "PEP669" or enabled != "true":
                 raise RuntimeError(f"PEP669 attribution not enabled: backend={backend!r} enabled={enabled!r}")
+            if self.mode == "off":
+                self.check(
+                    "python-off-baseline",
+                    "PASS",
+                    python_version=version,
+                    backend=backend,
+                    py_start_events=int(diagnostics.get("Python PY_START events", "0")),
+                    snapshot_attempts=int(diagnostics.get("Python shadow snapshot attempts", "0")),
+                )
+                return summary
             if int(diagnostics.get("Python PY_START events", "0")) <= 0:
                 raise RuntimeError("PEP669 diagnostics report no PY_START events")
             if int(diagnostics.get("Python shadow snapshot attempts", "0")) <= 0:
@@ -307,12 +350,12 @@ class PythonAttributionValidation(IntegrationTest):
             for _thread, node in nodes
             if node.class_name == f"[Python] {EXPECTED_MODULE}" and EXPECTED_MODULE in node.method_desc
         ]
-        if self.mode != "off" and not plugin_nodes:
+        if not plugin_nodes:
             raise RuntimeError("profile contains Python nodes but no hotspot plugin module/file attribution")
-        if plugin_nodes and not any(node.line_number > 0 for node in plugin_nodes):
+        if not any(node.line_number > 0 for node in plugin_nodes):
             raise RuntimeError("hotspot plugin Python nodes are missing co_firstlineno")
         source = profile.class_sources.get(f"[Python] {EXPECTED_MODULE}")
-        if self.mode != "off" and source != EXPECTED_SOURCE:
+        if source != EXPECTED_SOURCE:
             raise RuntimeError(f"plugin class source mismatch: expected {EXPECTED_SOURCE!r}, got {source!r}")
         self.check("python-plugin-metadata", "PASS", source=source, plugin_nodes=len(plugin_nodes))
 

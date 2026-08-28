@@ -121,6 +121,10 @@ class HotspotPlugin(Plugin):
         value = 0
         for _ in range(resumes):
             value ^= next(self._generator)
+        # Keep the generator parent frame on-stack long enough for the real 4 ms
+        # statistical sampler to observe it without converting the test into an
+        # instrumentation-only assertion.
+        value ^= self.integer_hash_loop(1200)
         return value
 
     async def _async_leaf(self, rounds: int) -> int:
@@ -141,6 +145,9 @@ class HotspotPlugin(Plugin):
                 HotspotPlugin._raise_for_test(index)
             except RuntimeError:
                 caught += 1
+        # The exception lifecycle remains genuine; this bounded tail only makes
+        # the parent statistically observable at a 4 ms sampling interval.
+        HotspotPlugin.integer_hash_loop(1200)
         return caught
 
     @staticmethod
