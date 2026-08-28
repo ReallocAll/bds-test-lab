@@ -140,9 +140,35 @@ class PythonAttributionValidation(IntegrationTest):
             raise RuntimeError(f"Expected one hotspot plugin wheel, got: {wheels}")
         plugin_dir = self.server_dir / "plugins"
         plugin_dir.mkdir(parents=True, exist_ok=True)
-        target = plugin_dir / wheels[0].name
-        shutil.copy2(wheels[0], target)
-        self.check("python-hotspot-plugin-installed", "PASS", str(target.relative_to(self.root)))
+        if self.platform == "windows":
+            local_dir = plugin_dir / ".local"
+            shutil.rmtree(local_dir, ignore_errors=True)
+            local_dir.mkdir(parents=True, exist_ok=True)
+            run_checked(
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    "--disable-pip-version-check",
+                    "--no-input",
+                    "--no-deps",
+                    "--target",
+                    str(local_dir),
+                    str(wheels[0]),
+                ],
+                timeout=180,
+            )
+            self.check(
+                "python-hotspot-plugin-installed",
+                "PASS",
+                str(local_dir.relative_to(self.root)),
+                deployment="preinstalled-target",
+            )
+        else:
+            target = plugin_dir / wheels[0].name
+            shutil.copy2(wheels[0], target)
+            self.check("python-hotspot-plugin-installed", "PASS", str(target.relative_to(self.root)))
 
     def wait_plugin(self) -> None:
         assert self.server is not None
@@ -435,6 +461,8 @@ class PythonAttributionValidation(IntegrationTest):
         try:
             os.environ["SPARK_PYTHON_HOTSPOT_MODE"] = self.mode
             os.environ.setdefault("SPARK_PYTHON_HOTSPOT_ITERATIONS", "12000")
+            os.environ.setdefault("PIP_NO_INPUT", "1")
+            os.environ.setdefault("PIP_DISABLE_PIP_VERSION_CHECK", "1")
             stage = "artifact-install"
             self.install_artifacts()
             stage = "server-bootstrap"
