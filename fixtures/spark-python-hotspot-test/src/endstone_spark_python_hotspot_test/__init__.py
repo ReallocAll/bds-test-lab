@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 import hashlib
 import json
@@ -37,9 +35,7 @@ class HotspotPlugin(Plugin):
                 daemon=True,
             )
             self._worker.start()
-        self.logger.info(
-            "Spark Python hotspot test enabled: mode={} iterations={}", self.mode, self.iterations
-        )
+        self.logger.info(f"Spark Python hotspot test enabled: mode={self.mode} iterations={self.iterations}")
 
     def on_disable(self) -> None:
         self._stop_worker.set()
