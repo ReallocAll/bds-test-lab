@@ -7,6 +7,7 @@ on:
     paths:
       - ".github/workflows/python-attribution-performance.yml"
       - "controller/python_attribution_performance.py"
+      - "controller/python_attribution_performance_runner.py"
       - "fixtures/spark-python-hotspot-test/**"
   workflow_dispatch:
     inputs:
@@ -81,7 +82,7 @@ jobs:
 
       - name: Run 5-bot real-BDS benchmark
         run: >-
-          python -m controller.python_attribution_performance
+          python -m controller.python_attribution_performance_runner
           --platform linux
           --bot dist/bds-test-bot
           --count 5
