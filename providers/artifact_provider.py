@@ -154,6 +154,8 @@ def discover(
     for run in runs:
         if run.get("conclusion") != "success":
             continue
+        if component == "endstone" and run.get("path") != ".github/workflows/build.yml":
+            continue
         if exact_sha:
             if run.get("head_sha") != exact_sha:
                 continue
