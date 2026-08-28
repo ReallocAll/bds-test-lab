@@ -21,7 +21,7 @@ RECOMMENDED_PROPERTIES = {
     "player-idle-timeout": "0",
     "gamemode": "creative",
     "force-gamemode": "true",
-    "difficulty": "peaceful",
+    "difficulty": "easy",
     "allow-cheats": "true",
     "default-player-permission-level": "operator",
     "view-distance": "8",
