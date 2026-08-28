@@ -27,7 +27,7 @@ permissions:
 env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
-  EXPECTED_SPARK_SHA: "c26d081ad9fdf230b654318f03cb59a5eb567a7c"
+  EXPECTED_SPARK_SHA: "b28c5f41606817a968cf85a7f7f6beb5b5744a15"
   BOT_REF: "b8c4875bb1fafaa5dd9b8e91b16b613af47bf37a"
   BDS_TEST_BOT_SCENARIO_FILE: bot-src/scenarios/mixed-actions.json
   DURATION_SECONDS: ${{ github.event.inputs.duration_seconds || '180' }}
