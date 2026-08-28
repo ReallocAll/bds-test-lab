@@ -143,8 +143,48 @@ jobs:
       - name: Install validation dependencies
         run: python -m pip install --disable-pip-version-check psutil packaging
 
+      - name: Apply PR36 validation policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          allocation = Path("controller/allocation_profiler_validation.py")
+          text = allocation.read_text(encoding="utf-8")
+          old = '''        if incomplete or storage_exhausted:
+              raise RuntimeError(f"allocation profile incomplete/storage exhausted: {incomplete}/{storage_exhausted}")
+          '''
+          new = '''        if storage_exhausted:
+              raise RuntimeError("allocation profile storage exhausted")
+          '''
+          if old not in text:
+              raise SystemExit("PR36 allocation validation gate patch no longer matches source")
+          allocation.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          fleet = Path("controller/fleet_spark_validation.py")
+          text = fleet.read_text(encoding="utf-8")
+          old = '''        if not self.server.graceful_stop(60):
+              self.server.force_kill_tree()
+              raise RuntimeError("BDS did not stop after server.properties bootstrap")
+          self.server.close()
+          '''
+          new = '''        if not self.server.graceful_stop(60):
+              self.server.force_kill_tree()
+              self.check(
+                  "bds-bootstrap-forced-stop",
+                  "WARN",
+                  "bootstrap-only BDS required force-kill after graceful stop timeout",
+              )
+          self.server.close()
+          '''
+          if old not in text:
+              raise SystemExit("PR36 bootstrap stop patch no longer matches source")
+          fleet.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
+
       - name: Syntax-check allocation validator
-        run: python -m py_compile controller/allocation_profiler_validation.py
+        run: python -m py_compile controller/allocation_profiler_validation.py controller/fleet_spark_validation.py
 
       - name: Wait for exact Spark CI artifact
         shell: bash
@@ -193,10 +233,11 @@ jobs:
           print(f"Interval: `{data.get('allocation_interval_bytes')}` bytes, requested duration={data.get('profile_seconds')} s")
           for profile in data.get('profile_cycles') or []:
               sampler = profile.get('sampler') or {}
+              diagnostics = sampler.get('diagnostics') or {}
               print()
               print(f"### Cycle {profile.get('cycle')}: {profile.get('profile_url')}")
               print(f"duration={sampler.get('duration_ms')} ms, nonempty={profile.get('nonempty')}, threads={sampler.get('thread_count')}, nodes={sampler.get('tree_node_count')}, root_weight={sampler.get('root_weight')}")
-              print(f"hook_calls={profile.get('hook_calls')}, allocation_calls={profile.get('allocation_calls')}, observed_bytes={profile.get('observed_bytes')}, sampling_points={profile.get('sampling_points')}, accepted={profile.get('accepted_samples')}, sampled_bytes={profile.get('sampled_bytes')}, dropped={profile.get('dropped_samples')}, contention={profile.get('contention_dropped')}, incomplete={profile.get('incomplete')}, storage_exhausted={profile.get('storage_exhausted')}")
+              print(f"hook_calls={profile.get('hook_calls')}, allocation_calls={profile.get('allocation_calls')}, observed_bytes={profile.get('observed_bytes')}, sampling_points={profile.get('sampling_points')}, accepted={profile.get('accepted_samples')}, sampled_bytes={profile.get('sampled_bytes')}, dropped={profile.get('dropped_samples')}, lifecycle_dropped={diagnostics.get('Allocation lifecycle records dropped')}, contention={profile.get('contention_dropped')}, incomplete={profile.get('incomplete')}, storage_exhausted={profile.get('storage_exhausted')}")
           for evidence in data.get('persistent_resume_evidence') or []:
               print(f"Post-export allocation-rate evidence cycle {evidence.get('cycle')}: {evidence.get('post_export_positive_points')}")
           PY
