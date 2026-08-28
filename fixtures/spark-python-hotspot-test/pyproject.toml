@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "endstone-spark-python-hotspot-test"
+version = "0.1.0"
+description = "Deterministic Python CPU hotspots for Endstone Spark attribution E2E validation"
+requires-python = ">=3.11"
+
+[project.entry-points."endstone"]
+spark-python-hotspot-test = "endstone_spark_python_hotspot_test:HotspotPlugin"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/endstone_spark_python_hotspot_test"]
