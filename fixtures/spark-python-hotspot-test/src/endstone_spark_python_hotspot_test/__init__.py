@@ -4,8 +4,10 @@ import asyncio
 import hashlib
 import json
 import os
+import statistics
 import threading
 from collections.abc import Generator
+from pathlib import Path
 
 from endstone.event import PlayerMoveEvent, event_handler
 from endstone.plugin import Plugin
@@ -23,6 +25,10 @@ class HotspotPlugin(Plugin):
         self._worker: threading.Thread | None = None
         self._generator = self._generator_sequence()
         self._event_counter = 0
+        self._mspt_samples: list[float] = []
+        self._tps_samples: list[float] = []
+        metrics_path = os.environ.get("SPARK_PYTHON_TICK_METRICS", "").strip()
+        self._metrics_path = Path(metrics_path) if metrics_path else None
         self.register_events(self)
         self.server.scheduler.run_task(self, self.light_tick, delay=0, period=1)
         if self.mode in {"worker", "mixed", "fleet"}:
@@ -41,9 +47,54 @@ class HotspotPlugin(Plugin):
         worker = self._worker
         if worker is not None:
             worker.join(timeout=2.0)
+        self._write_tick_metrics()
         self.logger.info("Spark Python hotspot test disabled")
 
+    @staticmethod
+    def _percentile(values: list[float], percentile: float) -> float:
+        if not values:
+            return 0.0
+        ordered = sorted(values)
+        if len(ordered) == 1:
+            return ordered[0]
+        index = (len(ordered) - 1) * percentile
+        lower = int(index)
+        upper = min(lower + 1, len(ordered) - 1)
+        fraction = index - lower
+        return ordered[lower] * (1.0 - fraction) + ordered[upper] * fraction
+
+    def _record_tick_metrics(self) -> None:
+        if self._metrics_path is None:
+            return
+        self._mspt_samples.append(float(self.server.current_mspt))
+        self._tps_samples.append(float(self.server.current_tps))
+
+    def _write_tick_metrics(self) -> None:
+        if self._metrics_path is None or not self._mspt_samples:
+            return
+        payload = {
+            "samples": len(self._mspt_samples),
+            "mspt": {
+                "mean": statistics.fmean(self._mspt_samples),
+                "p50": self._percentile(self._mspt_samples, 0.50),
+                "p95": self._percentile(self._mspt_samples, 0.95),
+                "p99": self._percentile(self._mspt_samples, 0.99),
+                "max": max(self._mspt_samples),
+            },
+            "tps": {
+                "mean": statistics.fmean(self._tps_samples),
+                "p50": self._percentile(self._tps_samples, 0.50),
+                "p05": self._percentile(self._tps_samples, 0.05),
+                "min": min(self._tps_samples),
+            },
+        }
+        self._metrics_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self._metrics_path.with_suffix(self._metrics_path.suffix + ".tmp")
+        temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        temporary.replace(self._metrics_path)
+
     def light_tick(self) -> None:
+        self._record_tick_metrics()
         mode = self.mode
         if mode == "off":
             return
@@ -95,8 +146,6 @@ class HotspotPlugin(Plugin):
         return total
 
     def dual_hotspot(self) -> tuple[int, int]:
-        # Identical operation type, different iteration budgets: the expected
-        # direction is deliberately strong rather than claiming exact 70/30 CPU.
         return self.hotspot_a((self.iterations * 7) // 10), self.hotspot_b((self.iterations * 3) // 10)
 
     def hotspot_a(self, iterations: int) -> int:
@@ -153,17 +202,12 @@ class HotspotPlugin(Plugin):
             raise RuntimeError("spark-python-attribution-test")
 
     def worker_thread_hotspot(self) -> None:
-        # The event wait yields periodically without using sleep as the workload.
-        # CPU attribution comes from the arithmetic loop above.
         while not self._stop_worker.is_set():
             self.integer_hash_loop(max(2000, self.iterations // 2))
             self._stop_worker.wait(0.002)
 
     @event_handler
     def on_player_move(self, event: PlayerMoveEvent) -> None:
-        # Exercise a real Endstone event-dispatch -> Python plugin -> workload path
-        # while bots perform movement. Bound the cost so normal world simulation
-        # remains active during fleet profiles.
         del event
         self._event_counter += 1
         if self.mode in {"mixed", "fleet"} and self._event_counter % 4 == 0:
