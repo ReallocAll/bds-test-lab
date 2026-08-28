@@ -152,32 +152,36 @@ jobs:
 
           allocation = Path("controller/allocation_profiler_validation.py")
           text = allocation.read_text(encoding="utf-8")
-          old = '''        if incomplete or storage_exhausted:
-              raise RuntimeError(f"allocation profile incomplete/storage exhausted: {incomplete}/{storage_exhausted}")
-          '''
-          new = '''        if storage_exhausted:
-              raise RuntimeError("allocation profile storage exhausted")
-          '''
+          old = (
+              "        if incomplete or storage_exhausted:\n"
+              "            raise RuntimeError(f\"allocation profile incomplete/storage exhausted: {incomplete}/{storage_exhausted}\")\n"
+          )
+          new = (
+              "        if storage_exhausted:\n"
+              "            raise RuntimeError(\"allocation profile storage exhausted\")\n"
+          )
           if old not in text:
               raise SystemExit("PR36 allocation validation gate patch no longer matches source")
           allocation.write_text(text.replace(old, new, 1), encoding="utf-8")
 
           fleet = Path("controller/fleet_spark_validation.py")
           text = fleet.read_text(encoding="utf-8")
-          old = '''        if not self.server.graceful_stop(60):
-              self.server.force_kill_tree()
-              raise RuntimeError("BDS did not stop after server.properties bootstrap")
-          self.server.close()
-          '''
-          new = '''        if not self.server.graceful_stop(60):
-              self.server.force_kill_tree()
-              self.check(
-                  "bds-bootstrap-forced-stop",
-                  "WARN",
-                  "bootstrap-only BDS required force-kill after graceful stop timeout",
-              )
-          self.server.close()
-          '''
+          old = (
+              "        if not self.server.graceful_stop(60):\n"
+              "            self.server.force_kill_tree()\n"
+              "            raise RuntimeError(\"BDS did not stop after server.properties bootstrap\")\n"
+              "        self.server.close()\n"
+          )
+          new = (
+              "        if not self.server.graceful_stop(60):\n"
+              "            self.server.force_kill_tree()\n"
+              "            self.check(\n"
+              "                \"bds-bootstrap-forced-stop\",\n"
+              "                \"WARN\",\n"
+              "                \"bootstrap-only BDS required force-kill after graceful stop timeout\",\n"
+              "            )\n"
+              "        self.server.close()\n"
+          )
           if old not in text:
               raise SystemExit("PR36 bootstrap stop patch no longer matches source")
           fleet.write_text(text.replace(old, new, 1), encoding="utf-8")
