@@ -16,7 +16,7 @@ on:
       spark_sha:
         description: "Exact ReallocAll/spark SHA to benchmark"
         required: false
-        default: "359aecfffcb52dfe7e8d5517cf7dfa46c46e61b5"
+        default: "7c7dcb985f03422c7baf9e73938b5e22c017b19c"
       endstone_sha:
         description: "Exact EndstoneMC/endstone SHA to benchmark"
         required: false
@@ -45,7 +45,7 @@ permissions:
 env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
-  EXPECTED_SPARK_SHA: ${{ github.event.inputs.spark_sha || '359aecfffcb52dfe7e8d5517cf7dfa46c46e61b5' }}
+  EXPECTED_SPARK_SHA: ${{ github.event.inputs.spark_sha || '7c7dcb985f03422c7baf9e73938b5e22c017b19c' }}
   EXPECTED_ENDSTONE_SHA: ${{ github.event.inputs.endstone_sha || 'c76c814289ee3be8a7236389b6bdeb5728b154e4' }}
   BOT_REF: ${{ github.event.inputs.bot_ref || 'a0a83240e9e8f12d4806ba31194fb1807d7b5dd1' }}
   BENCH_WINDOW_SECONDS: ${{ github.event.inputs.window_seconds || '20' }}
