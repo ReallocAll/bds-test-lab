@@ -4,8 +4,8 @@ import asyncio
 import hashlib
 import json
 import os
-import statistics
 import threading
+import time
 from collections.abc import Generator
 from pathlib import Path
 
@@ -25,8 +25,7 @@ class HotspotPlugin(Plugin):
         self._worker: threading.Thread | None = None
         self._generator = self._generator_sequence()
         self._event_counter = 0
-        self._mspt_samples: list[float] = []
-        self._tps_samples: list[float] = []
+        self._tick_metrics: list[tuple[int, float, float]] = []
         metrics_path = os.environ.get("SPARK_PYTHON_TICK_METRICS", "").strip()
         self._metrics_path = Path(metrics_path) if metrics_path else None
         self.register_events(self)
@@ -50,47 +49,25 @@ class HotspotPlugin(Plugin):
         self._write_tick_metrics()
         self.logger.info("Spark Python hotspot test disabled")
 
-    @staticmethod
-    def _percentile(values: list[float], percentile: float) -> float:
-        if not values:
-            return 0.0
-        ordered = sorted(values)
-        if len(ordered) == 1:
-            return ordered[0]
-        index = (len(ordered) - 1) * percentile
-        lower = int(index)
-        upper = min(lower + 1, len(ordered) - 1)
-        fraction = index - lower
-        return ordered[lower] * (1.0 - fraction) + ordered[upper] * fraction
-
     def _record_tick_metrics(self) -> None:
         if self._metrics_path is None:
             return
-        self._mspt_samples.append(float(self.server.current_mspt))
-        self._tps_samples.append(float(self.server.current_tps))
+        self._tick_metrics.append(
+            (time.monotonic_ns(), float(self.server.current_mspt), float(self.server.current_tps))
+        )
 
     def _write_tick_metrics(self) -> None:
-        if self._metrics_path is None or not self._mspt_samples:
+        if self._metrics_path is None:
             return
         payload = {
-            "samples": len(self._mspt_samples),
-            "mspt": {
-                "mean": statistics.fmean(self._mspt_samples),
-                "p50": self._percentile(self._mspt_samples, 0.50),
-                "p95": self._percentile(self._mspt_samples, 0.95),
-                "p99": self._percentile(self._mspt_samples, 0.99),
-                "max": max(self._mspt_samples),
-            },
-            "tps": {
-                "mean": statistics.fmean(self._tps_samples),
-                "p50": self._percentile(self._tps_samples, 0.50),
-                "p05": self._percentile(self._tps_samples, 0.05),
-                "min": min(self._tps_samples),
-            },
+            "samples": [
+                {"monotonic_ns": timestamp, "mspt": mspt, "tps": tps}
+                for timestamp, mspt, tps in self._tick_metrics
+            ]
         }
         self._metrics_path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self._metrics_path.with_suffix(self._metrics_path.suffix + ".tmp")
-        temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        temporary.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
         temporary.replace(self._metrics_path)
 
     def light_tick(self) -> None:
@@ -113,6 +90,8 @@ class HotspotPlugin(Plugin):
             self.async_hotspot(8)
         elif mode == "worker":
             self.cpu_hotspot(self.iterations // 8)
+        elif mode == "stress":
+            self.small_call_stress(256)
 
     def cpu_hotspot(self, iterations: int | None = None) -> int:
         return self.integer_hash_loop(iterations or self.iterations)
@@ -125,6 +104,16 @@ class HotspotPlugin(Plugin):
             value = ((value << 13) | (value >> 51)) & 0xFFFFFFFFFFFFFFFF
             value = (value * 0x94D049BB133111EB) & 0xFFFFFFFFFFFFFFFF
         return value
+
+    def small_call_stress(self, calls: int) -> int:
+        value = 0
+        for index in range(calls):
+            value ^= self._tiny_function(index, value)
+        return value
+
+    @staticmethod
+    def _tiny_function(index: int, value: int) -> int:
+        return ((index * 33) ^ (value >> 3) ^ 0x9E37) & 0xFFFFFFFF
 
     def nested_hotspot(self, iterations: int | None = None) -> int:
         return self.level_one(iterations or self.iterations)
