@@ -1,0 +1,224 @@
+name: PR36 Allocation Profiler Real BDS Validation
+
+on:
+  push:
+    branches:
+      - test/pr36-allocation-profiler-validation
+    paths:
+      - ".github/workflows/pr36-allocation-profiler-validation.yml"
+      - "controller/allocation_profiler_validation.py"
+      - "controller/cross_platform_fleet_validation.py"
+      - "controller/fleet_spark_validation.py"
+      - "controller/bot_validation.py"
+      - "controller/run_test.py"
+      - "providers/artifact_provider.py"
+      - "allocation-profiler-trigger.json"
+  workflow_dispatch:
+
+concurrency:
+  group: pr36-allocation-profiler-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  allocation-profile:
+    name: ${{ matrix.platform }} / ${{ matrix.label }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            os: ubuntu-24.04
+            bot_name: bds-test-bot
+            label: default-chunk-walk
+            scenario: chunk-walk
+            count: 1
+            interval: 524287
+            cycles: 1
+            require_nonempty: ""
+          - platform: linux
+            os: ubuntu-24.04
+            bot_name: bds-test-bot
+            label: high-chunk-load
+            scenario: chunk-fly
+            count: 1
+            interval: 4096
+            cycles: 1
+            require_nonempty: "--require-nonempty"
+          - platform: linux
+            os: ubuntu-24.04
+            bot_name: bds-test-bot
+            label: multi-bot-normal-mobs
+            scenario: chunk-fly
+            count: 5
+            interval: 4096
+            cycles: 2
+            require_nonempty: "--require-nonempty"
+          - platform: windows
+            os: windows-2022
+            bot_name: bds-test-bot.exe
+            label: default-chunk-walk
+            scenario: chunk-walk
+            count: 1
+            interval: 524287
+            cycles: 1
+            require_nonempty: ""
+          - platform: windows
+            os: windows-2022
+            bot_name: bds-test-bot.exe
+            label: high-chunk-load
+            scenario: chunk-fly
+            count: 1
+            interval: 4096
+            cycles: 1
+            require_nonempty: "--require-nonempty"
+          - platform: windows
+            os: windows-2022
+            bot_name: bds-test-bot.exe
+            label: multi-bot-normal-mobs
+            scenario: chunk-fly
+            count: 5
+            interval: 4096
+            cycles: 2
+            require_nonempty: "--require-nonempty"
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout test lab
+        uses: actions/checkout@v7
+
+      - name: Load exact validation refs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' >> "$GITHUB_ENV"
+          import json
+          from pathlib import Path
+          data = json.loads(Path("allocation-profiler-trigger.json").read_text())
+          print(f"EXPECTED_SPARK_SHA={data['spark_sha']}")
+          print(f"BOT_REF={data['bot_ref']}")
+          print(f"PROFILE_SECONDS={int(data['profile_seconds'])}")
+          PY
+
+      - name: Checkout Bot at exact ref
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/bds-test-bot
+          ref: ${{ env.BOT_REF }}
+          path: bot-src
+          persist-credentials: false
+
+      - name: Set up Go 1.25
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Build exact Bot revision
+        shell: bash
+        env:
+          BOT_NAME: ${{ matrix.bot_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cd bot-src
+          go mod download
+          go test ./...
+          go build -trimpath -o "../dist/${BOT_NAME}" ./cmd/bds-test-bot
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install validation dependencies
+        run: python -m pip install --disable-pip-version-check psutil packaging
+
+      - name: Syntax-check allocation validator
+        run: python -m py_compile controller/allocation_profiler_validation.py
+
+      - name: Wait for exact Spark CI artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 50); do
+            if python -m controller.assert_spark_artifact --platform ${{ matrix.platform }} --expected-sha "$EXPECTED_SPARK_SHA"; then
+              exit 0
+            fi
+            echo "Exact Spark artifact is not successful/available yet (attempt ${attempt}/50)."
+            sleep 30
+          done
+          exit 1
+
+      - name: Run real BDS Allocation profiler scenario
+        shell: bash
+        run: >-
+          python -m controller.allocation_profiler_validation
+          --platform ${{ matrix.platform }}
+          --bot dist/${{ matrix.bot_name }}
+          --count ${{ matrix.count }}
+          --scenario ${{ matrix.scenario }}
+          --profile-seconds $PROFILE_SECONDS
+          --interval ${{ matrix.interval }}
+          --cycles ${{ matrix.cycles }}
+          ${{ matrix.require_nonempty }}
+
+      - name: Add Allocation evidence to summary
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f fleet-spark-result.json ]]; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path("fleet-spark-result.json").read_text())
+          print(f"## {data.get('platform')} / ${{ matrix.label }}")
+          print()
+          print(f"Status: **{data.get('status')}**")
+          print(f"BDS: `{data.get('bds_version')}`")
+          print(f"Endstone: `{data.get('endstone_sha')}`")
+          print(f"Spark: `{data.get('spark_sha')}`")
+          print(f"Bot: `{data.get('bot_ref')}`")
+          print(f"Scenario: `{data.get('scenario')}`, players={data.get('bot_count')}")
+          print(f"Mob spawning: `{data.get('mob_spawning')}`, randomTickSpeed={data.get('random_tick_speed')}, difficulty={data.get('difficulty')}")
+          print(f"Interval: `{data.get('allocation_interval_bytes')}` bytes, requested duration={data.get('profile_seconds')} s")
+          for profile in data.get('profile_cycles') or []:
+              sampler = profile.get('sampler') or {}
+              print()
+              print(f"### Cycle {profile.get('cycle')}: {profile.get('profile_url')}")
+              print(f"duration={sampler.get('duration_ms')} ms, nonempty={profile.get('nonempty')}, threads={sampler.get('thread_count')}, nodes={sampler.get('tree_node_count')}, root_weight={sampler.get('root_weight')}")
+              print(f"hook_calls={profile.get('hook_calls')}, allocation_calls={profile.get('allocation_calls')}, observed_bytes={profile.get('observed_bytes')}, sampling_points={profile.get('sampling_points')}, accepted={profile.get('accepted_samples')}, sampled_bytes={profile.get('sampled_bytes')}, dropped={profile.get('dropped_samples')}, contention={profile.get('contention_dropped')}, incomplete={profile.get('incomplete')}, storage_exhausted={profile.get('storage_exhausted')}")
+          for evidence in data.get('persistent_resume_evidence') or []:
+              print(f"Post-export allocation-rate evidence cycle {evidence.get('cycle')}: {evidence.get('post_export_positive_points')}")
+          PY
+          fi >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Allocation evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pr36-allocation-${{ matrix.platform }}-${{ matrix.label }}-${{ github.run_id }}
+          path: |
+            metadata.json
+            bds.log
+            endstone.log
+            spark.log
+            fleet-${{ matrix.platform }}-${{ matrix.count }}-${{ matrix.scenario }}.log
+            test-results.json
+            fleet-spark-result.json
+            failure-diagnostics.txt
+            allocation-profile-cycle-*.sparkprofile
+            post-export-health-cycle-*.sparkhealth
+            work/${{ matrix.platform }}/bedrock_server/server.properties
+            work/${{ matrix.platform }}/bedrock_server/version.txt
+          if-no-files-found: warn
+          retention-days: 14
