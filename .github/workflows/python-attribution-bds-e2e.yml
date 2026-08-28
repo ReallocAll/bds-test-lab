@@ -14,7 +14,7 @@ on:
       spark_sha:
         description: "Exact ReallocAll/spark SHA to validate"
         required: false
-        default: "c26d081ad9fdf230b654318f03cb59a5eb567a7c"
+        default: "95dd8e8404afd76ddfea37473d58e9635744c494"
       bot_ref:
         description: "Exact ReallocAll/bds-test-bot ref"
         required: false
@@ -35,14 +35,13 @@ permissions:
 env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
-  EXPECTED_SPARK_SHA: ${{ github.event.inputs.spark_sha || 'c26d081ad9fdf230b654318f03cb59a5eb567a7c' }}
+  EXPECTED_SPARK_SHA: ${{ github.event.inputs.spark_sha || '95dd8e8404afd76ddfea37473d58e9635744c494' }}
   BOT_REF: ${{ github.event.inputs.bot_ref || 'b8c4875bb1fafaa5dd9b8e91b16b613af47bf37a' }}
   PROFILE_SECONDS: ${{ github.event.inputs.profile_seconds || '60' }}
-  BDS_TEST_BOT_SCENARIO_FILE: bot-src/scenarios/mixed-actions.json
 
 jobs:
   profile:
-    name: ${{ matrix.platform }} / ${{ matrix.mode }} / ${{ matrix.count }} bot(s)
+    name: ${{ matrix.platform }} / ${{ matrix.mode }} / ${{ matrix.scenario_label }} / ${{ matrix.count }} bot(s)
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -53,57 +52,105 @@ jobs:
             bot_name: bds-test-bot
             mode: off
             scenario: chunk-walk
+            scenario_label: mixed-actions
+            scenario_file: bot-src/scenarios/mixed-actions.json
+            iterations: "12000"
             count: 1
           - platform: linux
             os: ubuntu-24.04
             bot_name: bds-test-bot
             mode: single
             scenario: chunk-walk
+            scenario_label: mixed-actions
+            scenario_file: bot-src/scenarios/mixed-actions.json
+            iterations: "12000"
             count: 1
           - platform: linux
             os: ubuntu-24.04
             bot_name: bds-test-bot
             mode: nested
             scenario: chunk-walk
+            scenario_label: mixed-actions
+            scenario_file: bot-src/scenarios/mixed-actions.json
+            iterations: "12000"
             count: 1
           - platform: linux
             os: ubuntu-24.04
             bot_name: bds-test-bot
             mode: dual
             scenario: chunk-walk
+            scenario_label: mixed-actions
+            scenario_file: bot-src/scenarios/mixed-actions.json
+            iterations: "12000"
             count: 1
           - platform: linux
             os: ubuntu-24.04
             bot_name: bds-test-bot
             mode: mixed
             scenario: chunk-walk
+            scenario_label: mixed-actions
+            scenario_file: bot-src/scenarios/mixed-actions.json
+            iterations: "12000"
             count: 1
           - platform: linux
             os: ubuntu-24.04
             bot_name: bds-test-bot
             mode: fleet
             scenario: chunk-walk
+            scenario_label: mixed-actions
+            scenario_file: bot-src/scenarios/mixed-actions.json
+            iterations: "12000"
             count: 5
+          - platform: linux
+            os: ubuntu-24.04
+            bot_name: bds-test-bot
+            mode: single
+            scenario: chunk-walk
+            scenario_label: chunk-walk
+            scenario_file: ""
+            iterations: "12000"
+            count: 1
+          - platform: linux
+            os: ubuntu-24.04
+            bot_name: bds-test-bot
+            mode: nested
+            scenario: chunk-fly
+            scenario_label: chunk-fly
+            scenario_file: ""
+            iterations: "12000"
+            count: 1
           - platform: windows
             os: windows-2022
             bot_name: bds-test-bot.exe
             mode: single
             scenario: chunk-walk
+            scenario_label: mixed-actions
+            scenario_file: bot-src/scenarios/mixed-actions.json
+            iterations: "48000"
             count: 1
           - platform: windows
             os: windows-2022
             bot_name: bds-test-bot.exe
             mode: dual
             scenario: chunk-walk
+            scenario_label: mixed-actions
+            scenario_file: bot-src/scenarios/mixed-actions.json
+            iterations: "48000"
             count: 1
           - platform: windows
             os: windows-2022
             bot_name: bds-test-bot.exe
             mode: fleet
             scenario: chunk-walk
+            scenario_label: mixed-actions
+            scenario_file: bot-src/scenarios/mixed-actions.json
+            iterations: "48000"
             count: 5
 
     runs-on: ${{ matrix.os }}
+    env:
+      BDS_TEST_BOT_SCENARIO_FILE: ${{ matrix.scenario_file }}
+      SPARK_PYTHON_HOTSPOT_ITERATIONS: ${{ matrix.iterations }}
 
     steps:
       - name: Checkout test lab
@@ -212,7 +259,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: python-attribution-${{ matrix.platform }}-${{ matrix.mode }}-${{ matrix.count }}-${{ github.run_id }}
+          name: python-attribution-${{ matrix.platform }}-${{ matrix.mode }}-${{ matrix.scenario_label }}-${{ matrix.count }}-${{ github.run_id }}
           path: |
             metadata.json
             bds.log
