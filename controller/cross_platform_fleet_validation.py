@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -24,18 +25,28 @@ class CrossPlatformFleetBotProcess(FleetBotProcess):
             str(self.count),
             "--name-prefix",
             self.name_prefix,
-            "--scenario",
-            self.scenario,
-            "--login-stagger",
-            "250ms",
-            "--chunk-radius",
-            "8",
-            "--connect-timeout",
-            "20s",
-            "--spawn-timeout",
-            "45s",
-            "--json",
         ]
+        scenario_file = os.environ.get("BDS_TEST_BOT_SCENARIO_FILE", "").strip()
+        if scenario_file:
+            scenario_path = pathlib.Path(scenario_file).resolve()
+            if not scenario_path.is_file():
+                raise FileNotFoundError(f"Configured bot scenario file does not exist: {scenario_path}")
+            cmd.extend(["--scenario-file", str(scenario_path)])
+        else:
+            cmd.extend(["--scenario", self.scenario])
+        cmd.extend(
+            [
+                "--login-stagger",
+                "250ms",
+                "--chunk-radius",
+                "8",
+                "--connect-timeout",
+                "20s",
+                "--spawn-timeout",
+                "45s",
+                "--json",
+            ]
+        )
         print("+", " ".join(cmd), flush=True)
         self._log = self.log_path.open("w", encoding="utf-8")
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
