@@ -127,6 +127,7 @@ jobs:
         run: |
           python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json
+          import os
           import pathlib
           import statistics
 
@@ -139,7 +140,7 @@ jobs:
               tick = perf.get('tick_statistics') or {}
               grouped.setdefault(mode, []).append((perf, tick, path.parent.name))
           print('# Spark controlled baseline')
-          print(f'Exact Spark SHA: `{pathlib.os.environ.get("EXPECTED_SPARK_SHA", "")}`')
+          print(f'Exact Spark SHA: `{os.environ.get("EXPECTED_SPARK_SHA", "")}`')
           for mode in ('off', 'native', 'shadow', 'full', 'stress'):
               rows = grouped.get(mode, [])
               print(f'\n## {mode} ({len(rows)} runs)')
