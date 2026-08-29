@@ -15,6 +15,7 @@ from controller.run_test import IntegrationTest, run_checked
 DEPENDENCY_SOURCE = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "spark-python-dependency-test"
 DEPENDENCY_MODULE = "endstone_spark_python_dependency_test"
 DEPENDENCY_PLUGIN_SOURCE = "spark-python-dependency-test"
+DEPENDENCY_INSTALLED_SOURCE = "spark_python_dependency_test"
 OBSERVER_THUNKS = (
     "spark::endstone_adapter::EndstonePythonAttribution::pyStartThunk",
     "spark::endstone_adapter::EndstonePythonAttribution::pyResumeThunk",
@@ -27,7 +28,7 @@ OBSERVER_THUNKS = (
 # Reuse the complete real-BDS lifecycle/viewer/raw validation while substituting
 # only the dedicated plugin fixture and its expected source metadata.
 base_validation.EXPECTED_MODULE = DEPENDENCY_MODULE
-base_validation.EXPECTED_SOURCE = DEPENDENCY_PLUGIN_SOURCE
+base_validation.EXPECTED_SOURCE = DEPENDENCY_INSTALLED_SOURCE
 
 
 def canonical_plugin_key(value: str) -> str:
