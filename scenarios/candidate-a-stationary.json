@@ -1,0 +1,6 @@
+{
+  "name": "candidate-a-stationary",
+  "steps": [
+    {"action": "idle"}
+  ]
+}
