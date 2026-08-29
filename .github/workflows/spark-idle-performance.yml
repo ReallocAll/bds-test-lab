@@ -73,37 +73,74 @@ jobs:
       - name: Run five controlled repetitions
         shell: bash
         run: |
-          set -euo pipefail
+          set +e
+          set -uo pipefail
           mkdir -p evidence
+          printf 'rep\tmode\tlabel\tcontroller_exit_code\tstatus\n' > evidence/case-status.tsv
           modes=(control idle monitoring)
+
+          copy_if_present() {
+            local source="$1"
+            local target="$2"
+            [[ -e "$source" ]] || return 0
+            cp -a "$source" "$target"
+          }
+
           for rep in 1 2 3 4 5; do
             offset=$((rep - 1))
             for step in 0 1 2; do
               index=$(((offset + step) % 3))
               mode="${modes[$index]}"
               label="rep${rep}-${mode}"
+              case_dir="evidence/$label"
               echo "===== ${label} ====="
-              rm -rf downloads work
+              mkdir -p "$case_dir"
+              cleanup_failed=0
+              rm -rf downloads work || cleanup_failed=1
               rm -f metadata.json bds.log endstone.log spark.log test-results.json \
                 fleet-spark-result.json spark-idle-performance.json \
-                fleet-linux-5-chunk-walk.log failure-diagnostics.txt
+                fleet-linux-5-chunk-walk.log failure-diagnostics.txt || cleanup_failed=1
+
               python -m controller.spark_idle_performance \
                 --platform linux \
                 --bot dist/bds-test-bot \
                 --count 5 \
                 --mode "$mode" \
-                --duration-seconds "$DURATION_SECONDS"
-              mkdir -p "evidence/$label"
+                --duration-seconds "$DURATION_SECONDS" 2>&1 | tee "$case_dir/controller-output.log"
+              pipeline_status=("${PIPESTATUS[@]}")
+              controller_exit="${pipeline_status[0]}"
+              tee_exit="${pipeline_status[1]}"
+
+              copy_failed=0
               for path in metadata.json bds.log endstone.log spark.log test-results.json \
                 fleet-spark-result.json spark-idle-performance.json \
                 fleet-linux-5-chunk-walk.log failure-diagnostics.txt; do
-                if [[ -e "$path" ]]; then
-                  cp -a "$path" "evidence/$label/"
+                if [[ -e "$path" ]] && ! copy_if_present "$path" "$case_dir/"; then
+                  echo "::warning::Unable to preserve $path for $label"
+                  copy_failed=1
                 fi
               done
-              if [[ -f work/linux/bedrock_server/version.txt ]]; then
-                cp -a work/linux/bedrock_server/version.txt "evidence/$label/bds-version.txt"
+
+              if [[ -f work/linux/bedrock_server/version.txt ]] && ! copy_if_present \
+                work/linux/bedrock_server/version.txt "$case_dir/bds-version.txt"; then
+                echo "::warning::Unable to preserve BDS version for $label"
+                copy_failed=1
               fi
+              for path in work/linux/bedrock_server/server.properties \
+                work/linux/bedrock_server/crash_reports; do
+                if [[ -e "$path" ]] && ! copy_if_present "$path" "$case_dir/"; then
+                  echo "::warning::Unable to preserve $path for $label"
+                  copy_failed=1
+                fi
+              done
+
+              status=PASS
+              if [[ "$controller_exit" -ne 0 || "$tee_exit" -ne 0 || "$cleanup_failed" -ne 0 || "$copy_failed" -ne 0 ]]; then
+                status=FAIL
+              fi
+              printf '%s\t%s\t%s\t%s\t%s\n' "$rep" "$mode" "$label" "$controller_exit" "$status" >> evidence/case-status.tsv
+              printf 'case=%s controller_exit=%s cleanup_failed=%s evidence_copy_failed=%s status=%s\n' \
+                "$label" "$controller_exit" "$cleanup_failed" "$copy_failed" "$status" > "$case_dir/status.txt"
             done
           done
 
@@ -117,22 +154,109 @@ jobs:
           import pathlib
           import statistics
 
-          grouped = {}
+          expected_modes = ('control', 'idle', 'monitoring')
+          expected_repetitions = 5
+          status_path = pathlib.Path('evidence/case-status.tsv')
+          statuses = {}
+          malformed_status = []
+          if status_path.exists():
+              for line_number, line in enumerate(status_path.read_text(encoding='utf-8').splitlines(), 1):
+                  if not line or line.startswith('rep\t'):
+                      continue
+                  fields = line.split('\t')
+                  if len(fields) != 5:
+                      malformed_status.append(f'line {line_number}: {line!r}')
+                      continue
+                  try:
+                      rep = int(fields[0])
+                      exit_code = int(fields[3])
+                  except ValueError:
+                      malformed_status.append(f'line {line_number}: {line!r}')
+                      continue
+                  key = (rep, fields[1])
+                  if key in statuses:
+                      malformed_status.append(f'duplicate case: {fields[2]}')
+                  statuses[key] = {
+                      'rep': rep,
+                      'mode': fields[1],
+                      'label': fields[2],
+                      'exit_code': exit_code,
+                      'status': fields[4],
+                  }
+
+          grouped = {mode: [] for mode in expected_modes}
           metadata = []
-          for path in sorted(pathlib.Path('evidence').glob('rep*/spark-idle-performance.json')):
-              data = json.loads(path.read_text(encoding='utf-8'))
-              perf = data.get('performance') or {}
-              grouped.setdefault(data.get('benchmark_mode'), []).append(perf)
-              meta_path = path.parent / 'metadata.json'
-              if meta_path.exists():
-                  metadata.append(json.loads(meta_path.read_text(encoding='utf-8')))
+          evidence_problems = []
           print('Spark idle controlled baseline')
           print(f'Exact Spark SHA: {os.environ.get("EXPECTED_SPARK_SHA", "")}')
-          for mode in ('control', 'idle', 'monitoring'):
-              rows = grouped.get(mode, [])
-              print(f'\n[{mode}] runs={len(rows)}')
-              if not rows:
+          if malformed_status:
+              print('\nMalformed case-status.tsv entries:')
+              for item in malformed_status:
+                  print(f'- {item}')
+
+          for mode in expected_modes:
+              rows = []
+              missing = []
+              failed = []
+              for rep in range(1, expected_repetitions + 1):
+                  key = (rep, mode)
+                  label = f'rep{rep}-{mode}'
+                  row = statuses.get(key)
+                  if row is None:
+                      missing.append(label)
+                      continue
+                  rows.append(row)
+                  if row['status'] != 'PASS' or row['exit_code'] != 0:
+                      detail = f"{label}: exit={row['exit_code']} status={row['status']}"
+                      result_path = pathlib.Path('evidence') / label / 'spark-idle-performance.json'
+                      if result_path.exists():
+                          try:
+                              result = json.loads(result_path.read_text(encoding='utf-8'))
+                              detail += f" failed_stage={result.get('failed_stage')} error={result.get('error_summary')}"
+                          except (OSError, json.JSONDecodeError) as exc:
+                              detail += f' result_read_error={exc}'
+                      failed.append(detail)
+
+                  result_path = pathlib.Path('evidence') / label / 'spark-idle-performance.json'
+                  if not result_path.exists():
+                      evidence_problems.append(f'{label}: missing spark-idle-performance.json')
+                      continue
+                  try:
+                      data = json.loads(result_path.read_text(encoding='utf-8'))
+                  except (OSError, json.JSONDecodeError) as exc:
+                      evidence_problems.append(f'{label}: unreadable spark-idle-performance.json ({exc})')
+                      continue
+                  if data.get('benchmark_mode') != mode:
+                      evidence_problems.append(
+                          f"{label}: result benchmark_mode={data.get('benchmark_mode')!r}, expected {mode!r}"
+                      )
+                  perf = data.get('performance')
+                  if row['status'] == 'PASS' and row['exit_code'] == 0 and isinstance(perf, dict):
+                      grouped[mode].append(perf)
+                  elif row['status'] == 'PASS':
+                      evidence_problems.append(f'{label}: missing performance measurements')
+                  meta_path = result_path.parent / 'metadata.json'
+                  if meta_path.exists():
+                      try:
+                          metadata.append(json.loads(meta_path.read_text(encoding='utf-8')))
+                      except (OSError, json.JSONDecodeError) as exc:
+                          evidence_problems.append(f'{label}: unreadable metadata.json ({exc})')
+
+              print(
+                  f'\n[{mode}] expected_rows={expected_repetitions} recorded_rows={len(rows)} '
+                  f'measured_runs={len(grouped[mode])}'
+              )
+              if missing:
+                  print('missing cases: ' + ', '.join(missing))
+              if failed:
+                  print('failed cases:')
+                  for detail in failed:
+                      print(f'- {detail}')
+              if not missing and not failed:
+                  print('case status: all PASS')
+              if not grouped[mode]:
                   continue
+              rows = grouped[mode]
               fields = {
                   'process_cpu_percent_of_one_core': [float(r['process_cpu_percent_of_one_core']) for r in rows],
                   'cpu_ms_per_tick': [float(r['cpu_ms_per_tick']) for r in rows],
@@ -147,6 +271,10 @@ jobs:
                   sd = statistics.stdev(values) if len(values) > 1 else 0.0
                   cv = sd / mean * 100.0 if mean else 0.0
                   print(f'{name}: mean={mean:.5f} median={median:.5f} sd={sd:.5f} CV={cv:.2f}% min={min(values):.5f} max={max(values):.5f}')
+          if evidence_problems:
+              print('\nMissing or invalid evidence:')
+              for item in evidence_problems:
+                  print(f'- {item}')
           if metadata:
               components = metadata[-1].get('components', {})
               for name in ('endstone', 'spark'):
@@ -166,3 +294,53 @@ jobs:
             idle-summary.txt
           if-no-files-found: warn
           retention-days: 30
+
+      - name: Fail if any repetition failed or is missing
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import pathlib
+
+          expected = {(rep, mode): f'rep{rep}-{mode}' for rep in range(1, 6) for mode in ('control', 'idle', 'monitoring')}
+          status_path = pathlib.Path('evidence/case-status.tsv')
+          rows = {}
+          problems = []
+          if not status_path.exists():
+              problems.append('missing evidence/case-status.tsv')
+          else:
+              for line_number, line in enumerate(status_path.read_text(encoding='utf-8').splitlines(), 1):
+                  if not line or line.startswith('rep\t'):
+                      continue
+                  fields = line.split('\t')
+                  if len(fields) != 5:
+                      problems.append(f'malformed case-status.tsv line {line_number}')
+                      continue
+                  try:
+                      key = (int(fields[0]), fields[1])
+                      exit_code = int(fields[3])
+                  except ValueError:
+                      problems.append(f'malformed case-status.tsv line {line_number}')
+                      continue
+                  if key in rows:
+                      problems.append(f'duplicate case-status row for {fields[2]}')
+                  rows[key] = (fields[2], exit_code, fields[4])
+
+          for key, label in sorted(expected.items()):
+              row = rows.get(key)
+              if row is None:
+                  problems.append(f'missing case: {label}')
+                  continue
+              recorded_label, exit_code, status = row
+              if recorded_label != label:
+                  problems.append(f'{label}: recorded label={recorded_label}')
+              if exit_code != 0 or status != 'PASS':
+                  problems.append(f'{label}: controller_exit={exit_code} status={status}')
+
+          if problems:
+              print('Repetition validation failed after all scheduled cases:')
+              for problem in problems:
+                  print(f'- {problem}')
+              raise SystemExit(1)
+          print('All 15 scheduled repetitions completed successfully.')
+          PY
