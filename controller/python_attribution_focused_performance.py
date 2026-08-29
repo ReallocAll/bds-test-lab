@@ -6,7 +6,8 @@ import json
 import pathlib
 
 # Importing the runner installs the real Endstone hotspot plugin deployment
-# override before the benchmark class is instantiated.
+# override before the benchmark class is instantiated. This focused controller
+# deliberately changes only measurement duration, never profiler semantics.
 from controller.python_attribution_performance_runner import PythonAttributionPerformance
 
 
