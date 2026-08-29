@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import re
 import shutil
 import sys
 
@@ -14,11 +15,27 @@ from controller.run_test import IntegrationTest, run_checked
 DEPENDENCY_SOURCE = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "spark-python-dependency-test"
 DEPENDENCY_MODULE = "endstone_spark_python_dependency_test"
 DEPENDENCY_PLUGIN_SOURCE = "spark-python-dependency-test"
+OBSERVER_THUNKS = (
+    "spark::endstone_adapter::EndstonePythonAttribution::pyStartThunk",
+    "spark::endstone_adapter::EndstonePythonAttribution::pyResumeThunk",
+    "spark::endstone_adapter::EndstonePythonAttribution::pyThrowThunk",
+    "spark::endstone_adapter::EndstonePythonAttribution::pyReturnThunk",
+    "spark::endstone_adapter::EndstonePythonAttribution::pyYieldThunk",
+    "spark::endstone_adapter::EndstonePythonAttribution::pyUnwindThunk",
+)
 
 # Reuse the complete real-BDS lifecycle/viewer/raw validation while substituting
 # only the dedicated plugin fixture and its expected source metadata.
 base_validation.EXPECTED_MODULE = DEPENDENCY_MODULE
 base_validation.EXPECTED_SOURCE = DEPENDENCY_PLUGIN_SOURCE
+
+
+def canonical_plugin_key(value: str) -> str:
+    return re.sub(r"[-_.]+", "-", value).lower()
+
+
+def matches_function(value: str, name: str) -> bool:
+    return value == name or value.startswith(name + "(")
 
 
 class PythonDependencyValidation(base_validation.PythonAttributionValidation):
@@ -88,6 +105,80 @@ class PythonDependencyValidation(base_validation.PythonAttributionValidation):
             method="SpecifierSet.contains",
             external_code_objects=external,
             dependency_nodes=len(packaging_nodes),
+        )
+
+        canonical_expected = canonical_plugin_key(DEPENDENCY_PLUGIN_SOURCE)
+        installed_sources = [
+            key
+            for key, display_name in profile.sources.items()
+            if canonical_plugin_key(key) == canonical_expected or canonical_plugin_key(display_name) == canonical_expected
+        ]
+        if len(installed_sources) != 1:
+            raise RuntimeError(
+                f"expected exactly one installed source matching {DEPENDENCY_PLUGIN_SOURCE!r}, got {installed_sources}; "
+                f"all sources={profile.sources}"
+            )
+        installed_source = installed_sources[0]
+        if installed_source == DEPENDENCY_PLUGIN_SOURCE:
+            raise RuntimeError(
+                "dependency fixture no longer exposes the hyphen/underscore identity mismatch needed by this regression"
+            )
+        dependency_classes = [
+            (class_name, source_id)
+            for class_name, source_id in profile.class_sources.items()
+            if class_name == f"[Python] {DEPENDENCY_MODULE}"
+        ]
+        if not dependency_classes:
+            raise RuntimeError("profile contains no class-source mapping for the dependency plugin")
+        bad_sources = [(class_name, source_id) for class_name, source_id in dependency_classes if source_id != installed_source]
+        if bad_sources:
+            raise RuntimeError(
+                f"Python plugin classes were not reconciled to installed source {installed_source!r}: {bad_sources}"
+            )
+        if DEPENDENCY_PLUGIN_SOURCE in profile.class_sources.values():
+            raise RuntimeError(
+                f"raw attribution source {DEPENDENCY_PLUGIN_SOURCE!r} leaked into class_sources beside installed plugin source"
+            )
+        self.check(
+            "python-plugin-canonical-identity",
+            "PASS",
+            raw_attribution_source=DEPENDENCY_PLUGIN_SOURCE,
+            installed_source=installed_source,
+            matching_installed_sources=len(installed_sources),
+            mapped_classes=len(dependency_classes),
+        )
+
+        nodes = [node for thread in profile.threads for node in thread.nodes]
+        observer_nodes = [
+            node.method_name
+            for node in nodes
+            if any(matches_function(node.method_name, thunk) for thunk in OBSERVER_THUNKS)
+        ]
+        if observer_nodes:
+            raise RuntimeError(f"Spark PEP 669 observer thunks leaked into visible profile tree: {observer_nodes}")
+        self.check("python-observer-thunks-filtered", "PASS", observer_nodes=0)
+
+        ctypes_nodes = [node.method_name for node in nodes if matches_function(node.method_name, "_ctypes_callproc")]
+        ffi_nodes = [
+            node.method_name
+            for node in nodes
+            if any(
+                matches_function(node.method_name, name)
+                for name in ("ffi_call", "ffi_call_int", "ffi_call_unix64", "ffi_call_win64")
+            )
+        ]
+        if not ctypes_nodes or not ffi_nodes:
+            raise RuntimeError(
+                "normal user ctypes/libffi path was not retained in the real profile: "
+                f"ctypes={ctypes_nodes}, ffi={ffi_nodes}"
+            )
+        self.check(
+            "python-user-ctypes-retained",
+            "PASS",
+            ctypes_nodes=len(ctypes_nodes),
+            ffi_nodes=len(ffi_nodes),
+            ctypes_methods=sorted(set(ctypes_nodes)),
+            ffi_methods=sorted(set(ffi_nodes)),
         )
         return summary
 
