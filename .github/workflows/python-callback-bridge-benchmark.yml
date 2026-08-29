@@ -1,0 +1,295 @@
+name: Python callback bridge benchmark
+
+on:
+  push:
+    branches:
+      - perf/python-bridge-bench
+    paths:
+      - ".github/workflows/python-callback-bridge-benchmark.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bridge:
+    name: Python ${{ matrix.python }} callback bridge
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13", "3.14"]
+    steps:
+      - name: Checkout lab
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Build public C-API bridge fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bridge-evidence
+          cat > bridge-evidence/bridge_bench.c <<'C'
+          #define PY_SSIZE_T_CLEAN
+          #include <Python.h>
+          #include <stdint.h>
+
+          static uint64_t capi_count = 0;
+          static uint64_t raw_count = 0;
+
+          #if defined(__GNUC__) || defined(__clang__)
+          __attribute__((visibility("default")))
+          #endif
+          void spark_bridge_raw_callback(PyObject *code, int offset)
+          {
+              (void)code;
+              (void)offset;
+              ++raw_count;
+          }
+
+          static PyObject *capi_callback(PyObject *self, PyObject *args)
+          {
+              (void)self;
+              (void)args;
+              ++capi_count;
+              Py_RETURN_NONE;
+          }
+
+          static PyObject *reset_counts(PyObject *self, PyObject *args)
+          {
+              (void)self;
+              (void)args;
+              capi_count = 0;
+              raw_count = 0;
+              Py_RETURN_NONE;
+          }
+
+          static PyObject *counts(PyObject *self, PyObject *args)
+          {
+              (void)self;
+              (void)args;
+              return Py_BuildValue("KK", (unsigned long long)raw_count, (unsigned long long)capi_count);
+          }
+
+          static PyMethodDef methods[] = {
+              {"callback", capi_callback, METH_VARARGS, "No-op native monitoring callback."},
+              {"reset", reset_counts, METH_NOARGS, "Reset callback counters."},
+              {"counts", counts, METH_NOARGS, "Return raw and C-API callback counters."},
+              {NULL, NULL, 0, NULL},
+          };
+
+          static struct PyModuleDef module = {
+              PyModuleDef_HEAD_INIT,
+              "bridge_bench",
+              NULL,
+              -1,
+              methods,
+          };
+
+          PyMODINIT_FUNC PyInit_bridge_bench(void)
+          {
+              return PyModule_Create(&module);
+          }
+          C
+          include_dir="$(python - <<'PY'
+          import sysconfig
+          print(sysconfig.get_path('include'))
+          PY
+          )"
+          ext_suffix="$(python - <<'PY'
+          import sysconfig
+          print(sysconfig.get_config_var('EXT_SUFFIX'))
+          PY
+          )"
+          gcc -O3 -fPIC -shared -fvisibility=hidden -DPy_LIMITED_API=0x030C0000 \
+            -I"$include_dir" bridge-evidence/bridge_bench.c \
+            -o "bridge-evidence/bridge_bench${ext_suffix}"
+          ls -l bridge-evidence/bridge_bench*so
+
+      - name: Run interleaved PEP 669 bridge benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > bridge-evidence/run_bridge_bench.py <<'PY'
+          import ctypes
+          import gc
+          import importlib
+          import json
+          import pathlib
+          import statistics
+          import sys
+          import time
+
+          ROOT = pathlib.Path(__file__).resolve().parent
+          sys.path.insert(0, str(ROOT))
+          bridge_bench = importlib.import_module('bridge_bench')
+
+          monitoring = sys.monitoring
+          tool = monitoring.PROFILER_ID
+          if monitoring.get_tool(tool) is not None:
+              raise RuntimeError(f'PROFILER_ID {tool} is already in use: {monitoring.get_tool(tool)!r}')
+          monitoring.use_tool_id(tool, 'spark-bridge-bench')
+          event = monitoring.events.PY_START
+
+          lib = ctypes.PyDLL(bridge_bench.__file__)
+          raw_symbol = lib.spark_bridge_raw_callback
+          raw_addr = ctypes.cast(raw_symbol, ctypes.c_void_p).value
+          if not raw_addr:
+              raise RuntimeError('failed to resolve raw callback fixture')
+          ctypes_callback = ctypes.PYFUNCTYPE(None, ctypes.py_object, ctypes.c_int)(raw_addr)
+          capi_callback = bridge_bench.callback
+
+          ITERATIONS = 600_000
+          WARMUP = 80_000
+          REPS = 9
+
+          def leaf(value):
+              return value + 1
+
+          def workload(iterations):
+              total = 0
+              for i in range(iterations):
+                  total += leaf(i)
+              return total
+
+          expected = ITERATIONS * (ITERATIONS + 1) // 2
+          if workload(1000) != 1000 * 1001 // 2:
+              raise RuntimeError('workload sanity check failed')
+
+          def set_mode(mode):
+              monitoring.set_events(tool, 0)
+              monitoring.register_callback(tool, event, None)
+              if mode == 'ctypes':
+                  monitoring.register_callback(tool, event, ctypes_callback)
+                  monitoring.set_events(tool, event)
+              elif mode == 'capi':
+                  monitoring.register_callback(tool, event, capi_callback)
+                  monitoring.set_events(tool, event)
+              elif mode != 'off':
+                  raise ValueError(mode)
+
+          # Warm every path before any timed repetition. This also forces ctypes/libffi
+          # lazy initialization and the PyCFunction vectorcall dispatch setup out of the sample.
+          for mode in ('off', 'ctypes', 'capi'):
+              bridge_bench.reset()
+              set_mode(mode)
+              workload(WARMUP)
+              monitoring.set_events(tool, 0)
+          gc.collect()
+
+          rows = []
+          try:
+              for rep in range(1, REPS + 1):
+                  candidate_order = ('ctypes', 'capi') if rep % 2 else ('capi', 'ctypes')
+                  sequence = ('off', candidate_order[0], 'off', candidate_order[1], 'off')
+                  rep_rows = []
+                  for position, mode in enumerate(sequence):
+                      bridge_bench.reset()
+                      set_mode(mode)
+                      start = time.perf_counter_ns()
+                      result = workload(ITERATIONS)
+                      elapsed = time.perf_counter_ns() - start
+                      monitoring.set_events(tool, 0)
+                      raw_count, capi_count = bridge_bench.counts()
+                      if result != expected:
+                          raise RuntimeError('timed workload result mismatch')
+                      callbacks = raw_count if mode == 'ctypes' else capi_count if mode == 'capi' else 0
+                      if mode != 'off' and callbacks < ITERATIONS:
+                          raise RuntimeError(f'{mode}: callback count too small: {callbacks}')
+                      row = {
+                          'rep': rep,
+                          'position': position,
+                          'mode': mode,
+                          'elapsed_ns': elapsed,
+                          'callbacks': callbacks,
+                          'raw_count': raw_count,
+                          'capi_count': capi_count,
+                      }
+                      rows.append(row)
+                      rep_rows.append(row)
+
+                  # Each candidate is bracketed by two monitoring-off controls.
+                  for index, row in enumerate(rep_rows):
+                      if row['mode'] == 'off':
+                          continue
+                      before = rep_rows[index - 1]
+                      after = rep_rows[index + 1]
+                      assert before['mode'] == after['mode'] == 'off'
+                      control = (before['elapsed_ns'] + after['elapsed_ns']) / 2.0
+                      row['bracketed_control_ns'] = control
+                      row['delta_ns'] = row['elapsed_ns'] - control
+                      row['overhead_ns_per_callback'] = row['delta_ns'] / row['callbacks']
+          finally:
+              monitoring.set_events(tool, 0)
+              monitoring.register_callback(tool, event, None)
+              monitoring.free_tool_id(tool)
+
+          candidates = [r for r in rows if r['mode'] != 'off']
+          summary = {
+              'python': sys.version,
+              'iterations': ITERATIONS,
+              'warmup_iterations': WARMUP,
+              'repetitions': REPS,
+              'modes': {},
+          }
+          for mode in ('ctypes', 'capi'):
+              selected = [r for r in candidates if r['mode'] == mode]
+              values = [r['overhead_ns_per_callback'] for r in selected]
+              elapsed = [r['elapsed_ns'] for r in selected]
+              callbacks = [r['callbacks'] for r in selected]
+              mean = statistics.fmean(values)
+              sd = statistics.stdev(values)
+              summary['modes'][mode] = {
+                  'overhead_ns_per_callback_values': values,
+                  'mean_ns': mean,
+                  'median_ns': statistics.median(values),
+                  'stdev_ns': sd,
+                  'cv_percent': sd / mean * 100.0 if mean else 0.0,
+                  'min_ns': min(values),
+                  'max_ns': max(values),
+                  'mean_callbacks': statistics.fmean(callbacks),
+                  'elapsed_ns_values': elapsed,
+              }
+          ctypes_median = summary['modes']['ctypes']['median_ns']
+          capi_median = summary['modes']['capi']['median_ns']
+          summary['capi_vs_ctypes'] = {
+              'median_delta_ns_per_callback': capi_median - ctypes_median,
+              'median_reduction_percent': (ctypes_median - capi_median) / ctypes_median * 100.0,
+          }
+
+          (ROOT / 'rows.json').write_text(json.dumps(rows, indent=2), encoding='utf-8')
+          (ROOT / 'summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
+          print(json.dumps(summary, indent=2))
+          PY
+          python bridge-evidence/run_bridge_bench.py | tee bridge-evidence/console.txt
+
+      - name: Validate benchmark evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import pathlib
+          root = pathlib.Path('bridge-evidence')
+          data = json.loads((root / 'summary.json').read_text())
+          assert data['repetitions'] == 9
+          for mode in ('ctypes', 'capi'):
+              values = data['modes'][mode]['overhead_ns_per_callback_values']
+              assert len(values) == 9
+              assert data['modes'][mode]['mean_callbacks'] >= data['iterations']
+          print('validated', data['capi_vs_ctypes'])
+          PY
+
+      - name: Upload bridge evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-callback-bridge-${{ matrix.python }}-${{ github.run_id }}
+          path: bridge-evidence
+          if-no-files-found: error
+          retention-days: 30
