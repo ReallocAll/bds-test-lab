@@ -3,9 +3,12 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import shutil
+import sys
 
 import controller.python_attribution_validation as base_validation
 from controller.python_profile_payload import contains_python_chain, parse_sampler_data, python_nodes
+from controller.run_test import IntegrationTest, run_checked
 
 
 DEPENDENCY_SOURCE = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "spark-python-dependency-test"
@@ -14,12 +17,43 @@ DEPENDENCY_PLUGIN_SOURCE = "spark-python-dependency-test"
 
 # Reuse the complete real-BDS lifecycle/viewer/raw validation while substituting
 # only the dedicated plugin fixture and its expected source metadata.
-base_validation.PLUGIN_SOURCE = DEPENDENCY_SOURCE
 base_validation.EXPECTED_MODULE = DEPENDENCY_MODULE
 base_validation.EXPECTED_SOURCE = DEPENDENCY_PLUGIN_SOURCE
 
 
 class PythonDependencyValidation(base_validation.PythonAttributionValidation):
+    def install_artifacts(self) -> None:
+        # The base attribution installer deliberately expects the hotspot fixture's
+        # wheel name. This validation uses a separate real dependency plugin, so
+        # install the common Endstone/Spark artifacts and deploy this wheel by its
+        # own exact package prefix instead of weakening the main harness checks.
+        IntegrationTest.install_artifacts(self)
+        wheel_dir = self.root / "dependency-wheel"
+        shutil.rmtree(wheel_dir, ignore_errors=True)
+        wheel_dir.mkdir(parents=True, exist_ok=True)
+        run_checked(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "wheel",
+                "--disable-pip-version-check",
+                "--no-deps",
+                "--wheel-dir",
+                str(wheel_dir),
+                str(DEPENDENCY_SOURCE),
+            ],
+            timeout=180,
+        )
+        wheels = sorted(wheel_dir.glob("endstone_spark_python_dependency_test-*.whl"))
+        if len(wheels) != 1:
+            raise RuntimeError(f"Expected one dependency plugin wheel, got: {wheels}")
+        plugin_dir = self.server_dir / "plugins"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        target = plugin_dir / wheels[0].name
+        shutil.copy2(wheels[0], target)
+        self.check("python-dependency-plugin-installed", "PASS", str(target.relative_to(self.root)))
+
     def wait_plugin(self) -> None:
         assert self.server is not None
         self.server.wait_for(
