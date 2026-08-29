@@ -21,6 +21,7 @@ class HotspotPlugin(Plugin):
         self._worker: threading.Thread | None = None
         self._generator = self._generator_sequence()
         self._event_counter = 0
+        self._dual_flip = False
         self.register_events(self)
         self.server.scheduler.run_task(self, self.light_tick, delay=0, period=1)
         if self.mode in {"worker", "mixed", "fleet"}:
@@ -91,9 +92,20 @@ class HotspotPlugin(Plugin):
         return total
 
     def dual_hotspot(self) -> tuple[int, int]:
-        # Identical operation type, different iteration budgets: the expected
-        # direction is deliberately strong rather than claiming exact 70/30 CPU.
-        return self.hotspot_a((self.iterations * 7) // 10), self.hotspot_b((self.iterations * 3) // 10)
+        # Keep the total workload at a deterministic 70/30 split, but alternate
+        # execution order each tick. A fixed A->B order can phase-lock with the
+        # 4 ms statistical sampler on Windows and systematically miss the shorter
+        # B interval even over a 60 s profile.
+        a_iterations = (self.iterations * 7) // 10
+        b_iterations = (self.iterations * 3) // 10
+        self._dual_flip = not self._dual_flip
+        if self._dual_flip:
+            a_result = self.hotspot_a(a_iterations)
+            b_result = self.hotspot_b(b_iterations)
+        else:
+            b_result = self.hotspot_b(b_iterations)
+            a_result = self.hotspot_a(a_iterations)
+        return a_result, b_result
 
     def hotspot_a(self, iterations: int) -> int:
         return self.integer_hash_loop(iterations)
