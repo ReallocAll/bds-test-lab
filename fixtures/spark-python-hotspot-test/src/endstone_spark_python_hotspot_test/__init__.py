@@ -2,7 +2,9 @@ import asyncio
 import hashlib
 import json
 import os
+import pathlib
 import threading
+import time
 from collections.abc import Generator
 
 from endstone.event import PlayerMoveEvent, event_handler
@@ -22,6 +24,10 @@ class HotspotPlugin(Plugin):
         self._generator = self._generator_sequence()
         self._event_counter = 0
         self._dual_flip = False
+        metrics_path = os.environ.get("SPARK_PYTHON_TICK_METRICS", "").strip()
+        self._tick_metrics_path = pathlib.Path(metrics_path) if metrics_path else None
+        self._tick_samples: list[dict[str, float | int]] = []
+        self._last_tick_ns: int | None = None
         self.register_events(self)
         self.server.scheduler.run_task(self, self.light_tick, delay=0, period=1)
         if self.mode in {"worker", "mixed", "fleet"}:
@@ -38,9 +44,34 @@ class HotspotPlugin(Plugin):
         worker = self._worker
         if worker is not None:
             worker.join(timeout=2.0)
+        if self._tick_metrics_path is not None:
+            self._tick_metrics_path.parent.mkdir(parents=True, exist_ok=True)
+            self._tick_metrics_path.write_text(
+                json.dumps(
+                    {
+                        "metric": "effective_tick_wall_interval",
+                        "samples": self._tick_samples,
+                    },
+                    separators=(",", ":"),
+                ),
+                encoding="utf-8",
+            )
         self.logger.info("Spark Python hotspot test disabled")
 
     def light_tick(self) -> None:
+        now_ns = time.monotonic_ns()
+        previous_ns = self._last_tick_ns
+        self._last_tick_ns = now_ns
+        if previous_ns is not None:
+            elapsed_ms = max(0.001, (now_ns - previous_ns) / 1_000_000.0)
+            self._tick_samples.append(
+                {
+                    "monotonic_ns": now_ns,
+                    "mspt": elapsed_ms,
+                    "tps": min(20.0, 1000.0 / elapsed_ms),
+                }
+            )
+
         mode = self.mode
         if mode == "off":
             return
