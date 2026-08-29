@@ -1,0 +1,174 @@
+name: Spark Performance Agent
+
+on:
+  push:
+    branches:
+      - perf/spark-overhead
+  workflow_dispatch:
+
+concurrency:
+  group: spark-performance-agent-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+  EXPECTED_SPARK_SHA: "15b79e814ee6542f8a2382df09353e9c2009c8d1"
+  BOT_REF: "b8c4875bb1fafaa5dd9b8e91b16b613af47bf37a"
+  BDS_TEST_BOT_SCENARIO_FILE: bot-src/scenarios/mixed-actions.json
+  DURATION_SECONDS: "180"
+
+jobs:
+  baseline-python:
+    name: Linux controlled Python baseline
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout lab
+        uses: actions/checkout@v7
+
+      - name: Verify exact Spark artifact build
+        shell: bash
+        run: |
+          set -euo pipefail
+          json="$(gh api "repos/ReallocAll/spark/actions/runs?head_sha=${EXPECTED_SPARK_SHA}&status=success&per_page=30")"
+          run_id="$(jq -r '[.workflow_runs[] | select(.name == "Build" and .conclusion == "success")][0].id // empty' <<<"$json")"
+          if [[ -z "$run_id" ]]; then
+            echo "No successful Build run for ${EXPECTED_SPARK_SHA}" >&2
+            exit 1
+          fi
+          echo "Exact Spark Build run: $run_id"
+
+      - name: Checkout exact bot
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/bds-test-bot
+          ref: ${{ env.BOT_REF }}
+          path: bot-src
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Build exact bot
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cd bot-src
+          test "$(git rev-parse HEAD)" = "$BOT_REF"
+          go mod download
+          go test ./...
+          go build -trimpath -o ../dist/bds-test-bot ./cmd/bds-test-bot
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install benchmark dependencies
+        run: python -m pip install --disable-pip-version-check psutil packaging hatchling
+
+      - name: Require exact Spark artifact
+        run: >-
+          python -m controller.assert_spark_artifact
+          --platform linux
+          --expected-sha ${{ env.EXPECTED_SPARK_SHA }}
+
+      - name: Run five controlled repetitions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          modes=(off native shadow full stress)
+          for rep in 1 2 3 4 5; do
+            offset=$((rep - 1))
+            for step in 0 1 2 3 4; do
+              index=$(((offset + step) % 5))
+              mode="${modes[$index]}"
+              label="rep${rep}-${mode}"
+              echo "===== ${label} ====="
+              rm -rf downloads work hotspot-wheel
+              rm -f metadata.json bds.log endstone.log spark.log test-results.json \
+                python-attribution-result.json python-attribution-performance.json \
+                python-attribution-tick-metrics.json python-attribution-performance.sparkprofile \
+                python-attribution-bots-linux-5-chunk-walk.log failure-diagnostics.txt
+              python -m controller.python_attribution_performance_runner \
+                --platform linux \
+                --bot dist/bds-test-bot \
+                --count 5 \
+                --mode "$mode" \
+                --duration-seconds "$DURATION_SECONDS"
+              mkdir -p "evidence/$label"
+              for path in metadata.json bds.log endstone.log spark.log test-results.json \
+                python-attribution-result.json python-attribution-performance.json \
+                python-attribution-tick-metrics.json python-attribution-performance.sparkprofile \
+                python-attribution-bots-linux-5-chunk-walk.log failure-diagnostics.txt; do
+                if [[ -e "$path" ]]; then
+                  cp -a "$path" "evidence/$label/"
+                fi
+              done
+              if [[ -f work/linux/bedrock_server/version.txt ]]; then
+                cp -a work/linux/bedrock_server/version.txt "evidence/$label/bds-version.txt"
+              fi
+            done
+          done
+
+      - name: Summarize repetitions
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          import pathlib
+          import statistics
+
+          root = pathlib.Path('evidence')
+          grouped = {}
+          for path in sorted(root.glob('rep*/python-attribution-performance.json')):
+              data = json.loads(path.read_text(encoding='utf-8'))
+              mode = data.get('benchmark_mode')
+              perf = data.get('performance') or {}
+              tick = perf.get('tick_statistics') or {}
+              grouped.setdefault(mode, []).append((perf, tick, path.parent.name))
+          print('# Spark controlled baseline')
+          print(f'Exact Spark SHA: `{pathlib.os.environ.get("EXPECTED_SPARK_SHA", "")}`')
+          for mode in ('off', 'native', 'shadow', 'full', 'stress'):
+              rows = grouped.get(mode, [])
+              print(f'\n## {mode} ({len(rows)} runs)')
+              if not rows:
+                  continue
+              metrics = {
+                  'CPU % one core': [float(p['process_cpu_percent_of_one_core']) for p, _, _ in rows],
+                  'CPU ms/tick': [float(p['cpu_ms_per_tick']) for p, _, _ in rows],
+                  'MSPT mean': [float(t['mspt_mean']) for _, t, _ in rows],
+                  'MSPT p95': [float(t['mspt_p95']) for _, t, _ in rows],
+                  'MSPT p99': [float(t['mspt_p99']) for _, t, _ in rows],
+                  'RSS mean MiB': [float(p['rss_mean_bytes']) / 1048576 for p, _, _ in rows],
+              }
+              for name, values in metrics.items():
+                  mean = statistics.fmean(values)
+                  median = statistics.median(values)
+                  sd = statistics.stdev(values) if len(values) > 1 else 0.0
+                  cv = sd / mean * 100 if mean else 0.0
+                  print(f'- {name}: mean={mean:.4f}, median={median:.4f}, sd={sd:.4f}, CV={cv:.2f}%, min={min(values):.4f}, max={max(values):.4f}')
+              urls = [p.get('viewer_url') for p, _, _ in rows if p.get('viewer_url')]
+              if urls:
+                  print('- Profiles: ' + ', '.join(urls))
+          PY
+
+      - name: Upload baseline evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: spark-performance-baseline-${{ github.run_id }}
+          path: evidence
+          if-no-files-found: warn
+          retention-days: 30
