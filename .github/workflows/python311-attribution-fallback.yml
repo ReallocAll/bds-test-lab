@@ -1,5 +1,6 @@
 name: Spark Python 3.11 Fallback Real BDS
 
+# Exact-SHA real-BDS fallback validation trigger for PR #37.
 on:
   push:
     branches:
