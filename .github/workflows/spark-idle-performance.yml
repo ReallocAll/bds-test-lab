@@ -113,6 +113,7 @@ jobs:
         run: |
           python - <<'PY' | tee idle-summary.txt
           import json
+          import os
           import pathlib
           import statistics
 
@@ -126,7 +127,7 @@ jobs:
               if meta_path.exists():
                   metadata.append(json.loads(meta_path.read_text(encoding='utf-8')))
           print('Spark idle controlled baseline')
-          print(f'Exact Spark SHA: {pathlib.os.environ.get("EXPECTED_SPARK_SHA", "")}')
+          print(f'Exact Spark SHA: {os.environ.get("EXPECTED_SPARK_SHA", "")}')
           for mode in ('control', 'idle', 'monitoring'):
               rows = grouped.get(mode, [])
               print(f'\n[{mode}] runs={len(rows)}')
