@@ -7,6 +7,8 @@ on:
     paths:
       - ".github/workflows/python-native-bridge-semantics.yml"
       - "controller/python_dependency_validation.py"
+      - "controller/python_profile_payload.py"
+      - "fixtures/spark-python-dependency-test/**"
   workflow_dispatch:
 
 concurrency:
@@ -118,7 +120,7 @@ jobs:
             python-attribution-result.json
             python-attribution-profile-summary.json
             python-attribution.sparkprofile
-            python-attribution-bots-linux-1-chunk-walk.log
+            python-attribution-bots-linux-1-mixed-actions.log
             failure-diagnostics.txt
             work/linux/bedrock_server/server.properties
             work/linux/bedrock_server/version.txt

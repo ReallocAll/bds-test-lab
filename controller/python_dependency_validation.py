@@ -8,7 +8,14 @@ import shutil
 import sys
 
 import controller.python_attribution_validation as base_validation
-from controller.python_profile_payload import contains_python_chain, parse_sampler_data, python_nodes
+from controller.python_profile_payload import (
+    Node,
+    ProfilePayload,
+    contains_python_chain,
+    iter_leaf_paths,
+    parse_sampler_data,
+    python_nodes,
+)
 from controller.run_test import IntegrationTest, run_checked
 
 
@@ -16,6 +23,11 @@ DEPENDENCY_SOURCE = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "
 DEPENDENCY_MODULE = "endstone_spark_python_dependency_test"
 DEPENDENCY_PLUGIN_SOURCE = "spark-python-dependency-test"
 DEPENDENCY_INSTALLED_SOURCE = "spark_python_dependency_test"
+DEPENDENCY_SCENARIO = "mixed-actions"
+DEPENDENCY_TICK = "DependencyPlugin.dependency_tick"
+CTYPES_CALLPROC = "_ctypes_callproc"
+FFI_CALLS = ("ffi_call", "ffi_call_int", "ffi_call_unix64", "ffi_call_win64")
+USLEEP_TARGETS = ("usleep", "__GI_usleep")
 OBSERVER_THUNKS = (
     "spark::endstone_adapter::EndstonePythonAttribution::pyStartThunk",
     "spark::endstone_adapter::EndstonePythonAttribution::pyResumeThunk",
@@ -43,7 +55,168 @@ def canonical_plugin_key(value: str) -> str:
 
 
 def matches_function(value: str, name: str) -> bool:
-    return value == name or value.startswith(name + "(")
+    return value == name or value.startswith(name + "(") or value.startswith(name + "@")
+
+
+def _is_dependency_tick(node: Node) -> bool:
+    return node.class_name.startswith("[Python] ") and matches_function(node.method_name, DEPENDENCY_TICK)
+
+
+def _is_native_function(node: Node, names: tuple[str, ...]) -> bool:
+    return not node.class_name.startswith("[Python] ") and any(
+        matches_function(node.method_name, name) for name in names
+    )
+
+
+def _bridge_category(node: Node) -> str | None:
+    if _is_native_function(node, (CTYPES_CALLPROC,)):
+        return "ctypes"
+    if _is_native_function(node, FFI_CALLS):
+        return "libffi"
+    if _is_native_function(node, USLEEP_TARGETS):
+        return "usleep"
+    if _is_dependency_tick(node):
+        return "dependency_tick"
+    return None
+
+
+def _bridge_path_failure(path: tuple[Node, ...], bridge_node: Node) -> dict[str, object]:
+    methods = [getattr(node, "method_name", "") for node in path]
+    bridge_index = next((index for index, node in enumerate(path) if node is bridge_node), -1)
+    category = _bridge_category(bridge_node)
+    missing: list[str] = []
+    cursor = -1
+    if category not in {"ctypes", "libffi"} or bridge_index < 0:
+        missing.append("ctypes/libffi bridge node")
+    else:
+        tick_index = next(
+            (
+                index
+                for index, node in enumerate(path)
+                if index < bridge_index and _is_dependency_tick(node)
+            ),
+            None,
+        )
+        if tick_index is None:
+            missing.append("dependency_tick")
+        else:
+            cursor = tick_index
+    if category == "libffi" and bridge_index >= 0:
+        found = next(
+            (
+                index
+                for index, node in enumerate(path)
+                if cursor < index < bridge_index and _is_native_function(node, (CTYPES_CALLPROC,))
+            ),
+            None,
+        )
+        if found is None:
+            missing.append("ctypes")
+        else:
+            cursor = found
+
+    if category in {"ctypes", "libffi"} and bridge_index >= 0:
+        cursor = bridge_index
+    if category == "ctypes":
+        ffi_index = next(
+            (
+                index
+                for index, node in enumerate(path)
+                if index > cursor and _is_native_function(node, FFI_CALLS)
+            ),
+            None,
+        )
+        if ffi_index is None:
+            missing.append("libffi")
+        else:
+            cursor = ffi_index
+    first_usleep = next(
+        (
+            index
+            for index, node in enumerate(path)
+            if _is_native_function(node, USLEEP_TARGETS)
+        ),
+        None,
+    )
+    if first_usleep is not None and bridge_index > first_usleep:
+        missing.append("bridge before usleep")
+    usleep_index = next(
+        (
+            index
+            for index, node in enumerate(path)
+            if index > cursor and _is_native_function(node, USLEEP_TARGETS)
+        ),
+        None,
+    )
+    if usleep_index is None:
+        missing.append("usleep")
+    return {"path": methods, "missing": missing}
+
+
+def validate_user_ctypes_branches(profile: ProfilePayload) -> dict[str, object]:
+    """Validate every retained ctypes/libffi node against the user fixture branch."""
+
+    paths = list(iter_leaf_paths(profile))
+    occurrences: dict[int, list[tuple[str, tuple[Node, ...]]]] = {}
+    bridge_nodes: list[tuple[str, Node]] = []
+    ctypes_methods: list[str] = []
+    ffi_methods: list[str] = []
+    usleep_methods: list[str] = []
+    for thread in profile.threads:
+        for node in thread.nodes:
+            category = _bridge_category(node)
+            if category == "ctypes":
+                ctypes_methods.append(node.method_name)
+            elif category == "libffi":
+                ffi_methods.append(node.method_name)
+            elif category == "usleep":
+                usleep_methods.append(node.method_name)
+            if category in {"ctypes", "libffi"}:
+                bridge_nodes.append((thread.name, node))
+    for thread_name, path in paths:
+        for node in path:
+            if _bridge_category(node) in {"ctypes", "libffi"}:
+                occurrences.setdefault(id(node), []).append((thread_name, path))
+
+    failures: list[dict[str, object]] = []
+    valid_occurrences = 0
+    for thread_name, node in bridge_nodes:
+        node_occurrences = occurrences.get(id(node), [])
+        if not node_occurrences:
+            failures.append(
+                {
+                    "thread": thread_name,
+                    "node": node.method_name,
+                    "path": [],
+                    "missing": ["reachable profile-tree ancestry"],
+                }
+            )
+            continue
+        for occurrence_thread, path in node_occurrences:
+            failure = _bridge_path_failure(path, node)
+            if failure["missing"]:
+                failure["thread"] = occurrence_thread
+                failure["node"] = node.method_name
+                failures.append(failure)
+            else:
+                valid_occurrences += 1
+
+    if not ctypes_methods:
+        failures.append({"missing": ["ctypes"], "path": []})
+    if not ffi_methods:
+        failures.append({"missing": ["libffi"], "path": []})
+    return {
+        "status": "PASS" if not failures else "FAIL",
+        "ctypes_node_count": len(ctypes_methods),
+        "ffi_node_count": len(ffi_methods),
+        "bridge_node_count": len(bridge_nodes),
+        "bridge_occurrence_count": sum(len(occurrences.get(id(node), [])) for _thread, node in bridge_nodes),
+        "valid_branch_occurrence_count": valid_occurrences,
+        "ctypes_methods": sorted(set(ctypes_methods)),
+        "ffi_methods": sorted(set(ffi_methods)),
+        "usleep_methods": sorted(set(usleep_methods)),
+        "failures": failures,
+    }
 
 
 class PythonDependencyValidation(base_validation.PythonAttributionValidation):
@@ -163,30 +336,29 @@ class PythonDependencyValidation(base_validation.PythonAttributionValidation):
             if any(matches_function(node.method_name, thunk) for thunk in OBSERVER_THUNKS)
         ]
         if observer_nodes:
-            raise RuntimeError(f"Spark PEP 669 observer callbacks leaked into visible profile tree: {observer_nodes}")
+            detail = f"Spark PEP 669 observer callbacks leaked into visible profile tree: {observer_nodes}"
+            self.check(
+                "python-observer-thunks-filtered",
+                "FAIL",
+                detail,
+                observer_nodes=sorted(set(observer_nodes)),
+            )
+            raise RuntimeError(detail)
         self.check("python-observer-thunks-filtered", "PASS", observer_nodes=0)
 
-        ctypes_nodes = [node.method_name for node in nodes if matches_function(node.method_name, "_ctypes_callproc")]
-        ffi_nodes = [
-            node.method_name
-            for node in nodes
-            if any(
-                matches_function(node.method_name, name)
-                for name in ("ffi_call", "ffi_call_int", "ffi_call_unix64", "ffi_call_win64")
-            )
-        ]
-        if not ctypes_nodes or not ffi_nodes:
-            raise RuntimeError(
-                "normal user ctypes/libffi path was not retained in the real profile: "
-                f"ctypes={ctypes_nodes}, ffi={ffi_nodes}"
-            )
+        bridge_oracle = validate_user_ctypes_branches(profile)
+        if bridge_oracle["status"] != "PASS":
+            detail = "invalid user ctypes/libffi branch: " + repr(bridge_oracle["failures"])
+            self.check("python-user-ctypes-retained", "FAIL", detail, branch_oracle=bridge_oracle)
+            raise RuntimeError(detail)
         self.check(
             "python-user-ctypes-retained",
             "PASS",
-            ctypes_nodes=len(ctypes_nodes),
-            ffi_nodes=len(ffi_nodes),
-            ctypes_methods=sorted(set(ctypes_nodes)),
-            ffi_methods=sorted(set(ffi_nodes)),
+            ctypes_nodes=bridge_oracle["ctypes_node_count"],
+            ffi_nodes=bridge_oracle["ffi_node_count"],
+            ctypes_methods=bridge_oracle["ctypes_methods"],
+            ffi_methods=bridge_oracle["ffi_methods"],
+            branch_oracle=bridge_oracle,
         )
         return summary
 
@@ -200,7 +372,7 @@ def main() -> int:
         "linux",
         args.bot,
         1,
-        "chunk-walk",
+        DEPENDENCY_SCENARIO,
         "dependency",
         args.profile_seconds,
     )
