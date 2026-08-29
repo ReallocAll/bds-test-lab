@@ -17,31 +17,34 @@ permissions:
 env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
-  EXPECTED_SPARK_SHA: "15b79e814ee6542f8a2382df09353e9c2009c8d1"
+  BASELINE_SHA: "15b79e814ee6542f8a2382df09353e9c2009c8d1"
+  CURRENT_SHA: "78314038b67d506ec48da9a61181c0048fb3658e"
   BOT_REF: "b8c4875bb1fafaa5dd9b8e91b16b613af47bf37a"
   BDS_TEST_BOT_SCENARIO_FILE: bot-src/scenarios/mixed-actions.json
   DURATION_SECONDS: "180"
 
 jobs:
-  baseline-python:
-    name: Linux controlled Python baseline
+  paired-python:
+    name: Linux paired Python attribution A/B
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
       - name: Checkout lab
         uses: actions/checkout@v7
 
-      - name: Verify exact Spark artifact build
+      - name: Verify exact Spark artifacts
         shell: bash
         run: |
           set -euo pipefail
-          json="$(gh api "repos/ReallocAll/spark/actions/runs?head_sha=${EXPECTED_SPARK_SHA}&status=success&per_page=30")"
-          run_id="$(jq -r '[.workflow_runs[] | select(.name == "Build" and .conclusion == "success")][0].id // empty' <<<"$json")"
-          if [[ -z "$run_id" ]]; then
-            echo "No successful Build run for ${EXPECTED_SPARK_SHA}" >&2
-            exit 1
-          fi
-          echo "Exact Spark Build run: $run_id"
+          for sha in "$BASELINE_SHA" "$CURRENT_SHA"; do
+            json="$(gh api "repos/ReallocAll/spark/actions/runs?head_sha=${sha}&status=success&per_page=30")"
+            run_id="$(jq -r '[.workflow_runs[] | select(.name == "Build" and .conclusion == "success")][0].id // empty' <<<"$json")"
+            if [[ -z "$run_id" ]]; then
+              echo "No successful Build run for ${sha}" >&2
+              exit 1
+            fi
+            echo "Exact Spark Build: sha=$sha run=$run_id"
+          done
 
       - name: Checkout exact bot
         uses: actions/checkout@v7
@@ -76,20 +79,15 @@ jobs:
       - name: Install benchmark dependencies
         run: python -m pip install --disable-pip-version-check psutil packaging hatchling
 
-      - name: Require exact Spark artifact
-        run: >-
-          python -m controller.assert_spark_artifact
-          --platform linux
-          --expected-sha ${{ env.EXPECTED_SPARK_SHA }}
-
-      - name: Run five controlled repetitions
+      - name: Run five interleaved baseline/current pairs
         shell: bash
         run: |
           set +e
           set -uo pipefail
           mkdir -p evidence
-          printf 'rep\tmode\tlabel\tcontroller_exit_code\tstatus\n' > evidence/case-status.tsv
-          modes=(off native shadow full stress)
+          printf 'rep\tmode\ttarget\tsha\tlabel\tcontroller_exit_code\tstatus\n' > evidence/case-status.tsv
+          overall=0
+          modes=(off shadow full)
 
           copy_if_present() {
             local source="$1"
@@ -98,269 +96,190 @@ jobs:
             cp -a "$source" "$target"
           }
 
-          for rep in 1 2 3 4 5; do
-            offset=$((rep - 1))
-            for step in 0 1 2 3 4; do
-              index=$(((offset + step) % 5))
-              mode="${modes[$index]}"
-              label="rep${rep}-${mode}"
-              case_dir="evidence/$label"
-              echo "===== ${label} ====="
-              mkdir -p "$case_dir"
-              cleanup_failed=0
-              rm -rf downloads work hotspot-wheel || cleanup_failed=1
-              rm -f metadata.json bds.log endstone.log spark.log test-results.json \
-                python-attribution-result.json python-attribution-performance.json \
-                python-attribution-tick-metrics.json python-attribution-performance.sparkprofile \
-                python-attribution-bots-linux-5-chunk-walk.log failure-diagnostics.txt || cleanup_failed=1
+          run_case() {
+            local rep="$1" mode="$2" target="$3" sha="$4"
+            local label="rep${rep}-${mode}-${target}"
+            local case_dir="evidence/$label"
+            echo "===== $label sha=$sha ====="
+            mkdir -p "$case_dir"
+            rm -rf downloads work hotspot-wheel
+            rm -f metadata.json bds.log endstone.log spark.log test-results.json \
+              python-attribution-result.json python-attribution-performance.json \
+              python-attribution-tick-metrics.json python-attribution-performance.sparkprofile \
+              python-attribution-bots-linux-5-chunk-walk.log failure-diagnostics.txt
 
-              python -m controller.python_attribution_performance_runner \
-                --platform linux \
-                --bot dist/bds-test-bot \
-                --count 5 \
-                --mode "$mode" \
-                --duration-seconds "$DURATION_SECONDS" 2>&1 | tee "$case_dir/controller-output.log"
-              pipeline_status=("${PIPESTATUS[@]}")
-              controller_exit="${pipeline_status[0]}"
-              tee_exit="${pipeline_status[1]}"
-
-              copy_failed=0
-              for path in metadata.json bds.log endstone.log spark.log test-results.json \
-                python-attribution-result.json python-attribution-performance.json \
-                python-attribution-tick-metrics.json python-attribution-performance.sparkprofile \
-                python-attribution-bots-linux-5-chunk-walk.log failure-diagnostics.txt; do
-                if [[ -e "$path" ]] && ! copy_if_present "$path" "$case_dir/"; then
-                  echo "::warning::Unable to preserve $path for $label"
-                  copy_failed=1
-                fi
-              done
-
-              if [[ -f work/linux/bedrock_server/version.txt ]] && ! copy_if_present \
-                work/linux/bedrock_server/version.txt "$case_dir/bds-version.txt"; then
-                echo "::warning::Unable to preserve BDS version for $label"
+            EXPECTED_SPARK_SHA="$sha" python -m controller.python_attribution_performance_runner \
+              --platform linux \
+              --bot dist/bds-test-bot \
+              --count 5 \
+              --mode "$mode" \
+              --duration-seconds "$DURATION_SECONDS" 2>&1 | tee "$case_dir/controller-output.log"
+            pipeline_status=("${PIPESTATUS[@]}")
+            controller_exit="${pipeline_status[0]}"
+            tee_exit="${pipeline_status[1]}"
+            copy_failed=0
+            for path in metadata.json bds.log endstone.log spark.log test-results.json \
+              python-attribution-result.json python-attribution-performance.json \
+              python-attribution-tick-metrics.json python-attribution-performance.sparkprofile \
+              python-attribution-bots-linux-5-chunk-walk.log failure-diagnostics.txt; do
+              if [[ -e "$path" ]] && ! copy_if_present "$path" "$case_dir/"; then
                 copy_failed=1
               fi
-              for path in work/linux/bedrock_server/server.properties \
-                work/linux/bedrock_server/crash_reports hotspot-wheel; do
-                if [[ -e "$path" ]] && ! copy_if_present "$path" "$case_dir/"; then
-                  echo "::warning::Unable to preserve $path for $label"
-                  copy_failed=1
-                fi
-              done
-              status=PASS
-              if [[ "$controller_exit" -ne 0 || "$tee_exit" -ne 0 || "$cleanup_failed" -ne 0 || "$copy_failed" -ne 0 ]]; then
-                status=FAIL
+            done
+            if [[ -f work/linux/bedrock_server/version.txt ]]; then
+              copy_if_present work/linux/bedrock_server/version.txt "$case_dir/bds-version.txt" || copy_failed=1
+            fi
+            if [[ -f work/linux/bedrock_server/server.properties ]]; then
+              copy_if_present work/linux/bedrock_server/server.properties "$case_dir/server.properties" || copy_failed=1
+            fi
+            status=PASS
+            if [[ "$controller_exit" -ne 0 || "$tee_exit" -ne 0 || "$copy_failed" -ne 0 ]]; then
+              status=FAIL
+              overall=1
+            fi
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+              "$rep" "$mode" "$target" "$sha" "$label" "$controller_exit" "$status" >> evidence/case-status.tsv
+          }
+
+          for rep in 1 2 3 4 5; do
+            for mode in "${modes[@]}"; do
+              if (( rep % 2 == 1 )); then
+                run_case "$rep" "$mode" baseline "$BASELINE_SHA"
+                run_case "$rep" "$mode" current "$CURRENT_SHA"
+              else
+                run_case "$rep" "$mode" current "$CURRENT_SHA"
+                run_case "$rep" "$mode" baseline "$BASELINE_SHA"
               fi
-              printf '%s\t%s\t%s\t%s\t%s\n' "$rep" "$mode" "$label" "$controller_exit" "$status" >> evidence/case-status.tsv
-              printf 'case=%s controller_exit=%s cleanup_failed=%s evidence_copy_failed=%s status=%s\n' \
-                "$label" "$controller_exit" "$cleanup_failed" "$copy_failed" "$status" > "$case_dir/status.txt"
             done
           done
+          exit "$overall"
 
-      - name: Summarize repetitions
-        if: always()
-        shell: bash
-        run: |
-          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
-          import json
-          import os
-          import pathlib
-          import statistics
-
-          expected_modes = ('off', 'native', 'shadow', 'full', 'stress')
-          expected_repetitions = 5
-          status_path = pathlib.Path('evidence/case-status.tsv')
-          statuses = {}
-          malformed_status = []
-          if status_path.exists():
-              for line_number, line in enumerate(status_path.read_text(encoding='utf-8').splitlines(), 1):
-                  if not line or line.startswith('rep\t'):
-                      continue
-                  fields = line.split('\t')
-                  if len(fields) != 5:
-                      malformed_status.append(f'line {line_number}: {line!r}')
-                      continue
-                  try:
-                      rep = int(fields[0])
-                      exit_code = int(fields[3])
-                  except ValueError:
-                      malformed_status.append(f'line {line_number}: {line!r}')
-                      continue
-                  key = (rep, fields[1])
-                  if key in statuses:
-                      malformed_status.append(f'duplicate case: {fields[2]}')
-                  statuses[key] = {
-                      'rep': rep,
-                      'mode': fields[1],
-                      'label': fields[2],
-                      'exit_code': exit_code,
-                      'status': fields[4],
-                  }
-
-          root = pathlib.Path('evidence')
-          grouped = {mode: [] for mode in expected_modes}
-          metadata = []
-          evidence_problems = []
-          print('# Spark controlled baseline')
-          print(f'Exact Spark SHA: `{os.environ.get("EXPECTED_SPARK_SHA", "")}`')
-          if malformed_status:
-              print('\nMalformed case-status.tsv entries:')
-              for item in malformed_status:
-                  print(f'- {item}')
-
-          for mode in expected_modes:
-              rows = []
-              missing = []
-              failed = []
-              for rep in range(1, expected_repetitions + 1):
-                  key = (rep, mode)
-                  label = f'rep{rep}-{mode}'
-                  row = statuses.get(key)
-                  if row is None:
-                      missing.append(label)
-                      continue
-                  rows.append(row)
-                  result_path = root / label / 'python-attribution-performance.json'
-                  if row['status'] != 'PASS' or row['exit_code'] != 0:
-                      detail = f"{label}: exit={row['exit_code']} status={row['status']}"
-                      if result_path.exists():
-                          try:
-                              result = json.loads(result_path.read_text(encoding='utf-8'))
-                              detail += f" failed_stage={result.get('failed_stage')} error={result.get('error_summary')}"
-                          except (OSError, json.JSONDecodeError) as exc:
-                              detail += f' result_read_error={exc}'
-                      failed.append(detail)
-
-                  if not result_path.exists():
-                      evidence_problems.append(f'{label}: missing python-attribution-performance.json')
-                      continue
-                  try:
-                      data = json.loads(result_path.read_text(encoding='utf-8'))
-                  except (OSError, json.JSONDecodeError) as exc:
-                      evidence_problems.append(f'{label}: unreadable python-attribution-performance.json ({exc})')
-                      continue
-                  if data.get('benchmark_mode') != mode:
-                      evidence_problems.append(
-                          f"{label}: result benchmark_mode={data.get('benchmark_mode')!r}, expected {mode!r}"
-                      )
-                  perf = data.get('performance')
-                  tick = perf.get('tick_statistics') if isinstance(perf, dict) else None
-                  if row['status'] == 'PASS' and row['exit_code'] == 0 and isinstance(perf, dict) and isinstance(tick, dict):
-                      grouped[mode].append((perf, tick, label))
-                  elif row['status'] == 'PASS':
-                      evidence_problems.append(f'{label}: missing performance or tick measurements')
-                  meta_path = result_path.parent / 'metadata.json'
-                  if meta_path.exists():
-                      try:
-                          metadata.append(json.loads(meta_path.read_text(encoding='utf-8')))
-                      except (OSError, json.JSONDecodeError) as exc:
-                          evidence_problems.append(f'{label}: unreadable metadata.json ({exc})')
-
-              print(
-                  f'\n## {mode} (expected_rows={expected_repetitions} recorded_rows={len(rows)} '
-                  f'measured_runs={len(grouped[mode])})'
-              )
-              if missing:
-                  print('missing cases: ' + ', '.join(missing))
-              if failed:
-                  print('failed cases:')
-                  for detail in failed:
-                      print(f'- {detail}')
-              if not missing and not failed:
-                  print('case status: all PASS')
-              if not grouped[mode]:
-                  continue
-              rows = grouped[mode]
-              metrics = {
-                  'CPU % one core': [float(p['process_cpu_percent_of_one_core']) for p, _, _ in rows],
-                  'CPU ms/tick': [float(p['cpu_ms_per_tick']) for p, _, _ in rows],
-                  'MSPT mean': [float(t['mspt_mean']) for _, t, _ in rows],
-                  'MSPT p95': [float(t['mspt_p95']) for _, t, _ in rows],
-                  'MSPT p99': [float(t['mspt_p99']) for _, t, _ in rows],
-                  'RSS mean MiB': [float(p['rss_mean_bytes']) / 1048576 for p, _, _ in rows],
-              }
-              for name, values in metrics.items():
-                  mean = statistics.fmean(values)
-                  median = statistics.median(values)
-                  sd = statistics.stdev(values) if len(values) > 1 else 0.0
-                  cv = sd / mean * 100 if mean else 0.0
-                  print(f'- {name}: mean={mean:.4f}, median={median:.4f}, sd={sd:.4f}, CV={cv:.2f}%, min={min(values):.4f}, max={max(values):.4f}')
-              urls = [p.get('viewer_url') for p, _, _ in rows if p.get('viewer_url')]
-              if urls:
-                  print('- Profiles: ' + ', '.join(urls))
-          if evidence_problems:
-              print('\nMissing or invalid evidence:')
-              for item in evidence_problems:
-                  print(f'- {item}')
-          if metadata:
-              components = metadata[-1].get('components', {})
-              for name in ('endstone', 'spark'):
-                  component = components.get(name) or {}
-                  artifact = component.get('artifact') or {}
-                  print(f'{name}: sha={component.get("sha")} run={component.get("run_id")} artifact={artifact.get("id")} name={artifact.get("name")}')
-          PY
-
-      - name: Upload baseline evidence
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: spark-performance-baseline-${{ github.run_id }}
-          path: evidence
-          if-no-files-found: warn
-          retention-days: 30
-
-      - name: Fail if any repetition failed or is missing
+      - name: Validate paired evidence
         if: always()
         shell: bash
         run: |
           python - <<'PY'
+          import json
           import pathlib
+          import statistics
+          import sys
 
-          expected = {(rep, mode): f'rep{rep}-{mode}' for rep in range(1, 6) for mode in ('off', 'native', 'shadow', 'full', 'stress')}
-          status_path = pathlib.Path('evidence/case-status.tsv')
-          rows = {}
+          root = pathlib.Path('evidence')
+          status_path = root / 'case-status.tsv'
           problems = []
-          if not status_path.exists():
-              problems.append('missing evidence/case-status.tsv')
-          else:
-              for line_number, line in enumerate(status_path.read_text(encoding='utf-8').splitlines(), 1):
-                  if not line or line.startswith('rep\t'):
-                      continue
-                  fields = line.split('\t')
-                  if len(fields) != 5:
-                      problems.append(f'malformed case-status.tsv line {line_number}')
-                      continue
-                  try:
-                      key = (int(fields[0]), fields[1])
-                      exit_code = int(fields[3])
-                  except ValueError:
-                      problems.append(f'malformed case-status.tsv line {line_number}')
-                      continue
-                  if key in rows:
-                      problems.append(f'duplicate case-status row for {fields[2]}')
-                  rows[key] = (fields[2], exit_code, fields[4])
-
-          for key, label in sorted(expected.items()):
-              row = rows.get(key)
-              if row is None:
-                  problems.append(f'missing case: {label}')
+          if not status_path.is_file():
+              raise SystemExit('missing case-status.tsv')
+          rows = []
+          for line in status_path.read_text(encoding='utf-8').splitlines()[1:]:
+              if not line:
                   continue
-              recorded_label, exit_code, status = row
-              if recorded_label != label:
-                  problems.append(f'{label}: recorded label={recorded_label}')
+              fields = line.split('\t')
+              if len(fields) != 7:
+                  problems.append(f'malformed status row: {line!r}')
+                  continue
+              rep, mode, target, sha, label, exit_code, status = fields
+              rows.append((int(rep), mode, target, sha, label, int(exit_code), status))
+          expected = {(rep, mode, target) for rep in range(1, 6) for mode in ('off', 'shadow', 'full') for target in ('baseline', 'current')}
+          actual = {(r[0], r[1], r[2]) for r in rows}
+          if actual != expected:
+              problems.append(f'case set mismatch missing={sorted(expected-actual)} extra={sorted(actual-expected)}')
+          endstone_shas = set()
+          spark_shas = {'baseline': set(), 'current': set()}
+          metrics = {}
+          for rep, mode, target, sha, label, exit_code, status in rows:
+              case = root / label
+              result_path = case / 'python-attribution-performance.json'
+              meta_path = case / 'metadata.json'
               if exit_code != 0 or status != 'PASS':
-                  problems.append(f'{label}: controller_exit={exit_code} status={status}')
-              case_dir = pathlib.Path('evidence') / label
-              if not case_dir.is_dir():
-                  problems.append(f'{label}: missing evidence directory')
-              for required in ('controller-output.log', 'python-attribution-performance.json'):
-                  if not (case_dir / required).is_file():
-                      problems.append(f'{label}: missing {required}')
+                  problems.append(f'{label}: exit={exit_code} status={status}')
+                  continue
+              if not result_path.is_file() or not meta_path.is_file():
+                  problems.append(f'{label}: missing result or metadata')
+                  continue
+              data = json.loads(result_path.read_text(encoding='utf-8'))
+              meta = json.loads(meta_path.read_text(encoding='utf-8'))
+              components = meta.get('components', {})
+              observed_spark = str((components.get('spark') or {}).get('sha') or '')
+              observed_endstone = str((components.get('endstone') or {}).get('sha') or '')
+              spark_shas[target].add(observed_spark)
+              endstone_shas.add(observed_endstone)
+              if observed_spark != sha:
+                  problems.append(f'{label}: Spark SHA {observed_spark} != expected {sha}')
+              perf = data.get('performance') or {}
+              tick = perf.get('tick_statistics') or {}
+              metrics[(rep, mode, target)] = {
+                  'cpu': float(perf['process_cpu_percent_of_one_core']),
+                  'cpu_mspt': float(perf['cpu_ms_per_tick']),
+                  'mspt': float(tick['mspt_mean']),
+                  'viewer': perf.get('viewer_url'),
+                  'shadow': perf.get('shadow_only_diagnostics'),
+              }
+          if len(endstone_shas) != 1:
+              problems.append(f'Endstone SHA drift across paired run: {sorted(endstone_shas)}')
+          if spark_shas['baseline'] != {'15b79e814ee6542f8a2382df09353e9c2009c8d1'}:
+              problems.append(f'baseline SHA mismatch: {spark_shas["baseline"]}')
+          if spark_shas['current'] != {'78314038b67d506ec48da9a61181c0048fb3658e'}:
+              problems.append(f'current SHA mismatch: {spark_shas["current"]}')
 
+          summary = {'endstone_shas': sorted(endstone_shas), 'metrics': {}}
+          for mode in ('off', 'shadow', 'full'):
+              mode_summary = {}
+              for target in ('baseline', 'current'):
+                  vals = [metrics[(rep, mode, target)]['cpu'] for rep in range(1, 6) if (rep, mode, target) in metrics]
+                  if len(vals) == 5:
+                      mode_summary[target] = {
+                          'cpu_mean': statistics.fmean(vals),
+                          'cpu_median': statistics.median(vals),
+                          'cpu_sd': statistics.stdev(vals),
+                          'cpu_cv_percent': statistics.stdev(vals) / statistics.fmean(vals) * 100.0,
+                          'cpu_min': min(vals),
+                          'cpu_max': max(vals),
+                      }
+              deltas = []
+              for rep in range(1, 6):
+                  b = metrics.get((rep, mode, 'baseline'))
+                  c = metrics.get((rep, mode, 'current'))
+                  if b and c:
+                      deltas.append(c['cpu'] - b['cpu'])
+              if len(deltas) == 5:
+                  mode_summary['paired_current_minus_baseline'] = {
+                      'values': deltas,
+                      'mean': statistics.fmean(deltas),
+                      'median': statistics.median(deltas),
+                      'sd': statistics.stdev(deltas),
+                  }
+              summary['metrics'][mode] = mode_summary
+
+          # Difference-in-differences isolates Python shadow bookkeeping from workload drift.
+          did = []
+          for rep in range(1, 6):
+              bo = metrics.get((rep, 'off', 'baseline'))
+              bs = metrics.get((rep, 'shadow', 'baseline'))
+              co = metrics.get((rep, 'off', 'current'))
+              cs = metrics.get((rep, 'shadow', 'current'))
+              if bo and bs and co and cs:
+                  did.append((cs['cpu'] - co['cpu']) - (bs['cpu'] - bo['cpu']))
+          if len(did) == 5:
+              summary['shadow_overhead_difference_in_differences'] = {
+                  'values': did,
+                  'mean': statistics.fmean(did),
+                  'median': statistics.median(did),
+                  'sd': statistics.stdev(did),
+              }
+          (root / 'paired-summary.json').write_text(json.dumps(summary, indent=2, sort_keys=True), encoding='utf-8')
+          print(json.dumps(summary, indent=2, sort_keys=True))
           if problems:
-              print('Repetition validation failed after all scheduled cases:')
+              print('Evidence validation failed:', file=sys.stderr)
               for problem in problems:
-                  print(f'- {problem}')
+                  print(f'- {problem}', file=sys.stderr)
               raise SystemExit(1)
-          print('All 25 scheduled repetitions completed successfully.')
           PY
+
+      - name: Upload paired evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: spark-performance-paired-${{ github.run_id }}
+          path: evidence
+          if-no-files-found: error
+          retention-days: 30
