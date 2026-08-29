@@ -1,5 +1,6 @@
 name: Spark Python Attribution Performance
 
+# Re-run after persisting low-overhead per-tick benchmark metrics.
 on:
   push:
     branches:
