@@ -9,7 +9,6 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
   ready:
@@ -17,5 +16,5 @@ jobs:
     steps:
       - name: Mark PR 19 ready
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.REPO_PAT }}
         run: gh pr ready 19 --repo ReallocAll/bds-test-lab
