@@ -5,9 +5,10 @@ import argparse
 import json
 import pathlib
 import shutil
+import sys
 
 from controller import run_test
-from controller.python_attribution_validation import PythonAttributionValidation
+from controller.python_attribution_validation import PLUGIN_SOURCE, PythonAttributionValidation
 from providers import artifact_provider
 
 ENDSTONE_RUN_ID = 32992839821
@@ -54,12 +55,73 @@ def _resolve_with_cp311(
     return result
 
 
+class Python311FallbackValidation(PythonAttributionValidation):
+    def install_artifacts(self) -> None:
+        self.metadata = _resolve_with_cp311(
+            self.platform,
+            self.downloads,
+            self.metadata_path,
+            spark_sha=None,
+        )
+        self.check("artifact-discovery", "PASS")
+
+        endstone_root = self.downloads / "endstone" / "payload"
+        wheel = run_test.locate_one(endstone_root, ["endstone-*-cp311-cp311-*.whl"])
+        if wheel.name != ENDSTONE_ARTIFACT_NAME:
+            raise RuntimeError(f"unexpected Endstone cp311 wheel: {wheel.name}")
+        self.check("endstone-wheel-located", "PASS", str(wheel.relative_to(self.root)))
+        run_test.run_checked(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--disable-pip-version-check",
+                "--force-reinstall",
+                str(wheel),
+            ],
+            timeout=300,
+        )
+
+        spark_root = self.downloads / "spark" / "payload"
+        spark_binary = run_test.locate_one(spark_root, ["endstone_spark.so"])
+        self.server_dir.mkdir(parents=True, exist_ok=True)
+        plugin_dir = self.server_dir / "plugins"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        spark_target = plugin_dir / spark_binary.name
+        shutil.copy2(spark_binary, spark_target)
+        self.check("spark-plugin-deployed", "PASS", str(spark_target.relative_to(self.root)))
+
+        wheel_dir = self.root / "hotspot-wheel"
+        shutil.rmtree(wheel_dir, ignore_errors=True)
+        wheel_dir.mkdir(parents=True, exist_ok=True)
+        run_test.run_checked(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "wheel",
+                "--disable-pip-version-check",
+                "--no-deps",
+                "--wheel-dir",
+                str(wheel_dir),
+                str(PLUGIN_SOURCE),
+            ],
+            timeout=180,
+        )
+        hotspot_wheels = sorted(wheel_dir.glob("endstone_spark_python_hotspot_test-*.whl"))
+        if len(hotspot_wheels) != 1:
+            raise RuntimeError(f"Expected one hotspot plugin wheel, got: {hotspot_wheels}")
+        hotspot_target = plugin_dir / hotspot_wheels[0].name
+        shutil.copy2(hotspot_wheels[0], hotspot_target)
+        self.check("python-hotspot-plugin-installed", "PASS", str(hotspot_target.relative_to(self.root)))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--profile-seconds", type=int, default=60)
     args = parser.parse_args()
-    run_test.resolve_artifacts = _resolve_with_cp311
-    validator = PythonAttributionValidation(
+    validator = Python311FallbackValidation(
         "linux",
         None,
         0,
