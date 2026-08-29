@@ -41,6 +41,7 @@ class ProfilePayload:
     sampler_mode: int = -1
     interval: int = 0
     extra_metadata: dict[str, str] = field(default_factory=dict)
+    sources: dict[str, str] = field(default_factory=dict)
     class_sources: dict[str, str] = field(default_factory=dict)
     threads: list[ThreadTree] = field(default_factory=list)
 
@@ -126,6 +127,20 @@ def _map_entry(value: bytes) -> tuple[str, str]:
     return key, val
 
 
+def _source_entry(value: bytes) -> tuple[str, str]:
+    key = ""
+    display_name = ""
+    for number, wire, item in _fields(value):
+        if number == 1 and wire == 2:
+            key = _text(item)
+        elif number == 2 and wire == 2:
+            for metadata_number, metadata_wire, metadata_item in _fields(item):
+                if metadata_number == 1 and metadata_wire == 2:
+                    display_name = _text(metadata_item)
+                    break
+    return key, display_name
+
+
 def _parse_metadata(value: bytes, profile: ProfilePayload) -> None:
     for number, wire, item in _fields(value):
         if number == 2 and wire == 0:
@@ -134,6 +149,10 @@ def _parse_metadata(value: bytes, profile: ProfilePayload) -> None:
             profile.interval = int(item)
         elif number == 11 and wire == 0:
             profile.end_time_ms = int(item)
+        elif number == 13 and wire == 2:
+            key, display_name = _source_entry(item)
+            if key:
+                profile.sources[key] = display_name
         elif number == 14 and wire == 2:
             key, val = _map_entry(item)
             if key:
@@ -264,6 +283,7 @@ def profile_summary(profile: ProfilePayload) -> dict[str, object]:
         "python_node_count": len(python),
         "python_methods_ms": dict(sorted(methods.items(), key=lambda item: item[1], reverse=True)),
         "python_threads": sorted({thread for thread, _node in python}),
+        "sources": profile.sources,
         "class_sources": profile.class_sources,
         "python_diagnostics": {
             key: value for key, value in profile.extra_metadata.items() if key.startswith("Python ")
