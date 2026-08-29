@@ -1,0 +1,167 @@
+name: Spark Idle Performance
+
+on:
+  push:
+    branches:
+      - perf/spark-idle-baseline
+  workflow_dispatch:
+
+concurrency:
+  group: spark-idle-performance-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+  EXPECTED_SPARK_SHA: "15b79e814ee6542f8a2382df09353e9c2009c8d1"
+  BOT_REF: "b8c4875bb1fafaa5dd9b8e91b16b613af47bf37a"
+  BDS_TEST_BOT_SCENARIO_FILE: bot-src/scenarios/mixed-actions.json
+  DURATION_SECONDS: "180"
+
+jobs:
+  linux:
+    name: Linux control / idle / monitoring
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - name: Checkout lab
+        uses: actions/checkout@v7
+
+      - name: Checkout exact bot
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/bds-test-bot
+          ref: ${{ env.BOT_REF }}
+          path: bot-src
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Build exact bot
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cd bot-src
+          test "$(git rev-parse HEAD)" = "$BOT_REF"
+          go mod download
+          go test ./...
+          go build -trimpath -o ../dist/bds-test-bot ./cmd/bds-test-bot
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install benchmark dependencies
+        run: python -m pip install --disable-pip-version-check psutil packaging hatchling
+
+      - name: Require exact Spark artifact
+        run: >-
+          python -m controller.assert_spark_artifact
+          --platform linux
+          --expected-sha ${{ env.EXPECTED_SPARK_SHA }}
+
+      - name: Run five controlled repetitions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          modes=(control idle monitoring)
+          for rep in 1 2 3 4 5; do
+            offset=$((rep - 1))
+            for step in 0 1 2; do
+              index=$(((offset + step) % 3))
+              mode="${modes[$index]}"
+              label="rep${rep}-${mode}"
+              echo "===== ${label} ====="
+              rm -rf downloads work
+              rm -f metadata.json bds.log endstone.log spark.log test-results.json \
+                fleet-spark-result.json spark-idle-performance.json \
+                fleet-linux-5-chunk-walk.log failure-diagnostics.txt
+              python -m controller.spark_idle_performance \
+                --platform linux \
+                --bot dist/bds-test-bot \
+                --count 5 \
+                --mode "$mode" \
+                --duration-seconds "$DURATION_SECONDS"
+              mkdir -p "evidence/$label"
+              for path in metadata.json bds.log endstone.log spark.log test-results.json \
+                fleet-spark-result.json spark-idle-performance.json \
+                fleet-linux-5-chunk-walk.log failure-diagnostics.txt; do
+                if [[ -e "$path" ]]; then
+                  cp -a "$path" "evidence/$label/"
+                fi
+              done
+              if [[ -f work/linux/bedrock_server/version.txt ]]; then
+                cp -a work/linux/bedrock_server/version.txt "evidence/$label/bds-version.txt"
+              fi
+            done
+          done
+
+      - name: Summarize repetitions
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY' | tee idle-summary.txt
+          import json
+          import pathlib
+          import statistics
+
+          grouped = {}
+          metadata = []
+          for path in sorted(pathlib.Path('evidence').glob('rep*/spark-idle-performance.json')):
+              data = json.loads(path.read_text(encoding='utf-8'))
+              perf = data.get('performance') or {}
+              grouped.setdefault(data.get('benchmark_mode'), []).append(perf)
+              meta_path = path.parent / 'metadata.json'
+              if meta_path.exists():
+                  metadata.append(json.loads(meta_path.read_text(encoding='utf-8')))
+          print('Spark idle controlled baseline')
+          print(f'Exact Spark SHA: {pathlib.os.environ.get("EXPECTED_SPARK_SHA", "")}')
+          for mode in ('control', 'idle', 'monitoring'):
+              rows = grouped.get(mode, [])
+              print(f'\n[{mode}] runs={len(rows)}')
+              if not rows:
+                  continue
+              fields = {
+                  'process_cpu_percent_of_one_core': [float(r['process_cpu_percent_of_one_core']) for r in rows],
+                  'cpu_ms_per_tick': [float(r['cpu_ms_per_tick']) for r in rows],
+                  'observed_tps': [float(r['observed_tps']) for r in rows],
+                  'rss_mean_mib': [float(r['rss_mean_bytes']) / 1048576.0 for r in rows],
+                  'voluntary_ctx_per_second': [float(r['context_switches']['voluntary_per_second']) for r in rows],
+                  'involuntary_ctx_per_second': [float(r['context_switches']['involuntary_per_second']) for r in rows],
+              }
+              for name, values in fields.items():
+                  mean = statistics.fmean(values)
+                  median = statistics.median(values)
+                  sd = statistics.stdev(values) if len(values) > 1 else 0.0
+                  cv = sd / mean * 100.0 if mean else 0.0
+                  print(f'{name}: mean={mean:.5f} median={median:.5f} sd={sd:.5f} CV={cv:.2f}% min={min(values):.5f} max={max(values):.5f}')
+          if metadata:
+              components = metadata[-1].get('components', {})
+              for name in ('endstone', 'spark'):
+                  component = components.get(name) or {}
+                  artifact = component.get('artifact') or {}
+                  print(f'{name}: sha={component.get("sha")} run={component.get("run_id")} artifact={artifact.get("id")} name={artifact.get("name")}')
+          PY
+          cat idle-summary.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: spark-idle-performance-${{ github.run_id }}
+          path: |
+            evidence
+            idle-summary.txt
+          if-no-files-found: warn
+          retention-days: 30
