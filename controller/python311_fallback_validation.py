@@ -6,6 +6,7 @@ import json
 import pathlib
 import shutil
 import sys
+import zipfile
 
 from controller import run_test
 from controller.python_attribution_validation import PLUGIN_SOURCE, PythonAttributionValidation
@@ -55,6 +56,22 @@ def _resolve_with_cp311(
     return result
 
 
+def _repack_wheel_payload(payload: pathlib.Path, destination: pathlib.Path) -> pathlib.Path:
+    # GitHub Actions stores an uploaded wheel artifact as a ZIP whose root is the
+    # wheel payload itself (endstone/, endstone.libs/, *.dist-info/) rather than
+    # as a ZIP containing the original .whl file. Re-wrap those exact files in a
+    # wheel container so pip can install the exact cp311 build artifact.
+    dist_info = payload / "endstone-0.11.10.dev387.dist-info"
+    if not (dist_info / "WHEEL").is_file() or not (dist_info / "METADATA").is_file():
+        raise RuntimeError(f"exact cp311 artifact payload is not a wheel layout: {payload}")
+    destination.unlink(missing_ok=True)
+    with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in sorted(payload.rglob("*")):
+            if path.is_file():
+                archive.write(path, path.relative_to(payload).as_posix())
+    return destination
+
+
 class Python311FallbackValidation(PythonAttributionValidation):
     def install_artifacts(self) -> None:
         self.metadata = _resolve_with_cp311(
@@ -66,10 +83,14 @@ class Python311FallbackValidation(PythonAttributionValidation):
         self.check("artifact-discovery", "PASS")
 
         endstone_root = self.downloads / "endstone" / "payload"
-        wheel = run_test.locate_one(endstone_root, ["endstone-*-cp311-cp311-*.whl"])
-        if wheel.name != ENDSTONE_ARTIFACT_NAME:
-            raise RuntimeError(f"unexpected Endstone cp311 wheel: {wheel.name}")
-        self.check("endstone-wheel-located", "PASS", str(wheel.relative_to(self.root)))
+        wheel = _repack_wheel_payload(endstone_root, self.root / ENDSTONE_ARTIFACT_NAME)
+        self.check(
+            "endstone-wheel-located",
+            "PASS",
+            str(wheel.relative_to(self.root)),
+            source_artifact_id=ENDSTONE_ARTIFACT_ID,
+            reconstructed_container=True,
+        )
         run_test.run_checked(
             [
                 sys.executable,
