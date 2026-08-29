@@ -1,0 +1,109 @@
+name: Spark Python Attribution Windows Third Proof
+
+on:
+  push:
+    branches:
+      - test/python-attribution-validation
+    paths:
+      - ".github/workflows/python-attribution-windows-third.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+  EXPECTED_SPARK_SHA: "b10964200f8dc3ed64e434da8edac08eabb84c41"
+  BOT_REF: "b8c4875bb1fafaa5dd9b8e91b16b613af47bf37a"
+  PROFILE_SECONDS: "60"
+  BDS_TEST_BOT_SCENARIO_FILE: bot-src/scenarios/mixed-actions.json
+  SPARK_PYTHON_HOTSPOT_ITERATIONS: "48000"
+
+jobs:
+  proof:
+    name: windows / nested / mixed-actions / 1 bot
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - name: Checkout test lab
+        uses: actions/checkout@v7
+
+      - name: Require exact Spark CI
+        shell: bash
+        run: |
+          set -euo pipefail
+          json="$(gh api "repos/ReallocAll/spark/actions/runs?head_sha=${EXPECTED_SPARK_SHA}&per_page=30")"
+          test "$(jq -r '[.workflow_runs[] | select(.name == "Build")][0].conclusion // ""' <<<"$json")" = success
+          test "$(jq -r '[.workflow_runs[] | select(.name == "Python attribution")][0].conclusion // ""' <<<"$json")" = success
+
+      - name: Checkout exact bot
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/bds-test-bot
+          ref: ${{ env.BOT_REF }}
+          path: bot-src
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Build exact bot
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cd bot-src
+          test "$(git rev-parse HEAD)" = "$BOT_REF"
+          go mod download
+          go test ./...
+          go build -trimpath -o ../dist/bds-test-bot.exe ./cmd/bds-test-bot
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install validation dependencies
+        run: python -m pip install --disable-pip-version-check psutil packaging hatchling
+
+      - name: Require exact Spark artifact
+        run: >-
+          python -m controller.assert_spark_artifact
+          --platform windows
+          --expected-sha ${{ env.EXPECTED_SPARK_SHA }}
+
+      - name: Run real BDS Windows nested profile
+        run: >-
+          python -m controller.python_attribution_validation
+          --platform windows
+          --bot dist/bds-test-bot.exe
+          --count 1
+          --scenario chunk-walk
+          --mode nested
+          --profile-seconds 60
+
+      - name: Upload proof evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-attribution-windows-third-${{ github.run_id }}
+          path: |
+            metadata.json
+            bds.log
+            endstone.log
+            spark.log
+            test-results.json
+            python-attribution-result.json
+            python-attribution-profile-summary.json
+            python-attribution.sparkprofile
+            python-attribution-bots-windows-1-chunk-walk.log
+            failure-diagnostics.txt
+            work/windows/bedrock_server/server.properties
+            work/windows/bedrock_server/version.txt
+          if-no-files-found: warn
+          retention-days: 30
