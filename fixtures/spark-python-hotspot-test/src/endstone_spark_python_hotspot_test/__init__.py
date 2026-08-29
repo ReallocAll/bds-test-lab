@@ -3,7 +3,9 @@ import hashlib
 import json
 import os
 import threading
+import time
 from collections.abc import Generator
+from pathlib import Path
 
 from endstone.event import PlayerMoveEvent, event_handler
 from endstone.plugin import Plugin
@@ -22,6 +24,9 @@ class HotspotPlugin(Plugin):
         self._generator = self._generator_sequence()
         self._event_counter = 0
         self._dual_flip = False
+        self._tick_metrics: list[tuple[int, float, float]] = []
+        metrics_path = os.environ.get("SPARK_PYTHON_TICK_METRICS", "").strip()
+        self._metrics_path = Path(metrics_path) if metrics_path else None
         self.register_events(self)
         self.server.scheduler.run_task(self, self.light_tick, delay=0, period=1)
         if self.mode in {"worker", "mixed", "fleet"}:
@@ -38,9 +43,33 @@ class HotspotPlugin(Plugin):
         worker = self._worker
         if worker is not None:
             worker.join(timeout=2.0)
+        self._write_tick_metrics()
         self.logger.info("Spark Python hotspot test disabled")
 
+    def _record_tick_metrics(self) -> None:
+        if self._metrics_path is None:
+            return
+        self._tick_metrics.append(
+            (time.monotonic_ns(), float(self.server.current_mspt), float(self.server.current_tps))
+        )
+
+    def _write_tick_metrics(self) -> None:
+        if self._metrics_path is None:
+            return
+        payload = {
+            "metric": "endstone_server_current_mspt_tps",
+            "samples": [
+                {"monotonic_ns": timestamp, "mspt": mspt, "tps": tps}
+                for timestamp, mspt, tps in self._tick_metrics
+            ],
+        }
+        self._metrics_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self._metrics_path.with_suffix(self._metrics_path.suffix + ".tmp")
+        temporary.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+        temporary.replace(self._metrics_path)
+
     def light_tick(self) -> None:
+        self._record_tick_metrics()
         mode = self.mode
         if mode == "off":
             return
@@ -59,6 +88,8 @@ class HotspotPlugin(Plugin):
             self.async_hotspot(8)
         elif mode == "worker":
             self.cpu_hotspot(self.iterations // 8)
+        elif mode == "stress":
+            self.small_call_stress(256)
 
     def cpu_hotspot(self, iterations: int | None = None) -> int:
         return self.integer_hash_loop(iterations or self.iterations)
@@ -71,6 +102,16 @@ class HotspotPlugin(Plugin):
             value = ((value << 13) | (value >> 51)) & 0xFFFFFFFFFFFFFFFF
             value = (value * 0x94D049BB133111EB) & 0xFFFFFFFFFFFFFFFF
         return value
+
+    def small_call_stress(self, calls: int) -> int:
+        value = 0
+        for index in range(calls):
+            value ^= self._tiny_function(index, value)
+        return value
+
+    @staticmethod
+    def _tiny_function(index: int, value: int) -> int:
+        return ((index * 33) ^ (value >> 3) ^ 0x9E37) & 0xFFFFFFFF
 
     def nested_hotspot(self, iterations: int | None = None) -> int:
         return self.level_one(iterations or self.iterations)
