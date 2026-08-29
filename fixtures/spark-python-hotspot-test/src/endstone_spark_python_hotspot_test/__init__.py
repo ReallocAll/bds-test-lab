@@ -143,6 +143,9 @@ class HotspotPlugin(Plugin):
         for index in range(rounds):
             value ^= self.integer_hash_loop(80 + index)
             await asyncio.sleep(0)
+        # Preserve genuine coroutine yield/resume activity above, then retain this
+        # leaf on-stack long enough for a 4 ms statistical sample on Windows.
+        value ^= self.integer_hash_loop(max(3000, self.iterations // 8))
         return value
 
     def async_hotspot(self, rounds: int) -> int:
