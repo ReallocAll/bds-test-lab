@@ -1,0 +1,21 @@
+name: Mark validation PR ready
+
+on:
+  push:
+    branches:
+      - test/python-attribution-validation
+    paths:
+      - ".github/workflows/pr19-ready.yml"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  ready:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mark PR 19 ready
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr ready 19 --repo ReallocAll/bds-test-lab
