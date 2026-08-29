@@ -1,6 +1,11 @@
 name: Spark Python Attribution Performance
 
 on:
+  push:
+    branches:
+      - perf/python-attribution-180s
+    paths:
+      - ".github/workflows/python-attribution-performance.yml"
   workflow_dispatch:
     inputs:
       expected_spark_sha:
