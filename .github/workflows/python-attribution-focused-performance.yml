@@ -1,0 +1,126 @@
+name: Python Attribution Focused Performance
+
+on:
+  push:
+    branches:
+      - perf/python-hotspot-focused-baseline
+  workflow_dispatch:
+
+concurrency:
+  group: python-attribution-focused-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+  EXPECTED_SPARK_SHA: "15b79e814ee6542f8a2382df09353e9c2009c8d1"
+  BOT_REF: "b8c4875bb1fafaa5dd9b8e91b16b613af47bf37a"
+  BDS_TEST_BOT_SCENARIO_FILE: bot-src/scenarios/mixed-actions.json
+
+jobs:
+  benchmark:
+    name: Linux / ${{ matrix.mode }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [shadow, full]
+    steps:
+      - name: Checkout lab
+        uses: actions/checkout@v7
+
+      - name: Checkout exact bot
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/bds-test-bot
+          ref: ${{ env.BOT_REF }}
+          path: bot-src
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Build exact bot
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cd bot-src
+          test "$(git rev-parse HEAD)" = "$BOT_REF"
+          go mod download
+          go test ./...
+          go build -trimpath -o ../dist/bds-test-bot ./cmd/bds-test-bot
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check psutil packaging hatchling
+
+      - name: Require exact Spark artifact
+        run: >-
+          python -m controller.assert_spark_artifact
+          --platform linux
+          --expected-sha ${{ env.EXPECTED_SPARK_SHA }}
+
+      - name: Run focused real-BDS measurement
+        run: >-
+          python -m controller.python_attribution_focused_performance
+          --platform linux
+          --bot dist/bds-test-bot
+          --count 5
+          --mode ${{ matrix.mode }}
+          --duration-seconds 60
+
+      - name: Add focused summary
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f python-attribution-performance.json ]]; then
+            python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          data = json.loads(Path('python-attribution-performance.json').read_text())
+          perf = data.get('performance') or {}
+          print(json.dumps({
+              'mode': data.get('benchmark_mode'),
+              'status': data.get('status'),
+              'cpu_percent_one_core': perf.get('process_cpu_percent_of_one_core'),
+              'cpu_ms_per_tick': perf.get('cpu_ms_per_tick'),
+              'viewer_url': perf.get('viewer_url'),
+              'shadow': perf.get('shadow_only_diagnostics'),
+              'profile_summary': perf.get('profile_summary'),
+          }, indent=2, sort_keys=True))
+          PY
+          fi
+
+      - name: Upload focused evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-focused-${{ matrix.mode }}-${{ github.run_id }}
+          path: |
+            metadata.json
+            bds.log
+            endstone.log
+            spark.log
+            test-results.json
+            python-attribution-result.json
+            python-attribution-performance.json
+            python-attribution-tick-metrics.json
+            python-attribution-performance.sparkprofile
+            python-attribution-bots-linux-5-chunk-walk.log
+            failure-diagnostics.txt
+            work/linux/bedrock_server/version.txt
+          if-no-files-found: warn
+          retention-days: 30
