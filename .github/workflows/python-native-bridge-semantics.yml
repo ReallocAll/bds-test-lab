@@ -1,0 +1,126 @@
+name: Python Native Callback Bridge Semantic BDS
+
+on:
+  push:
+    branches:
+      - perf/python-native-bridge-ab
+    paths:
+      - ".github/workflows/python-native-bridge-semantics.yml"
+      - "controller/python_dependency_validation.py"
+  workflow_dispatch:
+
+concurrency:
+  group: python-native-bridge-semantics-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+  EXPECTED_SPARK_SHA: "1d32bce36bbf29da091995198e6308467514898f"
+  BOT_REF: "b8c4875bb1fafaa5dd9b8e91b16b613af47bf37a"
+  BDS_TEST_BOT_SCENARIO_FILE: bot-src/scenarios/mixed-actions.json
+  SPARK_PYTHON_DEPENDENCY_ITERATIONS: "1800"
+
+jobs:
+  dependency:
+    name: Linux / dependency + user ctypes + observer filtering
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Checkout test lab
+        uses: actions/checkout@v7
+
+      - name: Wait for exact Spark CI success
+        shell: bash
+        run: |
+          set -euo pipefail
+          ready=0
+          for attempt in $(seq 1 80); do
+            json="$(gh api "repos/ReallocAll/spark/actions/runs?head_sha=${EXPECTED_SPARK_SHA}&per_page=50")"
+            build="$(jq -r '[.workflow_runs[] | select(.name == "Build")][0].conclusion // ""' <<<"$json")"
+            python_ci="$(jq -r '[.workflow_runs[] | select(.name == "Python attribution")][0].conclusion // ""' <<<"$json")"
+            echo "attempt=$attempt Build=${build:-pending} Python=${python_ci:-pending}"
+            if [[ "$build" == success && "$python_ci" == success ]]; then
+              ready=1
+              break
+            fi
+            for conclusion in "$build" "$python_ci"; do
+              if [[ "$conclusion" == failure || "$conclusion" == cancelled || "$conclusion" == timed_out ]]; then
+                echo "Exact Spark CI failed: Build=$build Python=$python_ci" >&2
+                exit 1
+              fi
+            done
+            sleep 15
+          done
+          test "$ready" -eq 1
+
+      - name: Checkout Bot at exact ref
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/bds-test-bot
+          ref: ${{ env.BOT_REF }}
+          path: bot-src
+          persist-credentials: false
+
+      - name: Set up Go 1.25
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Build exact Bot revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cd bot-src
+          test "$(git rev-parse HEAD)" = "$BOT_REF"
+          go mod download
+          go test ./...
+          go build -trimpath -o ../dist/bds-test-bot ./cmd/bds-test-bot
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install validation dependencies
+        run: python -m pip install --disable-pip-version-check psutil packaging hatchling
+
+      - name: Require exact Spark artifact
+        run: >-
+          python -m controller.assert_spark_artifact
+          --platform linux
+          --expected-sha ${{ env.EXPECTED_SPARK_SHA }}
+
+      - name: Run real BDS dependency and ctypes attribution profile
+        run: >-
+          EXPECTED_SPARK_SHA=${{ env.EXPECTED_SPARK_SHA }}
+          python -m controller.python_dependency_validation
+          --bot dist/bds-test-bot
+          --profile-seconds 60
+
+      - name: Upload semantic evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-native-bridge-semantics-${{ github.run_id }}
+          path: |
+            metadata.json
+            bds.log
+            endstone.log
+            spark.log
+            test-results.json
+            python-attribution-result.json
+            python-attribution-profile-summary.json
+            python-attribution.sparkprofile
+            python-attribution-bots-linux-1-chunk-walk.log
+            failure-diagnostics.txt
+            work/linux/bedrock_server/server.properties
+            work/linux/bedrock_server/version.txt
+          if-no-files-found: warn
+          retention-days: 30
