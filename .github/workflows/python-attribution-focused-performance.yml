@@ -1,13 +1,13 @@
-name: Python Attribution Focused Performance
+name: Python Attribution Paired A-B Performance
 
 on:
   push:
     branches:
-      - perf/python-hotspot-focused-baseline
+      - perf/python-hotspot-focused-candidate
   workflow_dispatch:
 
 concurrency:
-  group: python-attribution-focused-${{ github.ref }}
+  group: python-attribution-paired-ab-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -17,22 +17,39 @@ permissions:
 env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
-  EXPECTED_SPARK_SHA: "15b79e814ee6542f8a2382df09353e9c2009c8d1"
+  BASELINE_SPARK_SHA: "15b79e814ee6542f8a2382df09353e9c2009c8d1"
+  CANDIDATE_SPARK_SHA: "056c3dcdba1348255d64483ea3b88164d7a29c4e"
   BOT_REF: "b8c4875bb1fafaa5dd9b8e91b16b613af47bf37a"
   BDS_TEST_BOT_SCENARIO_FILE: bot-src/scenarios/mixed-actions.json
 
 jobs:
   benchmark:
-    name: Linux / ${{ matrix.mode }}
+    name: Linux paired baseline/candidate
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
-    strategy:
-      fail-fast: false
-      matrix:
-        mode: [shadow, full]
+    timeout-minutes: 55
     steps:
       - name: Checkout lab
         uses: actions/checkout@v7
+
+      - name: Wait for exact candidate Spark Build artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 120); do
+            json="$(gh api "repos/ReallocAll/spark/actions/runs?head_sha=${CANDIDATE_SPARK_SHA}&per_page=30")"
+            build="$(jq -r '[.workflow_runs[] | select(.name == "Build")][0].conclusion // ""' <<<"$json")"
+            status="$(jq -r '[.workflow_runs[] | select(.name == "Build")][0].status // ""' <<<"$json")"
+            echo "candidate Build attempt ${attempt}: status=${status:-missing} conclusion=${build:-pending}"
+            if [[ "$build" == success ]]; then
+              exit 0
+            fi
+            if [[ "$build" == failure || "$build" == cancelled || "$build" == timed_out ]]; then
+              exit 1
+            fi
+            sleep 15
+          done
+          echo "Timed out waiting for exact candidate Spark Build" >&2
+          exit 1
 
       - name: Checkout exact bot
         uses: actions/checkout@v7
@@ -67,60 +84,128 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --disable-pip-version-check psutil packaging hatchling
 
-      - name: Require exact Spark artifact
-        run: >-
-          python -m controller.assert_spark_artifact
-          --platform linux
-          --expected-sha ${{ env.EXPECTED_SPARK_SHA }}
+      - name: Verify both exact Spark artifacts exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED_SPARK_SHA="$BASELINE_SPARK_SHA" python -m controller.assert_spark_artifact --platform linux --expected-sha "$BASELINE_SPARK_SHA"
+          rm -rf downloads
+          EXPECTED_SPARK_SHA="$CANDIDATE_SPARK_SHA" python -m controller.assert_spark_artifact --platform linux --expected-sha "$CANDIDATE_SPARK_SHA"
+          rm -rf downloads
 
-      - name: Run focused real-BDS measurement
-        run: >-
-          python -m controller.python_attribution_focused_performance
-          --platform linux
-          --bot dist/bds-test-bot
-          --count 5
-          --mode ${{ matrix.mode }}
-          --duration-seconds 60
+      - name: Run five paired repetitions in one runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p paired-evidence
+          save_run() {
+            local tag="$1"
+            mkdir -p "paired-evidence/$tag"
+            for path in metadata.json bds.log endstone.log spark.log test-results.json \
+              python-attribution-result.json python-attribution-performance.json \
+              python-attribution-tick-metrics.json python-attribution-performance.sparkprofile \
+              python-attribution-bots-linux-5-chunk-walk.log failure-diagnostics.txt; do
+              if [[ -e "$path" ]]; then mv "$path" "paired-evidence/$tag/"; fi
+            done
+            if [[ -f work/linux/bedrock_server/version.txt ]]; then
+              cp work/linux/bedrock_server/version.txt "paired-evidence/$tag/bds-version.txt"
+            fi
+            rm -rf downloads work hotspot-wheel
+          }
+          run_one() {
+            local side="$1" rep="$2" mode="$3" sha="$4"
+            local tag="${mode}-rep${rep}-${side}"
+            echo "=== ${tag} ${sha} ==="
+            EXPECTED_SPARK_SHA="$sha" \
+              python -m controller.python_attribution_focused_performance \
+              --platform linux --bot dist/bds-test-bot --count 5 \
+              --mode "$mode" --duration-seconds 60
+            save_run "$tag"
+          }
+          for rep in $(seq 1 5); do
+            for mode in shadow full; do
+              if (( rep % 2 == 1 )); then
+                run_one baseline "$rep" "$mode" "$BASELINE_SPARK_SHA"
+                run_one candidate "$rep" "$mode" "$CANDIDATE_SPARK_SHA"
+              else
+                run_one candidate "$rep" "$mode" "$CANDIDATE_SPARK_SHA"
+                run_one baseline "$rep" "$mode" "$BASELINE_SPARK_SHA"
+              fi
+            done
+          done
 
-      - name: Add focused summary
+      - name: Build paired statistical summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' | tee paired-evidence/summary.txt
+          import json
+          import pathlib
+          import statistics
+
+          root = pathlib.Path('paired-evidence')
+          rows = []
+          for path in sorted(root.glob('*-rep*-*/python-attribution-performance.json')):
+              name = path.parent.name
+              mode, rep_part, side = name.split('-', 2)
+              rep = int(rep_part.removeprefix('rep'))
+              data = json.loads(path.read_text())
+              perf = data.get('performance') or {}
+              ticks = perf.get('tick_statistics') or {}
+              profile = perf.get('profile_summary') or {}
+              rows.append({
+                  'mode': mode,
+                  'rep': rep,
+                  'side': side,
+                  'cpu': float(perf['process_cpu_percent_of_one_core']),
+                  'cpu_ms_tick': float(perf['cpu_ms_per_tick']),
+                  'mspt_mean': float(ticks['mspt_mean']),
+                  'mspt_p95': float(ticks['mspt_p95']),
+                  'mspt_p99': float(ticks['mspt_p99']),
+                  'rss_mean': float(perf['rss_mean_bytes']),
+                  'url': perf.get('viewer_url'),
+                  'profile_samples': profile.get('root_weight'),
+              })
+          print('raw_rows=', json.dumps(rows, sort_keys=True))
+          for mode in ('shadow', 'full'):
+              print(f'\n[{mode}]')
+              for metric in ('cpu', 'cpu_ms_tick', 'mspt_mean', 'mspt_p95', 'mspt_p99', 'rss_mean'):
+                  by_side = {}
+                  for side in ('baseline', 'candidate'):
+                      values = [r[metric] for r in rows if r['mode'] == mode and r['side'] == side]
+                      by_side[side] = values
+                      mean = statistics.fmean(values)
+                      med = statistics.median(values)
+                      sd = statistics.stdev(values) if len(values) > 1 else 0.0
+                      cv = sd / mean * 100 if mean else 0.0
+                      print(f'{metric} {side}: n={len(values)} mean={mean:.6f} median={med:.6f} sd={sd:.6f} cv={cv:.3f}% min={min(values):.6f} max={max(values):.6f}')
+                  paired = []
+                  for rep in range(1, 6):
+                      b = next(r[metric] for r in rows if r['mode'] == mode and r['side'] == 'baseline' and r['rep'] == rep)
+                      c = next(r[metric] for r in rows if r['mode'] == mode and r['side'] == 'candidate' and r['rep'] == rep)
+                      paired.append((b - c) / b * 100.0 if b else 0.0)
+                  print(f'{metric} paired improvement %: mean={statistics.fmean(paired):.4f} median={statistics.median(paired):.4f} sd={statistics.stdev(paired):.4f} values={paired}')
+              urls = [(r['rep'], r['side'], r['url']) for r in rows if r['mode'] == mode and r['url']]
+              print('viewer_urls=', urls)
+          PY
+
+      - name: Add paired summary
         if: always()
         shell: bash
         run: |
-          if [[ -f python-attribution-performance.json ]]; then
-            python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
-          import json
-          from pathlib import Path
-          data = json.loads(Path('python-attribution-performance.json').read_text())
-          perf = data.get('performance') or {}
-          print(json.dumps({
-              'mode': data.get('benchmark_mode'),
-              'status': data.get('status'),
-              'cpu_percent_one_core': perf.get('process_cpu_percent_of_one_core'),
-              'cpu_ms_per_tick': perf.get('cpu_ms_per_tick'),
-              'viewer_url': perf.get('viewer_url'),
-              'shadow': perf.get('shadow_only_diagnostics'),
-              'profile_summary': perf.get('profile_summary'),
-          }, indent=2, sort_keys=True))
-          PY
-          fi
+          {
+            echo '# Python attribution paired A/B'
+            echo
+            echo '```text'
+            cat paired-evidence/summary.txt 2>/dev/null || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload focused evidence
+      - name: Upload paired evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: python-focused-${{ matrix.mode }}-${{ github.run_id }}
-          path: |
-            metadata.json
-            bds.log
-            endstone.log
-            spark.log
-            test-results.json
-            python-attribution-result.json
-            python-attribution-performance.json
-            python-attribution-tick-metrics.json
-            python-attribution-performance.sparkprofile
-            python-attribution-bots-linux-5-chunk-walk.log
-            failure-diagnostics.txt
-            work/linux/bedrock_server/version.txt
+          name: python-attribution-paired-ab-${{ github.run_id }}
+          path: paired-evidence
           if-no-files-found: warn
           retention-days: 30
