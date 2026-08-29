@@ -1,0 +1,20 @@
+name: Mark Spark PR 37 ready
+
+on:
+  push:
+    branches:
+      - test/python-attribution-validation
+    paths:
+      - ".github/workflows/spark37-ready.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  ready:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mark Spark PR 37 ready
+        env:
+          GH_TOKEN: ${{ secrets.REPO_PAT }}
+        run: gh pr ready 37 --repo ReallocAll/spark
