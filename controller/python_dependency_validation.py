@@ -23,6 +23,13 @@ OBSERVER_THUNKS = (
     "spark::endstone_adapter::EndstonePythonAttribution::pyReturnThunk",
     "spark::endstone_adapter::EndstonePythonAttribution::pyYieldThunk",
     "spark::endstone_adapter::EndstonePythonAttribution::pyUnwindThunk",
+    "spark::endstone_adapter::EndstonePythonAttribution::pyStartNativeCallback",
+    "spark::endstone_adapter::EndstonePythonAttribution::pyResumeNativeCallback",
+    "spark::endstone_adapter::EndstonePythonAttribution::pyThrowNativeCallback",
+    "spark::endstone_adapter::EndstonePythonAttribution::pyReturnNativeCallback",
+    "spark::endstone_adapter::EndstonePythonAttribution::pyYieldNativeCallback",
+    "spark::endstone_adapter::EndstonePythonAttribution::pyUnwindNativeCallback",
+    "spark::endstone_adapter::EndstonePythonAttribution::nativeEventCallback",
 )
 
 # Reuse the complete real-BDS lifecycle/viewer/raw validation while substituting
@@ -156,7 +163,7 @@ class PythonDependencyValidation(base_validation.PythonAttributionValidation):
             if any(matches_function(node.method_name, thunk) for thunk in OBSERVER_THUNKS)
         ]
         if observer_nodes:
-            raise RuntimeError(f"Spark PEP 669 observer thunks leaked into visible profile tree: {observer_nodes}")
+            raise RuntimeError(f"Spark PEP 669 observer callbacks leaked into visible profile tree: {observer_nodes}")
         self.check("python-observer-thunks-filtered", "PASS", observer_nodes=0)
 
         ctypes_nodes = [node.method_name for node in nodes if matches_function(node.method_name, "_ctypes_callproc")]
