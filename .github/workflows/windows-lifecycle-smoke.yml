@@ -1,0 +1,73 @@
+name: Windows Endstone lifecycle smoke
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/windows-lifecycle-smoke.yml"
+      - "controller/windows_lifecycle_smoke.py"
+      - "controller/combined_pack_gamerule_fleet_exact_runner.py"
+      - "controller/python_evidence_provenance.py"
+      - "controller/run_test.py"
+      - "fixtures/endstone-ci-lifecycle-control/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+  EXPECTED_SPARK_SHA: "78314038b67d506ec48da9a61181c0048fb3658e"
+  EXPECTED_ENDSTONE_SHA: "c76c814289ee3be8a7236389b6bdeb5728b154e4"
+  EXPECTED_ENDSTONE_RUN_ID: "32992839821"
+  EXPECTED_ENDSTONE_ARTIFACT_ID: "9616071559"
+  EXPECTED_ENDSTONE_VERSION: "0.11.10.dev387"
+  EXPECTED_BDS_VERSION: "1.26.44.3"
+
+jobs:
+  smoke:
+    runs-on: windows-2022
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install smoke dependencies and lifecycle fixture
+        run: |
+          python -m pip install --disable-pip-version-check psutil packaging
+          python -m pip install --disable-pip-version-check ./fixtures/endstone-ci-lifecycle-control
+
+      - name: Validate exact Spark artifact
+        run: >-
+          python -m controller.assert_spark_artifact
+          --platform windows
+          --expected-sha ${{ env.EXPECTED_SPARK_SHA }}
+
+      - name: Compile lifecycle controllers
+        run: >-
+          python -m py_compile
+          controller/windows_lifecycle_smoke.py
+          controller/combined_pack_gamerule_fleet_exact_runner.py
+
+      - name: Run exact startup/shutdown smoke
+        run: python -m controller.windows_lifecycle_smoke
+
+      - name: Upload lifecycle diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-lifecycle-smoke-${{ github.run_id }}
+          path: |
+            metadata.json
+            bds.log
+            endstone.log
+            spark.log
+            test-results.json
+            failure-diagnostics.txt
+            work/windows/bedrock_server/version.txt
+          if-no-files-found: warn
+          retention-days: 14

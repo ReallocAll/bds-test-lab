@@ -92,9 +92,11 @@ jobs:
           missing = [value for value in required if value not in workflow]
           if missing:
               raise SystemExit(f'missing immutable provenance pins: {missing}')
-          if 'CTRL_BREAK_EVENT' not in exact_runner or 'send_signal' not in exact_runner:
-              raise SystemExit('Windows process-group lifecycle control is missing')
-          if 'cishutdown' in exact_runner:
-              raise SystemExit('exact runner still depends on native-console routing of an Endstone plugin command')
+          if 'cishutdown' not in exact_runner or 'interactive-cishutdown' not in exact_runner:
+              raise SystemExit('Windows interactive lifecycle command is missing')
+          if '--no-interactive' in exact_runner:
+              raise SystemExit('exact Windows runner disables the Endstone interactive command map')
+          if 'CTRL_BREAK_EVENT' in exact_runner or 'send_signal' in exact_runner:
+              raise SystemExit('exact runner still contains rejected CTRL_BREAK lifecycle control')
           print('immutable 20-player provenance and lifecycle contract: PASS')
           PY

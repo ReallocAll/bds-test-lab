@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import os
-import signal
 import subprocess
 import sys
+from typing import Any
 
 from controller.combined_pack_gamerule_fleet_validation import (
     CombinedPackGameruleFleetValidation,
@@ -18,22 +18,48 @@ from controller.run_test import READY_HINTS, SPARK_LOAD_HINTS, ServerProcess, wr
 
 _ORIGINAL_INSTALL_ARTIFACTS = CombinedPackGameruleFleetValidation.install_artifacts
 _ORIGINAL_START_SERVER = CombinedPackGameruleFleetValidation.start_server
-_CTRL_BREAK_EVENT = getattr(signal, "CTRL_BREAK_EVENT", None)
 
 
 class _FrameworkShutdownServerProcess(ServerProcess):
-    """Gracefully interrupt the Windows Endstone root process in headless mode."""
+    """Gracefully stop the Windows Endstone root through its interactive command map."""
+
+    lifecycle_diagnostic: dict[str, Any]
 
     def graceful_stop(self, timeout: float = 60.0) -> bool:
-        if not self.is_alive():
+        pid = self.process.pid if self.process is not None else None
+        diagnostic: dict[str, Any] = {
+            "method": "interactive-cishutdown",
+            "command": "cishutdown",
+            "pid": pid,
+            "timeout_seconds": timeout,
+            "alive_before": self.is_alive(),
+        }
+        self.lifecycle_diagnostic = diagnostic
+        if not diagnostic["alive_before"]:
+            diagnostic["outcome"] = "already-exited"
+            diagnostic["returncode"] = self.process.returncode if self.process is not None else None
+            print(f"[windows-lifecycle] {diagnostic}", flush=True)
             return True
-        if _CTRL_BREAK_EVENT is None or self.process is None:
+        if self.process is None:
+            diagnostic["outcome"] = "missing-process"
+            print(f"[windows-lifecycle] {diagnostic}", flush=True)
             return False
         try:
-            self.process.send_signal(_CTRL_BREAK_EVENT)
+            self.command("cishutdown")
+            diagnostic["command_sent"] = True
             self.process.wait(timeout=timeout)
+            diagnostic["returncode"] = self.process.returncode
+            diagnostic["outcome"] = "exited" if self.process.returncode == 0 else "nonzero-exit"
+            print(f"[windows-lifecycle] {diagnostic}", flush=True)
             return self.process.returncode == 0
-        except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired):
+        except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
+            diagnostic["outcome"] = "exception"
+            diagnostic["exception_type"] = type(exc).__name__
+            diagnostic["exception"] = str(exc)
+            diagnostic["winerror"] = getattr(exc, "winerror", None)
+            diagnostic["errno"] = getattr(exc, "errno", None)
+            diagnostic["returncode"] = self.process.returncode
+            print(f"[windows-lifecycle] {diagnostic}", flush=True)
             return False
 
 
@@ -54,15 +80,14 @@ def _install_exact_artifacts(self: CombinedPackGameruleFleetValidation) -> None:
     )
 
 
-def _start_windows_headless_server(self: CombinedPackGameruleFleetValidation) -> None:
-    """Run Endstone headlessly with process-group lifecycle control."""
+def _start_windows_interactive_server(self: CombinedPackGameruleFleetValidation) -> None:
+    """Run Endstone with its interactive command map for graceful CI lifecycle control."""
 
     cmd = [
         sys.executable,
         "-m",
         "endstone",
         "--yes",
-        "--no-interactive",
         "--server-folder",
         str(self.server_dir),
     ]
@@ -84,7 +109,12 @@ def _start_windows_headless_server(self: CombinedPackGameruleFleetValidation) ->
         "Spark enable",
     )
     self.check("spark-load-enable", "PASS")
-    self.check("windows-headless-lifecycle", "PASS", shutdown_control="CTRL_BREAK_EVENT")
+    self.server.wait_for(
+        lambda lines: any("ci lifecycle control enabled; cishutdown registered" in line.lower() for line in lines),
+        30,
+        "CI lifecycle command registration",
+    )
+    self.check("windows-interactive-lifecycle", "PASS", shutdown_control="cishutdown")
     version_file = self.server_dir / "version.txt"
     if version_file.exists():
         self.result["bds_version"] = version_file.read_text(encoding="utf-8").strip()
@@ -93,7 +123,7 @@ def _start_windows_headless_server(self: CombinedPackGameruleFleetValidation) ->
 
 def _start_exact_server(self: CombinedPackGameruleFleetValidation) -> None:
     if self.platform == "windows":
-        _start_windows_headless_server(self)
+        _start_windows_interactive_server(self)
     else:
         _ORIGINAL_START_SERVER(self)
     assert self.server is not None
