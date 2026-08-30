@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "endstone-ci-lifecycle-control"
+version = "0.1.0"
+description = "Zero-idle-overhead lifecycle control command for exact Endstone BDS CI"
+requires-python = ">=3.11"
+
+[project.entry-points."endstone"]
+ci-lifecycle-control = "endstone_ci_lifecycle_control:CiLifecycleControl"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/endstone_ci_lifecycle_control"]

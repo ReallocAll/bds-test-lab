@@ -57,6 +57,7 @@ class _StartedServer:
             "Server started.",
             "[EndstoneServer] Version: 1.26.44.3",
             "[Endstone] Enabling spark v0.6.0",
+            "[CiLifecycleControl] CI lifecycle control enabled",
         ]
         if not predicate(lines):
             raise AssertionError("test fixture did not satisfy wait predicate")
@@ -64,6 +65,16 @@ class _StartedServer:
 
     def snapshot(self) -> list[str]:
         return ["[EndstoneServer] Version: 1.26.44.3"]
+
+
+class _WaitProcess:
+    def __init__(self, returncode: int = 0) -> None:
+        self.returncode = returncode
+        self.wait_timeouts: list[float] = []
+
+    def wait(self, timeout: float) -> int:
+        self.wait_timeouts.append(timeout)
+        return self.returncode
 
 
 class CombinedPackExactRunnerTest(unittest.TestCase):
@@ -115,7 +126,28 @@ class CombinedPackExactRunnerTest(unittest.TestCase):
         ):
             exact._start_exact_server(validator)  # type: ignore[arg-type]
 
-    def test_windows_start_uses_documented_no_interactive_mode(self) -> None:
+    def test_framework_shutdown_process_uses_endstone_shutdown_command(self) -> None:
+        server = exact._FrameworkShutdownServerProcess.__new__(exact._FrameworkShutdownServerProcess)
+        process = _WaitProcess(returncode=0)
+        commands: list[str] = []
+        server.process = process  # type: ignore[assignment]
+        server.is_alive = lambda: True  # type: ignore[method-assign]
+        server.command = lambda command: commands.append(command) or 0  # type: ignore[method-assign]
+
+        self.assertTrue(server.graceful_stop(7.5))
+        self.assertEqual(commands, ["cishutdown"])
+        self.assertEqual(process.wait_timeouts, [7.5])
+
+    def test_framework_shutdown_requires_zero_exit_code(self) -> None:
+        server = exact._FrameworkShutdownServerProcess.__new__(exact._FrameworkShutdownServerProcess)
+        process = _WaitProcess(returncode=17)
+        server.process = process  # type: ignore[assignment]
+        server.is_alive = lambda: True  # type: ignore[method-assign]
+        server.command = lambda _command: 0  # type: ignore[method-assign]
+
+        self.assertFalse(server.graceful_stop(3.0))
+
+    def test_windows_start_uses_documented_no_interactive_mode_and_control_plugin(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             validator = _Validator()
@@ -128,7 +160,7 @@ class CombinedPackExactRunnerTest(unittest.TestCase):
             validator.server_dir.joinpath("version.txt").write_text("26.44", encoding="utf-8")  # type: ignore[attr-defined]
             _StartedServer.created_cmd = None
             with (
-                mock.patch.object(exact, "ServerProcess", _StartedServer),
+                mock.patch.object(exact, "_FrameworkShutdownServerProcess", _StartedServer),
                 mock.patch.dict(os.environ, {"EXPECTED_BDS_VERSION": "1.26.44.3"}, clear=True),
             ):
                 exact._start_exact_server(validator)  # type: ignore[arg-type]
@@ -138,6 +170,7 @@ class CombinedPackExactRunnerTest(unittest.TestCase):
         self.assertIn("--no-interactive", _StartedServer.created_cmd)
         self.assertIn("--server-folder", _StartedServer.created_cmd)
         self.assertEqual(validator.result["bds_version"], "26.44")
+        self.assertIn(("ci-lifecycle-control", "PASS"), [(name, status) for name, status, _ in validator.checks])
         self.assertEqual(validator.checks[-1][0:2], ("exact-bds-version", "PASS"))
 
 

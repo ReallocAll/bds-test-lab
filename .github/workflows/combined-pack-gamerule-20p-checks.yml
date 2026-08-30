@@ -10,6 +10,7 @@ on:
       - "controller/python_evidence_provenance.py"
       - "controller/cross_platform_fleet_validation.py"
       - "controller/fleet_spark_validation.py"
+      - "fixtures/endstone-ci-lifecycle-control/**"
       - "tests/test_combined_pack_exact_runner.py"
       - "tests/test_python_evidence_provenance.py"
       - "tests/test_cross_platform_fleet_signal_exit.py"
@@ -47,12 +48,14 @@ jobs:
           controller/python_evidence_provenance.py
           controller/cross_platform_fleet_validation.py
           controller/fleet_spark_validation.py
+          fixtures/endstone-ci-lifecycle-control/src/endstone_ci_lifecycle_control/__init__.py
           tests/test_combined_pack_exact_runner.py
 
       - name: Ruff focused files
         run: >-
           ruff check
           controller/combined_pack_gamerule_fleet_exact_runner.py
+          fixtures/endstone-ci-lifecycle-control/src/endstone_ci_lifecycle_control/__init__.py
           tests/test_combined_pack_exact_runner.py
 
       - name: Parse 20-player workflows
@@ -75,7 +78,9 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          text = Path('.github/workflows/combined-pack-gamerule-20p.yml').read_text(encoding='utf-8')
+          workflow = Path('.github/workflows/combined-pack-gamerule-20p.yml').read_text(encoding='utf-8')
+          exact_runner = Path('controller/combined_pack_gamerule_fleet_exact_runner.py').read_text(encoding='utf-8')
+          plugin = Path('fixtures/endstone-ci-lifecycle-control/src/endstone_ci_lifecycle_control/__init__.py').read_text(encoding='utf-8')
           required = (
               'c76c814289ee3be8a7236389b6bdeb5728b154e4',
               '32992839821',
@@ -85,8 +90,12 @@ jobs:
               '1.26.44.3',
               'b8c4875bb1fafaa5dd9b8e91b16b613af47bf37a',
           )
-          missing = [value for value in required if value not in text]
+          missing = [value for value in required if value not in workflow]
           if missing:
               raise SystemExit(f'missing immutable provenance pins: {missing}')
-          print('immutable 20-player provenance pins: PASS')
+          if "if: matrix.platform == 'windows'" not in workflow or './fixtures/endstone-ci-lifecycle-control' not in workflow:
+              raise SystemExit('Windows-only lifecycle control installation is missing')
+          if 'cishutdown' not in exact_runner or 'cishutdown' not in plugin or 'self.server.shutdown()' not in plugin:
+              raise SystemExit('framework shutdown contract is missing')
+          print('immutable 20-player provenance and lifecycle contract: PASS')
           PY
