@@ -95,6 +95,21 @@ class PythonEvidenceProvenanceTest(unittest.TestCase):
         with mock.patch.dict(os.environ, env, clear=True):
             self.assertEqual(validate_bds_version({"bds_version": "26.44"}, lines), "26.44")
 
+    def test_bds_protocol_is_derived_from_pinned_full_version_for_live_runtime(self) -> None:
+        with mock.patch.dict(os.environ, {"EXPECTED_BDS_VERSION": "1.26.44.3"}, clear=True):
+            self.assertEqual(
+                validate_bds_version(
+                    {"bds_version": "26.44"},
+                    ["[08:13:28 INFO]: Version: 1.26.44.3"],
+                ),
+                "26.44",
+            )
+            with self.assertRaisesRegex(RuntimeError, "protocol version mismatch"):
+                validate_bds_version(
+                    {"bds_version": "26.45"},
+                    ["[08:13:28 INFO]: Version: 1.26.44.3"],
+                )
+
     def test_bds_protocol_drift_is_rejected(self) -> None:
         env = {
             "EXPECTED_BDS_VERSION": "1.26.44.3",
