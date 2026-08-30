@@ -29,7 +29,7 @@ class _FrameworkShutdownServerProcess(ServerProcess):
             return True
         try:
             self.command(_CI_SHUTDOWN_COMMAND)
-        except Exception:
+        except (BrokenPipeError, OSError, RuntimeError, ValueError):
             return False
         assert self.process is not None
         try:
