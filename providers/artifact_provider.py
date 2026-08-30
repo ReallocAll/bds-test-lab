@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Resolve GitHub Actions artifacts for Endstone and Spark.
 
 Discovery deliberately runs inside the GitHub Actions runner and uses GH_TOKEN.
@@ -179,9 +178,11 @@ def _download_artifact(repo: str, artifact: dict[str, Any], destination: pathlib
     url = f"{API}/repos/{repo}/actions/artifacts/{artifact['id']}/zip"
     opener = urllib.request.build_opener(_SafeRedirect())
     try:
-        with opener.open(_request(url, accept="application/vnd.github+json"), timeout=120) as response:
-            with archive.open("wb") as out:
-                shutil.copyfileobj(response, out, length=1024 * 1024)
+        with (
+            opener.open(_request(url, accept="application/vnd.github+json"), timeout=120) as response,
+            archive.open("wb") as out,
+        ):
+            shutil.copyfileobj(response, out, length=1024 * 1024)
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", "replace")
         raise ArtifactResolutionError(
