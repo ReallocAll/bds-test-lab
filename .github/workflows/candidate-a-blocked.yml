@@ -42,7 +42,7 @@ on:
         type: string
         default: "b8c4875bb1fafaa5dd9b8e91b16b613af47bf37a"
       prior_run_ids:
-        description: "Optional comma-separated prior benchmark run IDs (at most four)"
+        description: "Comma-separated prior valid batch run IDs required by cumulative looks"
         required: false
         type: string
         default: ""
@@ -63,14 +63,46 @@ env:
   ENDSTONE_SHA: c76c814289ee3be8a7236389b6bdeb5728b154e4
   BOT_REF: ${{ inputs.bot_ref || 'b8c4875bb1fafaa5dd9b8e91b16b613af47bf37a' }}
   BDS_TEST_BOT_SCENARIO_FILE: scenarios/candidate-a-stationary.json
-  START_BLOCK: ${{ inputs.start_block || '1' }}
-  BATCH_SIZE: ${{ inputs.batch_size || '4' }}
 
 jobs:
+  prepare:
+    name: Resolve cumulative look inputs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      start_block: ${{ steps.resolve.outputs.start_block }}
+      batch_size: ${{ steps.resolve.outputs.batch_size }}
+      prior_run_ids: ${{ steps.resolve.outputs.prior_run_ids }}
+    steps:
+      - name: Checkout lab
+        uses: actions/checkout@v7
+
+      - name: Resolve trigger inputs
+        id: resolve
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_START_BLOCK: ${{ inputs.start_block || '' }}
+          INPUT_BATCH_SIZE: ${{ inputs.batch_size || '' }}
+          INPUT_PRIOR_RUN_IDS: ${{ inputs.prior_run_ids || '' }}
+        run: |
+          set -euo pipefail
+          python -m controller.candidate_a_trigger \
+            --event-name "$EVENT_NAME" \
+            --trigger-file triggers/candidate-a-blocked.txt \
+            --input-start-block "$INPUT_START_BLOCK" \
+            --input-batch-size "$INPUT_BATCH_SIZE" \
+            --input-prior-run-ids "$INPUT_PRIOR_RUN_IDS" \
+            --github-output "$GITHUB_OUTPUT"
+
   block:
     name: Block ${{ matrix.offset }} of batch
+    needs: prepare
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    env:
+      START_BLOCK: ${{ needs.prepare.outputs.start_block }}
+      BATCH_SIZE: ${{ needs.prepare.outputs.batch_size }}
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -232,10 +264,16 @@ jobs:
 
   analyze:
     name: Analyze complete four-block batch
-    if: ${{ always() }}
-    needs: block
+    if: ${{ always() && needs.prepare.result == 'success' }}
+    needs:
+      - prepare
+      - block
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      START_BLOCK: ${{ needs.prepare.outputs.start_block }}
+      BATCH_SIZE: ${{ needs.prepare.outputs.batch_size }}
+      PRIOR_RUN_IDS: ${{ needs.prepare.outputs.prior_run_ids }}
     steps:
       - name: Checkout lab
         uses: actions/checkout@v7
@@ -256,15 +294,17 @@ jobs:
           merge-multiple: true
 
       - name: Download prior batch evidence
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.prior_run_ids != '' }}
+        if: ${{ needs.prepare.outputs.prior_run_ids != '' }}
         shell: bash
-        env:
-          PRIOR_RUN_IDS: ${{ inputs.prior_run_ids }}
         run: |
           set -euo pipefail
           mkdir -p evidence/prior
           IFS=',' read -r -a run_ids <<< "$PRIOR_RUN_IDS"
-          (( ${#run_ids[@]} <= 4 )) || { echo "at most four prior run IDs are allowed" >&2; exit 1; }
+          expected_prior_runs=$(((10#$START_BLOCK - 1) / 4))
+          (( ${#run_ids[@]} == expected_prior_runs )) || {
+            echo "start_block=$START_BLOCK requires exactly $expected_prior_runs prior run IDs" >&2
+            exit 1
+          }
           for run_id in "${run_ids[@]}"; do
             [[ "$run_id" =~ ^[0-9]+$ ]] || { echo "invalid prior run ID: $run_id" >&2; exit 1; }
             gh run download "$run_id" \
