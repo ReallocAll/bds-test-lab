@@ -31,10 +31,9 @@ from controller.run_test import (
     write_json,
 )
 
-
 PLUGIN_SOURCE = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "spark-python-hotspot-test"
 EXPECTED_MODULE = "endstone_spark_python_hotspot_test"
-EXPECTED_SOURCE = "spark-python-hotspot-test"
+EXPECTED_SOURCE = "spark_python_hotspot_test"
 
 
 def _metadata_text(value: str | None) -> str:
