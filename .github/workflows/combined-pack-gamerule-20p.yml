@@ -7,17 +7,6 @@ on:
       - test/combined-pack-gamerule-20p
     paths:
       - "triggers/combined-pack-gamerule-20p.json"
-      - ".github/workflows/combined-pack-gamerule-20p.yml"
-      - "controller/combined_pack_gamerule_fleet_validation.py"
-      - "controller/combined_pack_gamerule_fleet_exact_runner.py"
-      - "controller/python_evidence_provenance.py"
-      - "controller/cross_platform_fleet_validation.py"
-      - "controller/fleet_spark_validation.py"
-      - "controller/gamerule_fallback_validation.py"
-      - "controller/block_actor_validation.py"
-      - "controller/bot_validation.py"
-      - "controller/run_test.py"
-      - "providers/artifact_provider.py"
   workflow_dispatch:
     inputs:
       spark_sha:
@@ -87,7 +76,10 @@ jobs:
           spark_sha = os.environ.get("EXPECTED_SPARK_SHA", "").strip().lower()
           seconds = os.environ.get("PROFILE_SECONDS", "").strip()
           if event == "push":
-              data = json.loads(Path("triggers/combined-pack-gamerule-20p.json").read_text(encoding="utf-8"))
+              trigger = Path("triggers/combined-pack-gamerule-20p.json")
+              if not trigger.is_file():
+                  raise SystemExit(f"explicit trigger is missing: {trigger}")
+              data = json.loads(trigger.read_text(encoding="utf-8"))
               if set(data) != {"spark_sha", "profile_seconds"}:
                   raise SystemExit(f"unexpected trigger keys: {sorted(data)}")
               spark_sha = str(data["spark_sha"]).strip().lower()
