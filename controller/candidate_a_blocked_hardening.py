@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Hardening layer for the pre-registered Candidate A controlled benchmark.
 
 This module preserves the benchmark/statistical semantics in
@@ -185,7 +184,6 @@ def _write_case_result(case_dir: pathlib.Path, result: dict[str, Any]) -> None:
 def hardened_run_case(**kwargs: Any) -> tuple[int, dict[str, Any]]:
     """Run one case while making controller affinity a transactional resource."""
 
-    global _EXPECTED_TOPOLOGY
     if _EXPECTED_TOPOLOGY is None:
         raise RunnerStateError("block topology contract was not initialized")
     expected = dict(_EXPECTED_TOPOLOGY)
@@ -197,7 +195,7 @@ def hardened_run_case(**kwargs: Any) -> tuple[int, dict[str, Any]]:
     result: dict[str, Any] | None = None
     try:
         code, result = _BASE_RUN_CASE(**kwargs)
-    except BaseException as exc:  # preserve restoration for constructor/launch failures too
+    except BaseException as exc:  # noqa: BLE001 - affinity restoration must survive all exits
         primary_error = exc
 
     restore_error: BaseException | None = None
@@ -205,7 +203,7 @@ def hardened_run_case(**kwargs: Any) -> tuple[int, dict[str, Any]]:
     try:
         restoration = restore_controller_affinity_state(snapshot)
         topology_after = require_topology(expected, phase="after-case-restoration")
-    except BaseException as exc:
+    except BaseException as exc:  # noqa: BLE001 - preserve the primary failure if restoration also fails
         restore_error = exc
         topology_after = runner_topology()
 
