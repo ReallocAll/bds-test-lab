@@ -170,9 +170,7 @@ class HardenedCandidateABlockedCase(_BASE_CASE):
     """Candidate A case with authoritative process identity and affinity handling."""
 
     def _measurement_process(self) -> psutil.Process:
-        if self.server is None or self.server.process is None:
-            raise RunnerStateError("Endstone server root process is unavailable")
-        process = psutil.Process(self.server.process.pid)
+        process = super()._measurement_process()
         identity = validate_endstone_root_process(process)
         self.result["measurement_process_identity"] = identity
         self.protocol["measurement_process_identity"] = identity
@@ -216,6 +214,8 @@ class HardenedCandidateABlockedCase(_BASE_CASE):
         )
         self.affinity = (self.affinity or {}) | validated | {
             "bds_pid": self.measurement_pid,
+            "bds_tid_scope": base.MANAGED_ROOT_TID_SCOPE,
+            "managed_root_identity": getattr(self, "managed_root_identity", None),
             "load_generator_pid": load_process.pid,
             "controller_pid": os.getpid(),
             "bds_affinity_after": bds_affinity,
@@ -242,21 +242,7 @@ class HardenedCandidateABlockedCase(_BASE_CASE):
         self.result["affinity"] = self.affinity
 
     def _set_bot_affinity(self) -> None:
-        if not self._load_cpus:
-            raise base.AffinityError("no non-BDS CPUs are available for the load generator")
-        load_process = self._bot_psutil_process()
-        try:
-            load_process.cpu_affinity(self._load_cpus)
-        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError, ValueError) as exc:
-            raise base.AffinityError(f"unable to set load generator affinity: {exc}") from exc
-        self._verify_all_affinity()
-        self.check(
-            "load-generator-affinity",
-            "PASS",
-            "controller and load generator pinned to CPUs excluding the controlled BDS CPU",
-            **(self.affinity or {}),
-        )
-        self._write_results()
+        super()._set_bot_affinity()
 
 
 def _write_case_result(case_dir: pathlib.Path, result: dict[str, Any]) -> None:
@@ -347,7 +333,14 @@ def _case_completed_registered_windows(result: dict[str, Any], treatment: str) -
     return True, "registered windows completed"
 
 
-def _case_artifacts_are_exact(result: dict[str, Any], treatment: str) -> tuple[bool, str]:
+def _case_artifacts_are_exact(
+    result: dict[str, Any],
+    treatment: str,
+    *,
+    case_path: pathlib.Path,
+    expected_block: int,
+    expected_position: int,
+) -> tuple[bool, str]:
     completed, completion_reason = _case_completed_registered_windows(result, treatment)
     if not completed:
         return False, completion_reason
@@ -366,13 +359,44 @@ def _case_artifacts_are_exact(result: dict[str, Any], treatment: str) -> tuple[b
         return False, f"{treatment}: Endstone artifact identity is missing"
     if str(endstone_artifact.get("sha", "")).lower() != base.ENDSTONE_SHA:
         return False, f"{treatment}: Endstone artifact identity drifted"
+    try:
+        from controller.candidate_a_blocked_analyzer import validate_case
+
+        metrics, report = validate_case(
+            result,
+            case_path,
+            expected_block=expected_block,
+            expected_position=expected_position,
+            expected_treatment=treatment,
+            baseline_sha=base.BASELINE_SHA,
+            candidate_sha=base.CANDIDATE_SHA,
+            bot_ref=base.BOT_REF,
+            expected_scenario_sha256=ACTUAL_SCENARIO_SHA256,
+            world_snapshot_id=base.WORLD_SNAPSHOT_ID,
+        )
+    except Exception as exc:  # noqa: BLE001 - upload eligibility is fail-closed
+        return False, f"{treatment}: shared case validation failed: {type(exc).__name__}: {exc}"
+    if metrics is None or report.get("valid") is not True:
+        errors = report.get("errors")
+        detail = "; ".join(str(error) for error in errors) if isinstance(errors, list) else "invalid case evidence"
+        return False, f"{treatment}: shared case validation failed: {detail}"
     return True, "registered windows completed and exact artifacts prepared"
 
 
 def evaluate_upload_gate(block_dir: pathlib.Path, schedule: tuple[str, ...]) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
     safe = True
-    for treatment in schedule:
+    try:
+        expected_block = int(block_dir.name.removeprefix("block-"))
+    except ValueError:
+        return {
+            "safe": False,
+            "checks": [
+                {"treatment": treatment, "safe": False, "reason": "block directory name is invalid"}
+                for treatment in schedule
+            ],
+        }
+    for position, treatment in enumerate(schedule):
         result_path = block_dir / treatment / "candidate-a-blocked-result.json"
         if not result_path.is_file():
             safe = False
@@ -386,7 +410,13 @@ def evaluate_upload_gate(block_dir: pathlib.Path, schedule: tuple[str, ...]) -> 
                 {"treatment": treatment, "safe": False, "reason": f"case result unreadable: {exc}"}
             )
             continue
-        case_safe, reason = _case_artifacts_are_exact(result, treatment)
+        case_safe, reason = _case_artifacts_are_exact(
+            result,
+            treatment,
+            case_path=result_path,
+            expected_block=expected_block,
+            expected_position=position,
+        )
         safe = safe and case_safe
         checks.append({"treatment": treatment, "safe": case_safe, "reason": reason})
     return {"safe": safe, "checks": checks}
@@ -396,16 +426,17 @@ def hardened_run_block(**kwargs: Any) -> int:
     """Run a block with fixed topology and emit an explicit artifact-upload gate."""
 
     global _EXPECTED_TOPOLOGY
+    evidence_root = pathlib.Path(kwargs["evidence_root"])
+    gate_path = evidence_root / UPLOAD_GATE_NAME
+    gate_path.unlink(missing_ok=True)
+
     if base.BOT_SCENARIO_SHA256 != ACTUAL_SCENARIO_SHA256:
         raise base.BenchmarkConfigurationError(
             f"registered stationary scenario SHA is stale: {base.BOT_SCENARIO_SHA256} != {ACTUAL_SCENARIO_SHA256}"
         )
 
-    evidence_root = pathlib.Path(kwargs["evidence_root"])
     block_index = int(kwargs["block_index"])
     block_dir = evidence_root / f"block-{block_index:02d}"
-    gate_path = evidence_root / UPLOAD_GATE_NAME
-    gate_path.unlink(missing_ok=True)
 
     expected = runner_topology()
     if len(expected["allowed_cpus"]) < 2:
