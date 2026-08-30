@@ -54,6 +54,10 @@ def main() -> int:
             f"{hardening.ACTUAL_SCENARIO_SHA256}"
         )
     scenario_contract["path"] = str(scenario_path)
+    # run_case changes cwd to the case directory. Match the formal run_block
+    # contract by freezing the scenario environment variable to its absolute
+    # repository path before entering that working directory.
+    os.environ[base.SCENARIO_FILE_ENV] = str(scenario_path)
 
     evidence_root = pathlib.Path(args.evidence_root).resolve()
     case_dir = evidence_root / args.treatment
