@@ -8,6 +8,7 @@ on:
       - "controller/combined_pack_gamerule_fleet_exact_runner.py"
       - "controller/python_evidence_provenance.py"
       - "controller/run_test.py"
+      - "fixtures/endstone-ci-lifecycle-control/**"
   workflow_dispatch:
 
 permissions:
@@ -35,8 +36,10 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install smoke dependencies
-        run: python -m pip install --disable-pip-version-check psutil packaging
+      - name: Install smoke dependencies and lifecycle fixture
+        run: |
+          python -m pip install --disable-pip-version-check psutil packaging
+          python -m pip install --disable-pip-version-check ./fixtures/endstone-ci-lifecycle-control
 
       - name: Validate exact Spark artifact
         run: >-
