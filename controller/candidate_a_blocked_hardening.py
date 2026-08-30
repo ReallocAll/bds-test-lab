@@ -7,8 +7,10 @@ This module preserves the benchmark/statistical semantics in
 * controller process/thread affinity is restored after every case, including
   partial failures;
 * the runner CPU topology is fixed across all cases in a block;
-* evidence upload is enabled only after every case prepared the exact Spark and
-  Endstone artifacts successfully; and
+* bot affinity is applied through a ``psutil.Process`` wrapper around the
+  ``subprocess.Popen`` owned by the fleet harness;
+* evidence upload is enabled only after every case completed the registered
+  warm-up/measurement windows with the exact Spark and Endstone artifacts; and
 * the final block manifest is rewritten after those checks are known.
 """
 
@@ -165,7 +167,7 @@ def validate_endstone_root_process(process: psutil.Process) -> dict[str, Any]:
 
 
 class HardenedCandidateABlockedCase(_BASE_CASE):
-    """Candidate A case with authoritative Endstone-root process identity."""
+    """Candidate A case with authoritative process identity and affinity handling."""
 
     def _measurement_process(self) -> psutil.Process:
         if self.server is None or self.server.process is None:
@@ -175,6 +177,86 @@ class HardenedCandidateABlockedCase(_BASE_CASE):
         self.result["measurement_process_identity"] = identity
         self.protocol["measurement_process_identity"] = identity
         return process
+
+    def _bot_psutil_process(self) -> psutil.Process:
+        """Return the OS process for the fleet Popen without replacing its owner object."""
+
+        if self.bot is None or self.bot.process is None:
+            raise base.AffinityError("load generator process was not started")
+        try:
+            return psutil.Process(int(self.bot.process.pid))
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError, TypeError, ValueError) as exc:
+            raise base.AffinityError(f"unable to inspect load generator process: {exc}") from exc
+
+    def _record_affinity_sample(
+        self,
+        *,
+        bds_tids: dict[str, list[int]],
+        load_tids: dict[str, list[int]],
+        controller_tids: dict[str, list[int]],
+    ) -> None:
+        assert self.measurement_pid is not None and self._controlled_cpu is not None
+        bds_process = psutil.Process(self.measurement_pid)
+        load_process = self._bot_psutil_process()
+        try:
+            bds_affinity = sorted(int(cpu) for cpu in bds_process.cpu_affinity())
+            load_affinity = sorted(int(cpu) for cpu in load_process.cpu_affinity())
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError, ValueError) as exc:
+            raise base.AffinityError(f"unable to query process affinity: {exc}") from exc
+        controller_affinity = base._sched_affinity(os.getpid())
+        validated = base.validate_affinity_snapshot(
+            controlled_cpu=self._controlled_cpu,
+            bds_affinity=bds_affinity,
+            load_generator_affinity=load_affinity,
+            available_cpus=self._available_cpus,
+            bds_tid_affinities=bds_tids,
+            load_generator_tid_affinities=load_tids,
+            controller_affinity=controller_affinity,
+            controller_tid_affinities=controller_tids,
+        )
+        self.affinity = (self.affinity or {}) | validated | {
+            "bds_pid": self.measurement_pid,
+            "load_generator_pid": load_process.pid,
+            "controller_pid": os.getpid(),
+            "bds_affinity_after": bds_affinity,
+            "load_generator_affinity": load_affinity,
+            "controller_affinity": controller_affinity,
+            "bds_tids": sorted(int(tid) for tid in bds_tids),
+            "load_generator_tids": sorted(int(tid) for tid in load_tids),
+            "controller_tids": sorted(int(tid) for tid in controller_tids),
+            "bds_tid_affinities": bds_tids,
+            "load_generator_tid_affinities": load_tids,
+            "controller_tid_affinities": controller_tids,
+        }
+        self._affinity_samples.append(
+            {
+                "monotonic_ns": base.time.monotonic_ns(),
+                "phase": self._affinity_phase,
+                "bds_tids": bds_tids,
+                "load_generator_tids": load_tids,
+                "controller_tids": controller_tids,
+            }
+        )
+        self.affinity["verification_count"] = len(self._affinity_samples)
+        self.affinity["verification_samples"] = self._affinity_samples
+        self.result["affinity"] = self.affinity
+
+    def _set_bot_affinity(self) -> None:
+        if not self._load_cpus:
+            raise base.AffinityError("no non-BDS CPUs are available for the load generator")
+        load_process = self._bot_psutil_process()
+        try:
+            load_process.cpu_affinity(self._load_cpus)
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError, ValueError) as exc:
+            raise base.AffinityError(f"unable to set load generator affinity: {exc}") from exc
+        self._verify_all_affinity()
+        self.check(
+            "load-generator-affinity",
+            "PASS",
+            "controller and load generator pinned to CPUs excluding the controlled BDS CPU",
+            **(self.affinity or {}),
+        )
+        self._write_results()
 
 
 def _write_case_result(case_dir: pathlib.Path, result: dict[str, Any]) -> None:
@@ -238,7 +320,37 @@ def hardened_run_case(**kwargs: Any) -> tuple[int, dict[str, Any]]:
     return code, result
 
 
+def _case_completed_registered_windows(result: dict[str, Any], treatment: str) -> tuple[bool, str]:
+    if result.get("status") != "PASS" or result.get("state") != "completed":
+        return False, f"{treatment}: case did not complete successfully"
+    if result.get("failed_stage"):
+        return False, f"{treatment}: failed_stage is present"
+    performance = result.get("performance")
+    counter_windows = performance.get("counter_windows") if isinstance(performance, dict) else None
+    warmup = counter_windows.get("warmup") if isinstance(counter_windows, dict) else None
+    measurement = counter_windows.get("measurement") if isinstance(counter_windows, dict) else None
+    if not isinstance(warmup, dict) or not isinstance(measurement, dict):
+        return False, f"{treatment}: registered counter windows are missing"
+    if warmup.get("configured_seconds") != base.WARMUP_SECONDS:
+        return False, f"{treatment}: warm-up configuration drifted"
+    if measurement.get("configured_seconds") != base.MEASUREMENT_SECONDS:
+        return False, f"{treatment}: measurement configuration drifted"
+    try:
+        warmup_observed = float(warmup.get("observed_seconds"))
+        measurement_observed = float(measurement.get("observed_seconds"))
+    except (TypeError, ValueError):
+        return False, f"{treatment}: observed window durations are missing"
+    if warmup_observed < base.WARMUP_SECONDS:
+        return False, f"{treatment}: warm-up ended early ({warmup_observed:.3f}s)"
+    if measurement_observed < base.MEASUREMENT_SECONDS:
+        return False, f"{treatment}: measurement ended early ({measurement_observed:.3f}s)"
+    return True, "registered windows completed"
+
+
 def _case_artifacts_are_exact(result: dict[str, Any], treatment: str) -> tuple[bool, str]:
+    completed, completion_reason = _case_completed_registered_windows(result, treatment)
+    if not completed:
+        return False, completion_reason
     expected_spark = base.BASELINE_SHA if treatment.endswith("-B") else base.CANDIDATE_SHA
     metadata = result.get("artifact_metadata")
     components = metadata.get("components") if isinstance(metadata, dict) else None
@@ -254,7 +366,7 @@ def _case_artifacts_are_exact(result: dict[str, Any], treatment: str) -> tuple[b
         return False, f"{treatment}: Endstone artifact identity is missing"
     if str(endstone_artifact.get("sha", "")).lower() != base.ENDSTONE_SHA:
         return False, f"{treatment}: Endstone artifact identity drifted"
-    return True, "exact artifacts prepared"
+    return True, "registered windows completed and exact artifacts prepared"
 
 
 def evaluate_upload_gate(block_dir: pathlib.Path, schedule: tuple[str, ...]) -> dict[str, Any]:
@@ -311,11 +423,12 @@ def hardened_run_block(**kwargs: Any) -> int:
 
     schedule = base.block_schedule(block_index)
     gate = evaluate_upload_gate(block_dir, schedule)
+    gate["block_exit_code"] = code
     gate["runner_topology_expected"] = expected
     gate["runner_topology_after_block"] = topology_after_block
     gate["runner_topology_stable"] = topology_stable
     gate["scenario_sha256"] = ACTUAL_SCENARIO_SHA256
-    gate["eligible"] = bool(gate["safe"] and topology_stable)
+    gate["eligible"] = bool(code == 0 and gate["safe"] and topology_stable)
 
     manifest_path = block_dir / "candidate-a-blocked-block.json"
     manifest: dict[str, Any] = {}
