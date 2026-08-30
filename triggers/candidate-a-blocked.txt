@@ -1,0 +1,6 @@
+Candidate A controlled benchmark batch 1
+start_block=1
+batch_size=4
+baseline_sha=15b79e814ee6542f8a2382df09353e9c2009c8d1
+candidate_sha=78314038b67d506ec48da9a61181c0048fb3658e
+runner_hardening_merge=3e456b3e8a2d003cb81f164785e550fd4cf9ae53
