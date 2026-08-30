@@ -12,9 +12,9 @@ on:
         description: "Exact ReallocAll/spark develop SHA to validate"
         required: true
       bot_ref:
-        description: "Exact ReallocAll/bds-test-bot ref"
+        description: "Exact fixed ReallocAll/bds-test-bot SHA"
         required: false
-        default: "a0a83240e9e8f12d4806ba31194fb1807d7b5dd1"
+        default: "b8c4875bb1fafaa5dd9b8e91b16b613af47bf37a"
       soak_minutes:
         description: "BDS soak duration per platform"
         required: false
@@ -32,7 +32,13 @@ env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
   EXPECTED_SPARK_SHA: ${{ github.event.inputs.spark_sha || '' }}
-  BOT_REF: ${{ github.event.inputs.bot_ref || 'a0a83240e9e8f12d4806ba31194fb1807d7b5dd1' }}
+  EXPECTED_ENDSTONE_SHA: "c76c814289ee3be8a7236389b6bdeb5728b154e4"
+  EXPECTED_ENDSTONE_RUN_ID: "32992839821"
+  EXPECTED_ENDSTONE_ARTIFACT_ID: "9616075557"
+  EXPECTED_ENDSTONE_VERSION: "0.11.10.dev387"
+  EXPECTED_BDS_VERSION: "1.26.44.3"
+  EXPECTED_BOT_REF: "b8c4875bb1fafaa5dd9b8e91b16b613af47bf37a"
+  BOT_REF: ${{ github.event.inputs.bot_ref || 'b8c4875bb1fafaa5dd9b8e91b16b613af47bf37a' }}
   SOAK_MINUTES: ${{ github.event.inputs.soak_minutes || '30' }}
 
 jobs:
@@ -64,21 +70,22 @@ jobs:
           import os
           from pathlib import Path
 
-          expected = os.environ.get("EXPECTED_SPARK_SHA", "").strip()
-          bot_ref = os.environ.get("BOT_REF", "").strip()
+          expected = os.environ.get("EXPECTED_SPARK_SHA", "").strip().lower()
+          bot_ref = os.environ.get("BOT_REF", "").strip().lower()
+          fixed_bot_ref = os.environ["EXPECTED_BOT_REF"].strip().lower()
           soak = os.environ.get("SOAK_MINUTES", "30").strip()
           trigger = Path("release-trigger.json")
           if not expected:
               if not trigger.is_file():
                   raise SystemExit("release-trigger.json is required for push-triggered validation")
               data = json.loads(trigger.read_text(encoding="utf-8"))
-              expected = str(data.get("spark_sha", "")).strip()
-              bot_ref = str(data.get("bot_ref", bot_ref)).strip()
+              expected = str(data.get("spark_sha", "")).strip().lower()
+              bot_ref = str(data.get("bot_ref", bot_ref)).strip().lower()
               soak = str(data.get("soak_minutes", soak)).strip()
-          if len(expected) != 40 or any(ch not in "0123456789abcdefABCDEF" for ch in expected):
+          if len(expected) != 40 or any(ch not in "0123456789abcdef" for ch in expected):
               raise SystemExit(f"Invalid exact Spark SHA: {expected!r}")
-          if not bot_ref:
-              raise SystemExit("Bot ref must not be empty")
+          if bot_ref != fixed_bot_ref:
+              raise SystemExit(f"Bot ref must equal fixed release SHA {fixed_bot_ref}; got {bot_ref!r}")
           if not soak.isdigit() or int(soak) < 30:
               raise SystemExit(f"Soak duration must be at least 30 minutes: {soak!r}")
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
@@ -87,6 +94,9 @@ jobs:
               env.write(f"SOAK_MINUTES={soak}\n")
           print(f"Spark SHA: {expected}")
           print(f"Bot ref: {bot_ref}")
+          print(f"Endstone SHA: {os.environ['EXPECTED_ENDSTONE_SHA']}")
+          print(f"Endstone run/artifact: {os.environ['EXPECTED_ENDSTONE_RUN_ID']}/{os.environ['EXPECTED_ENDSTONE_ARTIFACT_ID']}")
+          print(f"BDS: {os.environ['EXPECTED_BDS_VERSION']}")
           print(f"Soak minutes: {soak}")
           PY
 
@@ -112,10 +122,11 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           cd bot-src
+          test "$(git rev-parse HEAD)" = "$EXPECTED_BOT_REF"
           go mod download
           go test ./...
           go build -trimpath -o "../dist/${BOT_NAME}" ./cmd/bds-test-bot
-          echo "Bot ref: ${BOT_REF}"
+          echo "Bot SHA: $(git rev-parse HEAD)"
 
       - name: Set up Python 3.13
         uses: actions/setup-python@v6
@@ -148,14 +159,19 @@ jobs:
           from pathlib import Path
           data = json.loads(Path("test-results.json").read_text())
           metadata = json.loads(Path("metadata.json").read_text()) if Path("metadata.json").is_file() else {}
-          spark_sha = (((metadata.get("components") or {}).get("spark") or {}).get("sha"))
+          components = metadata.get("components") or {}
+          spark = components.get("spark") or {}
+          endstone = components.get("endstone") or {}
           print("## Spark v0.6 release validation")
           print()
           print(f"Platform: **{data.get('platform')}**")
           print(f"Status: **{data.get('status')}**")
-          print(f"Spark SHA: `{spark_sha}`")
+          print(f"Spark SHA: `{spark.get('sha')}`")
+          print(f"Endstone SHA: `{endstone.get('sha')}`")
+          print(f"Endstone run/artifact: `{endstone.get('run_id')}` / `{(endstone.get('artifact') or {}).get('id')}`")
           print(f"BDS: `{data.get('bds_version')}`")
-          print(f"Endstone: `{data.get('installed_endstone_version')}`")
+          print(f"Endstone version: `{data.get('installed_endstone_version')}`")
+          print(f"Bot SHA: `{data.get('release_provenance', {}).get('expected_bot_ref')}`")
           print(f"Execution profile: {data.get('execution_profile_viewer_url')}")
           print(f"Allocation profile: {data.get('allocation_profile_viewer_url')}")
           print(f"Health upload: {data.get('health_upload_viewer_url')}")
