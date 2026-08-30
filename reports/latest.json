@@ -1,5 +1,5 @@
 {
-  "completed_at": "2026-08-30T11:39:12.929306Z",
+  "completed_at": "2026-08-30T11:40:21.352672Z",
   "components": {
     "endstone": {
       "platforms": {
@@ -49,12 +49,12 @@
     }
   },
   "endstone_sha": "c76c814289ee3be8a7236389b6bdeb5728b154e4",
-  "lab_commit": "6ffdb15daba9675380cb8e67491be3777341c1f9",
-  "lab_run_id": "33309420086",
-  "lab_run_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/33309420086",
+  "lab_commit": "b4bb6a65b5214431177d02370ced0081f80d67a2",
+  "lab_run_id": "33309450504",
+  "lab_run_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/33309450504",
   "platforms": {
     "linux": {
-      "actions_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/33309420086",
+      "actions_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/33309450504",
       "allocation_profile_viewer_url": null,
       "bds_version": "26.44",
       "checks": [
@@ -107,20 +107,20 @@
         {
           "name": "execution-profiler",
           "status": "PASS",
-          "viewer_url": "https://spark.lucko.me/7maa8k5p7s"
+          "viewer_url": "https://spark.lucko.me/d4uShUXFHU"
         }
       ],
       "error_summary": null,
-      "execution_profile_viewer_url": "https://spark.lucko.me/7maa8k5p7s",
+      "execution_profile_viewer_url": "https://spark.lucko.me/d4uShUXFHU",
       "failed_stage": null,
       "profiles": [
         {
           "duration_seconds": 12,
           "kind": "execution",
           "notes": "Headless execution profiler",
-          "profile_key": "7maa8k5p7s",
+          "profile_key": "d4uShUXFHU",
           "server_version": "26.44",
-          "url": "https://spark.lucko.me/7maa8k5p7s"
+          "url": "https://spark.lucko.me/d4uShUXFHU"
         }
       ],
       "recovery": {
@@ -146,7 +146,7 @@
       "status": "running"
     },
     "windows": {
-      "actions_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/33309420086",
+      "actions_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/33309450504",
       "allocation_profile_viewer_url": null,
       "bds_version": null,
       "checks": [
@@ -157,6 +157,16 @@
         {
           "detail": "downloads\\endstone\\payload\\endstone-0.11.10.dev387-windows-x86_64\\endstone-0.11.10.dev387-cp313-cp313-win_amd64.whl",
           "name": "endstone-wheel-located",
+          "status": "PASS"
+        },
+        {
+          "detail": "work\\windows\\bedrock_server\\plugins\\endstone_spark.dll",
+          "name": "spark-plugin-deployed",
+          "status": "PASS"
+        },
+        {
+          "detail": "work\\windows\\bedrock_server\\plugins\\spark_allocation_shim.dll",
+          "name": "spark-allocation-shim-deployed",
           "status": "PASS"
         }
       ],
