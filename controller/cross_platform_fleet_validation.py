@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import pathlib
+import signal
 import subprocess
 import sys
 import threading
@@ -62,6 +63,62 @@ class CrossPlatformFleetBotProcess(FleetBotProcess):
         )
         self._reader = threading.Thread(target=self._read_loop, name="fleet-bot-log-reader", daemon=True)
         self._reader.start()
+
+    def _complete_linux_sigterm_shutdown(self, code: int) -> bool:
+        """Recognize a semantically graceful fleet shutdown despite waitpid(SIGTERM).
+
+        The exact Go bot catches SIGTERM, drains every instance, emits one
+        ``bot_stats`` event per launched bot, then emits ``fleet_shutdown``.
+        On some hosted Linux runners ``waitpid`` has nevertheless reported the
+        wrapper process as signal-terminated.  Do not accept that exit code by
+        itself: require the complete application-level shutdown contract first.
+        """
+
+        if sys.platform != "linux" or code != -int(signal.SIGTERM):
+            return False
+        events = self.event_snapshot()
+        shutdown = next((event for event in reversed(events) if event.get("event") == "fleet_shutdown"), None)
+        if not isinstance(shutdown, dict):
+            return False
+        if shutdown.get("graceful_shutdown") is not True or shutdown.get("reason") != "signal":
+            return False
+        if "error" in shutdown:
+            return False
+        try:
+            launched = int(shutdown.get("launched", -1))
+            online = int(shutdown.get("online", -1))
+        except (TypeError, ValueError):
+            return False
+        if launched != self.count or online != self.count:
+            return False
+
+        stats = [event for event in events if event.get("event") == "bot_stats"]
+        if len(stats) != self.count:
+            return False
+        indexes: set[int] = set()
+        for event in stats:
+            if event.get("online") is not True or "error" in event:
+                return False
+            try:
+                index = int(event.get("index", -1))
+            except (TypeError, ValueError):
+                return False
+            if index < 1 or index > self.count or index in indexes:
+                return False
+            indexes.add(index)
+        return indexes == set(range(1, self.count + 1))
+
+    def terminate(self, timeout: float = 15.0) -> int:
+        code = super().terminate(timeout)
+        if code == 0:
+            return 0
+        if self._complete_linux_sigterm_shutdown(code):
+            print(
+                "[bot] normalized Linux -SIGTERM exit after complete graceful fleet shutdown evidence",
+                flush=True,
+            )
+            return 0
+        return code
 
 
 class CrossPlatformFleetSparkValidation(FleetSparkValidation):
