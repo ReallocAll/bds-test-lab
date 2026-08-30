@@ -49,7 +49,7 @@ on:
 
 concurrency:
   group: candidate-a-blocked-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
   contents: read
