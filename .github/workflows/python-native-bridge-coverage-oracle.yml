@@ -1,0 +1,157 @@
+name: Python Native Bridge Coverage Oracle
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: python-native-bridge-coverage-oracle-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+  PARENT_SHA: "78314038b67d506ec48da9a61181c0048fb3658e"
+  CANDIDATE_SHA: "ea0af5f3abf1817bba126b3cc9bfe78d837cb329"
+  PROFILE_SECONDS: "60"
+  WARMUP_SECONDS: "30"
+
+jobs:
+  coverage-oracle:
+    name: Linux CPython 3.13 paired native bridge coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout test lab
+        uses: actions/checkout@v7
+
+      - name: Wait for exact Spark CI and artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          for sha in "$PARENT_SHA" "$CANDIDATE_SHA"; do
+            ready=0
+            for attempt in $(seq 1 80); do
+              json="$(gh api "repos/ReallocAll/spark/actions/runs?head_sha=${sha}&per_page=50")"
+              build="$(jq -r '[.workflow_runs[] | select(.name == "Build")][0].conclusion // ""' <<<"$json")"
+              python_ci="$(jq -r '[.workflow_runs[] | select(.name == "Python attribution")][0].conclusion // ""' <<<"$json")"
+              echo "sha=$sha attempt=$attempt Build=${build:-pending} Python=${python_ci:-pending}"
+              if [[ "$build" == success && "$python_ci" == success ]]; then
+                ready=1
+                break
+              fi
+              for conclusion in "$build" "$python_ci"; do
+                if [[ "$conclusion" == failure || "$conclusion" == cancelled || "$conclusion" == timed_out ]]; then
+                  echo "Exact Spark CI failed for $sha: Build=$build Python=$python_ci" >&2
+                  exit 1
+                fi
+              done
+              sleep 15
+            done
+            if [[ "$ready" -ne 1 ]]; then
+              echo "Timed out waiting for exact Spark CI for $sha" >&2
+              exit 1
+            fi
+            EXPECTED_SPARK_SHA="$sha" python -m controller.assert_spark_artifact --platform linux --expected-sha "$sha"
+          done
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install fixture build dependencies
+        run: python -m pip install --disable-pip-version-check hatchling
+
+      - name: Run five interleaved fresh-process parent/candidate pairs
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          mkdir -p evidence
+          printf 'rep\ttarget\tsha\tlabel\tcontroller_exit_code\tstatus\tnote\n' > evidence/case-status.tsv
+          overall=0
+
+          copy_if_present() {
+            local source="$1"
+            local target="$2"
+            [[ -e "$source" ]] || return 0
+            cp -a "$source" "$target"
+          }
+
+          run_case() {
+            local rep="$1" target="$2" sha="$3"
+            local label="rep${rep}-${target}"
+            local case_dir="evidence/$label"
+            echo "===== $label sha=$sha ====="
+            mkdir -p "$case_dir"
+            rm -rf downloads work coverage-wheel
+            rm -f metadata.json bds.log endstone.log spark.log test-results.json \
+              python-native-bridge-coverage-result.json python-native-bridge-coverage-summary.json \
+              python-native-bridge-coverage.sparkprofile coverage-counters.json \
+              coverage-counters-cumulative.json profile-window-boundaries.json failure-diagnostics.txt
+
+            EXPECTED_SPARK_SHA="$sha" python -m controller.python_native_bridge_coverage_oracle \
+              --platform linux --profile-seconds "$PROFILE_SECONDS" --warmup-seconds "$WARMUP_SECONDS" \
+              2>&1 | tee "$case_dir/controller-output.log"
+            pipeline_status=("${PIPESTATUS[@]}")
+            controller_exit="${pipeline_status[0]}"
+            tee_exit="${pipeline_status[1]}"
+            copy_failed=0
+            for path in metadata.json bds.log endstone.log spark.log test-results.json \
+              python-native-bridge-coverage-result.json python-native-bridge-coverage-summary.json \
+              python-native-bridge-coverage.sparkprofile coverage-counters.json \
+              coverage-counters-cumulative.json profile-window-boundaries.json failure-diagnostics.txt; do
+              if [[ -e "$path" ]] && ! copy_if_present "$path" "$case_dir/"; then
+                copy_failed=1
+              fi
+            done
+            if [[ -f work/linux/bedrock_server/version.txt ]]; then
+              copy_if_present work/linux/bedrock_server/version.txt "$case_dir/bds-version.txt" || copy_failed=1
+            fi
+            if [[ -f work/linux/bedrock_server/server.properties ]]; then
+              copy_if_present work/linux/bedrock_server/server.properties "$case_dir/server.properties" || copy_failed=1
+            fi
+            status=PASS
+            note=""
+            if [[ "$controller_exit" -ne 0 || "$tee_exit" -ne 0 || "$copy_failed" -ne 0 ]]; then
+              status=FAIL
+              note="controller_or_evidence_copy_failed"
+              overall=1
+            fi
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+              "$rep" "$target" "$sha" "$label" "$controller_exit" "$status" "$note" >> evidence/case-status.tsv
+          }
+
+          for rep in 1 2 3 4 5; do
+            if (( rep % 2 == 1 )); then
+              run_case "$rep" parent "$PARENT_SHA"
+              run_case "$rep" candidate "$CANDIDATE_SHA"
+            else
+              run_case "$rep" candidate "$CANDIDATE_SHA"
+              run_case "$rep" parent "$PARENT_SHA"
+            fi
+          done
+          exit "$overall"
+
+      - name: Analyze correctness oracle evidence
+        if: always()
+        shell: bash
+        run: >-
+          python -m controller.python_native_bridge_coverage_oracle
+          --analyze --root evidence
+          --parent-sha "$PARENT_SHA"
+          --candidate-sha "$CANDIDATE_SHA"
+          --repetitions 5
+
+      - name: Upload raw correctness evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-native-bridge-coverage-oracle-${{ github.run_id }}
+          path: evidence
+          if-no-files-found: error
+          retention-days: 30

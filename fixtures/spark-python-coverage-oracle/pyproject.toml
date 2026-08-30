@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "endstone-spark-python-coverage-oracle"
+version = "0.1.0"
+description = "Fixed-window Python workload for Spark native bridge correctness validation"
+requires-python = ">=3.13,<3.14"
+
+[project.entry-points."endstone"]
+spark-python-coverage-oracle = "endstone_spark_python_coverage_oracle:CoveragePlugin"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/endstone_spark_python_coverage_oracle"]
