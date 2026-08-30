@@ -10,11 +10,20 @@ class CiLifecycleControl(Plugin):
         "cishutdown": {
             "description": "Gracefully shut down Endstone for CI lifecycle validation",
             "usages": ["/cishutdown"],
+            "permissions": ["endstone_ci_lifecycle_control.command.cishutdown"],
+        }
+    }
+    permissions = {  # noqa: RUF012 - Endstone discovers permission metadata from the plugin class.
+        "endstone_ci_lifecycle_control.command.cishutdown": {
+            "description": "Allow the CI lifecycle harness to shut down Endstone gracefully.",
+            "default": "op",
         }
     }
 
     def on_enable(self) -> None:
-        self.logger.info("CI lifecycle control enabled")
+        if self.get_command("cishutdown") is None:
+            raise RuntimeError("Endstone did not register the cishutdown command")
+        self.logger.info("CI lifecycle control enabled; cishutdown registered")
 
     def on_command(self, sender: CommandSender, command: Command, args: list[str]) -> bool:
         del sender, args
