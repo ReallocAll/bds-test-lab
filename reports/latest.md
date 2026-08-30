@@ -1,21 +1,21 @@
 # Latest BDS integration test
 
-- Lab commit: `fb8d825f1d5304580cfb746b7cd15687cd4e9854`
-- Lab Actions: [33296547290](https://github.com/ReallocAll/bds-test-lab/actions/runs/33296547290)
-- State: **FAIL**
+- Lab commit: `cab4f1c4deed039e4d7b7aa163f91928114aec53`
+- Lab Actions: [33297161720](https://github.com/ReallocAll/bds-test-lab/actions/runs/33297161720)
+- State: **PASS**
 - Spark SHA: `15b79e814ee6542f8a2382df09353e9c2009c8d1`
 - Endstone SHA: `c76c814289ee3be8a7236389b6bdeb5728b154e4`
-- Completed: `2026-08-30T06:33:45.439214Z`
+- Completed: `2026-08-30T07:05:46.048814Z`
 
 ## Platforms
 
 | Platform | Result | BDS | Shutdown | Crash replay | Soak | Execution | Allocation | Recovery |
 |---|---|---|---|---|---|---|---|---|
-| Windows | **running** | `26.44` | `controlled_crash_for_recovery` | `PASS` | `30m` | [viewer](https://spark.lucko.me/D8YENi6Oiy) | [viewer](https://spark.lucko.me/VS1riyD1fP) | [viewer](https://spark.lucko.me/oUoVEX9g31) |
+| Windows | **PASS** | `26.44` | `graceful` | `PASS` | `30m` | [viewer](https://spark.lucko.me/KMRK7fZRMo) | [viewer](https://spark.lucko.me/MJD79ABTIv) | [viewer](https://spark.lucko.me/k9iAxcXkfy) |
 
-- windows soak RSS: start `None`, end `None`, peak `None`
-- windows soak threads: start `None`, end `None`, peak `None`
-| Linux | **running** | `26.44` | `controlled_crash_for_recovery` | `PASS` | `30m` | [viewer](https://spark.lucko.me/cXZjNJahvs) | [viewer](https://spark.lucko.me/roGjfXdQSh) | [viewer](https://spark.lucko.me/EfGBR3rH2h) |
+- windows soak RSS: start `619831296`, end `65478656`, peak `620388352`
+- windows soak threads: start `56`, end `40`, peak `56`
+| Linux | **PASS** | `26.44` | `graceful` | `PASS` | `30m` | [viewer](https://spark.lucko.me/EjVbXVDrg2) | [viewer](https://spark.lucko.me/cGjk3iKl5K) | [viewer](https://spark.lucko.me/uSwCNuORWr) |
 
-- linux soak RSS: start `None`, end `None`, peak `None`
-- linux soak threads: start `None`, end `None`, peak `None`
+- linux soak RSS: start `852054016`, end `858058752`, peak `858058752`
+- linux soak threads: start `27`, end `28`, peak `28`
