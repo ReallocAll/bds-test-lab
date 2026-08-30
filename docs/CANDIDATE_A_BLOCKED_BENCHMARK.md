@@ -38,7 +38,7 @@ python -m unittest discover -s tests -p "test_candidate_a_blocked*.py"
 git diff --check
 ```
 
-The controller's upload gate can be run against an evidence directory with `python -m controller.candidate_a_blocked_benchmark --prepare-evidence --evidence-root evidence`. It removes only the three generated runtime payload directories from each case, tolerates the top-level `.candidate-a-upload-ok` control marker without uploading it, and fails closed on an unexpected file, symlink, or oversized retained file.
+The controller's upload gate can be run against an evidence directory with `python -m controller.candidate_a_blocked_benchmark --prepare-evidence --evidence-root evidence`. It removes only the three generated runtime payload directories from each case, tolerates the top-level `.candidate-a-upload-ok` control marker without uploading it, and fails closed on an unexpected file, symlink, or oversized retained file. A successfully prepared but ineligible block is retained only in the separately named rejected-diagnostics artifact; the analyzer's valid artifact discovery ignores that prefix.
 
 The exact Actions commands are prepared here but are not run by repository changes:
 

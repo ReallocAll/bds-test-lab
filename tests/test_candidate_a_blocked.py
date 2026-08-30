@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from controller.candidate_a_blocked_analyzer import (
+    REJECTED_ARTIFACT_PREFIX,
     EvidenceError,
     _verify_evidence_manifests,
     analyze_evidence,
@@ -1192,6 +1193,27 @@ class CandidateABlockedBenchmarkTest(unittest.TestCase):
         )
         upload_paths = workflow.split("path: |", 1)[1].split("if-no-files-found", 1)[0]
         self.assertNotIn(".candidate-a-upload-ok", upload_paths)
+        self.assertIn("Upload rejected block diagnostics", workflow)
+        self.assertIn(
+            "if: ${{ always() && steps.prepare-evidence.outcome == 'success' && "
+            "steps.evidence_gate.outputs.eligible == 'false' }}",
+            workflow,
+        )
+        self.assertIn("name: candidate-a-blocked-rejected-diagnostics-", workflow)
+        self.assertIn("pattern: candidate-a-blocked-block-*", workflow)
+        self.assertNotIn("pattern: candidate-a-blocked-rejected-diagnostics-*", workflow)
+
+    def test_analyzer_ignores_rejected_diagnostics_artifact_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            valid = Path(temp) / "valid"
+            _write_batch(valid)
+            rejected = Path(temp) / f"{REJECTED_ARTIFACT_PREFIX}0"
+            _write_batch(rejected)
+
+            summary = analyze_evidence([valid, rejected], start_block=1)
+
+        self.assertTrue(summary["valid"])
+        self.assertEqual(len(summary["did"]["cpu_percent_of_one_core"]["values"]), 4)
 
     def test_invalid_case_with_performance_data_contributes_no_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

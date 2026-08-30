@@ -56,6 +56,7 @@ from controller.candidate_a_blocked_benchmark import (
 )
 
 CPU_CI_HALF_WIDTH_LIMIT = 0.5
+REJECTED_ARTIFACT_PREFIX = "candidate-a-blocked-rejected-diagnostics-"
 SEQUENTIAL_CONFIDENCE = 0.99
 SEQUENTIAL_FAMILYWISE_CONFIDENCE = 0.95
 SEQUENTIAL_LOOKS = (4, 8, 12, 16, 20)
@@ -1376,11 +1377,17 @@ def _verify_evidence_manifests(
     manifests_by_block: dict[int, pathlib.Path] = {}
     candidates: list[pathlib.Path] = []
     for root in roots:
+        if any(part.startswith(REJECTED_ARTIFACT_PREFIX) for part in root.parts):
+            continue
         if root.is_file():
             if root.name == EVIDENCE_MANIFEST_NAME:
                 candidates.append(root)
         elif root.is_dir():
-            candidates.extend(sorted(root.rglob(EVIDENCE_MANIFEST_NAME)))
+            candidates.extend(
+                path
+                for path in sorted(root.rglob(EVIDENCE_MANIFEST_NAME))
+                if not any(part.startswith(REJECTED_ARTIFACT_PREFIX) for part in path.parts)
+            )
         else:
             continue
     if not candidates:
@@ -1415,7 +1422,17 @@ def _iter_case_files(roots: abc.Iterable[pathlib.Path]) -> list[tuple[pathlib.Pa
     for root in roots:
         if not root.exists():
             raise EvidenceError(f"evidence root does not exist: {root}")
-        candidates = [root] if root.is_file() else sorted(root.rglob("candidate-a-blocked-result.json"))
+        if any(part.startswith(REJECTED_ARTIFACT_PREFIX) for part in root.parts):
+            continue
+        candidates = (
+            [root]
+            if root.is_file()
+            else [
+                path
+                for path in sorted(root.rglob("candidate-a-blocked-result.json"))
+                if not any(part.startswith(REJECTED_ARTIFACT_PREFIX) for part in path.parts)
+            ]
+        )
         for path in candidates:
             if not path.is_file():
                 continue
