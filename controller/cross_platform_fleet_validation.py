@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
@@ -70,7 +69,7 @@ class CrossPlatformFleetBotProcess(FleetBotProcess):
         The exact Go bot catches SIGTERM, drains every instance, emits one
         ``bot_stats`` event per launched bot, then emits ``fleet_shutdown``.
         On some hosted Linux runners ``waitpid`` has nevertheless reported the
-        wrapper process as signal-terminated.  Do not accept that exit code by
+        wrapper process as signal-terminated. Do not accept that exit code by
         itself: require the complete application-level shutdown contract first.
         """
 
