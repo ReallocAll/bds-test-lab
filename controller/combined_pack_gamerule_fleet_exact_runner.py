@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 
 from controller.combined_pack_gamerule_fleet_validation import (
     CombinedPackGameruleFleetValidation,
@@ -11,6 +12,7 @@ from controller.python_evidence_provenance import (
     validate_component_provenance,
     validate_endstone_runtime_version,
 )
+from controller.run_test import READY_HINTS, SPARK_LOAD_HINTS, ServerProcess, write_json
 
 _ORIGINAL_INSTALL_ARTIFACTS = CombinedPackGameruleFleetValidation.install_artifacts
 _ORIGINAL_START_SERVER = CombinedPackGameruleFleetValidation.start_server
@@ -33,8 +35,47 @@ def _install_exact_artifacts(self: CombinedPackGameruleFleetValidation) -> None:
     )
 
 
+def _start_windows_headless_server(self: CombinedPackGameruleFleetValidation) -> None:
+    """Run Endstone's documented non-interactive mode so stdin remains pipe-driven."""
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "endstone",
+        "--yes",
+        "--no-interactive",
+        "--server-folder",
+        str(self.server_dir),
+    ]
+    self.server = ServerProcess(cmd, self.root, self.log_path)
+    self.server.start()
+    self.server.wait_for(
+        lambda lines: any(any(hint in line.lower() for hint in READY_HINTS) for line in lines),
+        240,
+        "BDS ready",
+    )
+    self.check("bds-start", "PASS")
+    self.check("ready", "PASS")
+    self.server.wait_for(
+        lambda lines: any(
+            "spark" in line.lower() and any(hint in line.lower() for hint in SPARK_LOAD_HINTS)
+            for line in lines
+        ),
+        30,
+        "Spark enable",
+    )
+    self.check("spark-load-enable", "PASS")
+    version_file = self.server_dir / "version.txt"
+    if version_file.exists():
+        self.result["bds_version"] = version_file.read_text(encoding="utf-8").strip()
+        write_json(self.result_path, self.result)
+
+
 def _start_exact_server(self: CombinedPackGameruleFleetValidation) -> None:
-    _ORIGINAL_START_SERVER(self)
+    if self.platform == "windows":
+        _start_windows_headless_server(self)
+    else:
+        _ORIGINAL_START_SERVER(self)
     assert self.server is not None
     observed_protocol = validate_bds_version(self.result, self.server.snapshot())
     self.check(
