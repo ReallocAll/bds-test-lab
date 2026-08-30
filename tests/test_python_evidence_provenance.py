@@ -82,7 +82,58 @@ class PythonEvidenceProvenanceTest(unittest.TestCase):
         ):
             validate_endstone_runtime_version()
 
-    def test_bds_version_is_exact(self) -> None:
+    def test_bds_protocol_and_full_runtime_are_both_exact(self) -> None:
+        env = {
+            "EXPECTED_BDS_VERSION": "1.26.44.3",
+            "EXPECTED_BDS_PROTOCOL_VERSION": "26.44",
+        }
+        lines = [
+            "[00:00:00 INFO]: Starting Server",
+            "[00:00:00 INFO]: Version: 1.26.44.3",
+            "[00:00:01 INFO]: This server is running Endstone version: 0.11.10.dev387 (Minecraft: 26.44)",
+        ]
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(validate_bds_version({"bds_version": "26.44"}, lines), "26.44")
+
+    def test_bds_protocol_drift_is_rejected(self) -> None:
+        env = {
+            "EXPECTED_BDS_VERSION": "1.26.44.3",
+            "EXPECTED_BDS_PROTOCOL_VERSION": "26.44",
+        }
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            self.assertRaisesRegex(RuntimeError, "protocol version mismatch"),
+        ):
+            validate_bds_version({"bds_version": "26.45"}, ["Version: 1.26.44.3"])
+
+    def test_bds_full_runtime_drift_or_missing_evidence_is_rejected(self) -> None:
+        env = {
+            "EXPECTED_BDS_VERSION": "1.26.44.3",
+            "EXPECTED_BDS_PROTOCOL_VERSION": "26.44",
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "full version mismatch"):
+                validate_bds_version({"bds_version": "26.44"}, ["Version: 1.26.45.0"])
+            with self.assertRaisesRegex(RuntimeError, "full-version runtime evidence is required"):
+                validate_bds_version({"bds_version": "26.44"})
+            with self.assertRaisesRegex(RuntimeError, "full version mismatch"):
+                validate_bds_version({"bds_version": "26.44"}, ["server ready"])
+
+    def test_multiple_full_runtime_versions_are_rejected(self) -> None:
+        env = {
+            "EXPECTED_BDS_VERSION": "1.26.44.3",
+            "EXPECTED_BDS_PROTOCOL_VERSION": "26.44",
+        }
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            self.assertRaisesRegex(RuntimeError, "multiple full versions"),
+        ):
+            validate_bds_version(
+                {"bds_version": "26.44"},
+                ["Version: 1.26.44.3", "Version: 1.26.45.0"],
+            )
+
+    def test_legacy_full_version_guard_remains_exact_without_protocol_pin(self) -> None:
         with mock.patch.dict(os.environ, {"EXPECTED_BDS_VERSION": "1.26.44.3"}, clear=True):
             self.assertEqual(validate_bds_version({"bds_version": "1.26.44.3"}), "1.26.44.3")
             with self.assertRaisesRegex(RuntimeError, "BDS version mismatch"):
