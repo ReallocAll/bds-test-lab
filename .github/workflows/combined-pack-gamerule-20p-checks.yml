@@ -80,7 +80,6 @@ jobs:
 
           workflow = Path('.github/workflows/combined-pack-gamerule-20p.yml').read_text(encoding='utf-8')
           exact_runner = Path('controller/combined_pack_gamerule_fleet_exact_runner.py').read_text(encoding='utf-8')
-          plugin = Path('fixtures/endstone-ci-lifecycle-control/src/endstone_ci_lifecycle_control/__init__.py').read_text(encoding='utf-8')
           required = (
               'c76c814289ee3be8a7236389b6bdeb5728b154e4',
               '32992839821',
@@ -93,9 +92,9 @@ jobs:
           missing = [value for value in required if value not in workflow]
           if missing:
               raise SystemExit(f'missing immutable provenance pins: {missing}')
-          if "if: matrix.platform == 'windows'" not in workflow or './fixtures/endstone-ci-lifecycle-control' not in workflow:
-              raise SystemExit('Windows-only lifecycle control installation is missing')
-          if 'cishutdown' not in exact_runner or 'cishutdown' not in plugin or 'self.server.shutdown()' not in plugin:
-              raise SystemExit('framework shutdown contract is missing')
+          if 'CTRL_BREAK_EVENT' not in exact_runner or 'send_signal' not in exact_runner:
+              raise SystemExit('Windows process-group lifecycle control is missing')
+          if 'cishutdown' in exact_runner:
+              raise SystemExit('exact runner still depends on native-console routing of an Endstone plugin command')
           print('immutable 20-player provenance and lifecycle contract: PASS')
           PY
