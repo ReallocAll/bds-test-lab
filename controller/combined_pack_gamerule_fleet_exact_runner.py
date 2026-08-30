@@ -4,6 +4,7 @@ import os
 import signal
 import subprocess
 import sys
+from typing import Any
 
 from controller.combined_pack_gamerule_fleet_validation import (
     CombinedPackGameruleFleetValidation,
@@ -24,16 +25,44 @@ _CTRL_BREAK_EVENT = getattr(signal, "CTRL_BREAK_EVENT", None)
 class _FrameworkShutdownServerProcess(ServerProcess):
     """Gracefully interrupt the Windows Endstone root process in headless mode."""
 
+    lifecycle_diagnostic: dict[str, Any]
+
     def graceful_stop(self, timeout: float = 60.0) -> bool:
-        if not self.is_alive():
+        pid = self.process.pid if self.process is not None else None
+        diagnostic: dict[str, Any] = {
+            "method": "CTRL_BREAK_EVENT",
+            "pid": pid,
+            "signal_available": _CTRL_BREAK_EVENT is not None,
+            "signal_value": int(_CTRL_BREAK_EVENT) if _CTRL_BREAK_EVENT is not None else None,
+            "timeout_seconds": timeout,
+            "alive_before": self.is_alive(),
+        }
+        self.lifecycle_diagnostic = diagnostic
+        if not diagnostic["alive_before"]:
+            diagnostic["outcome"] = "already-exited"
+            diagnostic["returncode"] = self.process.returncode if self.process is not None else None
+            print(f"[windows-lifecycle] {diagnostic}", flush=True)
             return True
         if _CTRL_BREAK_EVENT is None or self.process is None:
+            diagnostic["outcome"] = "unsupported"
+            print(f"[windows-lifecycle] {diagnostic}", flush=True)
             return False
         try:
             self.process.send_signal(_CTRL_BREAK_EVENT)
+            diagnostic["signal_sent"] = True
             self.process.wait(timeout=timeout)
+            diagnostic["returncode"] = self.process.returncode
+            diagnostic["outcome"] = "exited" if self.process.returncode == 0 else "nonzero-exit"
+            print(f"[windows-lifecycle] {diagnostic}", flush=True)
             return self.process.returncode == 0
-        except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired):
+        except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
+            diagnostic["outcome"] = "exception"
+            diagnostic["exception_type"] = type(exc).__name__
+            diagnostic["exception"] = str(exc)
+            diagnostic["winerror"] = getattr(exc, "winerror", None)
+            diagnostic["errno"] = getattr(exc, "errno", None)
+            diagnostic["returncode"] = self.process.returncode
+            print(f"[windows-lifecycle] {diagnostic}", flush=True)
             return False
 
 
