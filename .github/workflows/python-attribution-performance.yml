@@ -5,8 +5,8 @@ on:
     inputs:
       expected_spark_sha:
         description: "Exact Spark commit SHA to benchmark"
-        required: false
-        default: "b10964200f8dc3ed64e434da8edac08eabb84c41"
+        required: true
+        default: "78314038b67d506ec48da9a61181c0048fb3658e"
       duration_seconds:
         description: "Stable measurement seconds per mode"
         required: false
@@ -23,7 +23,11 @@ permissions:
 env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
-  EXPECTED_SPARK_SHA: ${{ github.event.inputs.expected_spark_sha || 'b10964200f8dc3ed64e434da8edac08eabb84c41' }}
+  EXPECTED_SPARK_SHA: ${{ github.event.inputs.expected_spark_sha || '78314038b67d506ec48da9a61181c0048fb3658e' }}
+  EXPECTED_ENDSTONE_SHA: "c76c814289ee3be8a7236389b6bdeb5728b154e4"
+  EXPECTED_ENDSTONE_RUN_ID: "32992839821"
+  EXPECTED_ENDSTONE_ARTIFACT_ID: "9616075557"
+  EXPECTED_BDS_VERSION: "1.26.44.3"
   BOT_REF: "b8c4875bb1fafaa5dd9b8e91b16b613af47bf37a"
   BDS_TEST_BOT_SCENARIO_FILE: bot-src/scenarios/mixed-actions.json
   DURATION_SECONDS: ${{ github.event.inputs.duration_seconds || '180' }}
@@ -40,6 +44,21 @@ jobs:
     steps:
       - name: Checkout lab
         uses: actions/checkout@v7
+
+      - name: Validate immutable provenance inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SPARK_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "Spark SHA is not exact" >&2; exit 1; }
+          [[ "$EXPECTED_ENDSTONE_SHA" == "c76c814289ee3be8a7236389b6bdeb5728b154e4" ]] || { echo "Endstone SHA drift" >&2; exit 1; }
+          [[ "$EXPECTED_ENDSTONE_RUN_ID" == "32992839821" ]] || { echo "Endstone run drift" >&2; exit 1; }
+          [[ "$EXPECTED_ENDSTONE_ARTIFACT_ID" == "9616075557" ]] || { echo "Endstone artifact drift" >&2; exit 1; }
+          [[ "$EXPECTED_BDS_VERSION" == "1.26.44.3" ]] || { echo "BDS version drift" >&2; exit 1; }
+          [[ "$BOT_REF" == "b8c4875bb1fafaa5dd9b8e91b16b613af47bf37a" ]] || { echo "bot SHA drift" >&2; exit 1; }
+          [[ "$DURATION_SECONDS" =~ ^[0-9]+$ ]] && (( DURATION_SECONDS >= 180 )) || {
+            echo "duration_seconds must be an integer >= 180" >&2
+            exit 1
+          }
 
       - name: Wait for exact Spark CI
         shell: bash
@@ -125,6 +144,7 @@ jobs:
           t = p.get('tick_statistics') or {}
           print(f"## {d.get('benchmark_mode')}")
           print(f"Status: **{d.get('status')}**")
+          print(f"BDS: {d.get('bds_version')}")
           print(f"CPU: {p.get('process_cpu_percent_of_one_core')}% of one core")
           print(f"CPU ms/tick: {p.get('cpu_ms_per_tick')}")
           print(f"MSPT mean/p50/p95/p99: {t.get('mspt_mean')} / {t.get('mspt_p50')} / {t.get('mspt_p95')} / {t.get('mspt_p99')}")
