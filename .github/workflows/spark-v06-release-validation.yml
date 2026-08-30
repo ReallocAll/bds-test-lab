@@ -150,7 +150,7 @@ jobs:
 
       - name: Run Spark v0.6 release validation
         run: >-
-          python -m controller.release_validation
+          python -m controller.release_validation_exact_runner
           --platform ${{ matrix.platform }}
           --bot dist/${{ matrix.bot_name }}
           --soak-minutes ${{ env.SOAK_MINUTES }}
