@@ -1,0 +1,68 @@
+name: Candidate A runner checks
+
+on:
+  pull_request:
+    paths:
+      - "controller/candidate_a_blocked_benchmark.py"
+      - "controller/candidate_a_blocked_hardening.py"
+      - "controller/candidate_a_blocked_analyzer.py"
+      - "tests/test_candidate_a_blocked.py"
+      - "tests/test_candidate_a_runner_hardening.py"
+      - "scenarios/candidate-a-stationary.json"
+      - ".github/workflows/candidate-a-blocked.yml"
+      - ".github/workflows/candidate-a-runner-checks.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install focused dependencies
+        run: python -m pip install --disable-pip-version-check psutil packaging hatchling pyyaml ruff
+
+      - name: Run focused unit tests
+        run: >-
+          python -m unittest
+          tests.test_candidate_a_blocked
+          tests.test_candidate_a_runner_hardening
+
+      - name: Compile runner modules
+        run: >-
+          python -m py_compile
+          controller/candidate_a_blocked_benchmark.py
+          controller/candidate_a_blocked_hardening.py
+          controller/candidate_a_blocked_analyzer.py
+
+      - name: Ruff focused files
+        run: >-
+          ruff check
+          controller/candidate_a_blocked_hardening.py
+          tests/test_candidate_a_runner_hardening.py
+
+      - name: Parse benchmark workflows
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          for path in (
+              Path('.github/workflows/candidate-a-blocked.yml'),
+              Path('.github/workflows/candidate-a-runner-checks.yml'),
+          ):
+              with path.open(encoding='utf-8') as stream:
+                  yaml.safe_load(stream)
+              print(f'parsed {path}')
+          PY
+
+      - name: Verify registered stationary scenario hash
+        run: |
+          test "$(sha256sum scenarios/candidate-a-stationary.json | cut -d' ' -f1)" = "169360cb46acc6dc29ed5b38e082543b12434860bb65119c519a095de2a04799"
