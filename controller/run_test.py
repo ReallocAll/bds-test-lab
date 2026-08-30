@@ -15,6 +15,8 @@ import time
 import traceback
 from typing import Any
 
+import psutil
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -42,7 +44,7 @@ def write_json(path: pathlib.Path, data: dict[str, Any]) -> None:
 
 def run_checked(cmd: list[str], timeout: int = 300, cwd: pathlib.Path | None = None) -> subprocess.CompletedProcess[str]:
     print("+", " ".join(str(x) for x in cmd), flush=True)
-    result = subprocess.run(cmd, cwd=str(cwd) if cwd else None, timeout=timeout, text=True, encoding="utf-8", errors="replace", stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    result = subprocess.run(cmd, cwd=str(cwd) if cwd else None, timeout=timeout, text=True, encoding="utf-8", errors="replace", stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
     if result.stdout:
         print(result.stdout, end="", flush=True)
     if result.returncode != 0:
@@ -63,10 +65,13 @@ def locate_one(root: pathlib.Path, patterns: list[str]) -> pathlib.Path:
 
 class ServerProcess:
     def __init__(self, cmd: list[str], cwd: pathlib.Path, log_path: pathlib.Path):
-        self.cmd = cmd
+        self.cmd = [str(argument) for argument in cmd]
         self.cwd = cwd
         self.log_path = log_path
         self.process: subprocess.Popen[str] | None = None
+        self.pid: int | None = None
+        self.create_time: float | None = None
+        self.started_command: list[str] | None = None
         self.lines: list[str] = []
         self._lock = threading.Lock()
         self._reader: threading.Thread | None = None
@@ -79,7 +84,13 @@ class ServerProcess:
         else:
             kwargs["start_new_session"] = True
         self._log = self.log_path.open("a", encoding="utf-8", errors="replace")
+        self.started_command = list(self.cmd)
         self.process = subprocess.Popen(self.cmd, cwd=str(self.cwd), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1, **kwargs)
+        self.pid = self.process.pid
+        try:
+            self.create_time = psutil.Process(self.pid).create_time()
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+            self.create_time = None
         self._reader = threading.Thread(target=self._read_loop, name="bds-log-reader", daemon=True)
         self._reader.start()
 
@@ -144,7 +155,7 @@ class ServerProcess:
             return True
         try:
             self.command("stop")
-        except Exception:
+        except Exception:  # noqa: BLE001 - shutdown must report failure without hiding it
             return False
         assert self.process is not None
         try:
@@ -158,7 +169,7 @@ class ServerProcess:
             return
         pid = self.process.pid
         if os.name == "nt":
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=30)
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=30, check=False)
         else:
             try:
                 os.killpg(os.getpgid(pid), signal.SIGKILL)
@@ -172,6 +183,11 @@ class ServerProcess:
     def close(self) -> None:
         if self._reader is not None:
             self._reader.join(timeout=3)
+        if self.process is not None:
+            if self.process.stdin is not None:
+                self.process.stdin.close()
+            if self.process.stdout is not None:
+                self.process.stdout.close()
         if self._log is not None:
             self._log.close()
             self._log = None
@@ -322,9 +338,9 @@ class IntegrationTest:
 
     def residual_processes(self) -> list[str]:
         if self.platform == "linux":
-            result = subprocess.run(["pgrep", "-af", "bedrock_server"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+            result = subprocess.run(["pgrep", "-af", "bedrock_server"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False)
             return [line for line in result.stdout.splitlines() if str(self.server_dir) in line]
-        result = subprocess.run(["tasklist", "/FI", "IMAGENAME eq bedrock_server.exe", "/FO", "CSV", "/NH"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace")
+        result = subprocess.run(["tasklist", "/FI", "IMAGENAME eq bedrock_server.exe", "/FO", "CSV", "/NH"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace", check=False)
         return [line for line in result.stdout.splitlines() if "bedrock_server.exe" in line.lower()]
 
     def shutdown(self) -> None:
@@ -376,7 +392,7 @@ class IntegrationTest:
             self.result["status"] = "PASS"
             self.result["state"] = "completed"
             return 0
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - integration failures become result evidence
             self.result["status"] = "FAIL"
             self.result["state"] = "completed"
             self.result["failed_stage"] = stage
@@ -387,7 +403,7 @@ class IntegrationTest:
                     self.server.force_kill_tree()
                     self.result["shutdown_status"] = "forced_after_failure"
                     self.server.close()
-            except Exception:
+            except Exception:  # noqa: BLE001 - cleanup failure is appended to diagnostics
                 diagnostic += "\n\nCleanup failure:\n" + traceback.format_exc()
             last_lines = self.server.snapshot()[-200:] if self.server is not None else []
             self.diagnostics.write_text(diagnostic + "\n\nLast log lines:\n" + "\n".join(last_lines), encoding="utf-8")

@@ -12,9 +12,11 @@ import argparse
 import csv
 import hashlib
 import json
+import math
 import os
 import pathlib
 import re
+import shutil
 import statistics
 import sys
 import time
@@ -61,6 +63,11 @@ WORLD_SNAPSHOT_ID = "flat-seed-8675309-v1"
 PROTOCOL_VERSION = "candidate-a-blocked-v1"
 BOT_PROGRESS_COUNTER_SCOPE = "latest cumulative fleet_progress event at each boundary; deltas are boundary subtraction"
 STATIONARY_BOUNDED_AREA_POLICY = "flat-world-fixed-seed; stationary after join; no movement or chunk traversal"
+MANAGED_ROOT_TID_SCOPE = "all threads of the managed Endstone/BDS root process; descendants excluded"
+RUNTIME_PAYLOAD_DIRS = ("downloads", "work", "hotspot-wheel")
+EVIDENCE_MANIFEST_NAME = "candidate-a-evidence-manifest.json"
+MAX_EVIDENCE_BYTES = 64 * 1024 * 1024
+MAX_EVIDENCE_FILE_BYTES = 32 * 1024 * 1024
 
 TREATMENTS = ("off-B", "off-C", "full-B", "full-C")
 _BALANCED_SCHEDULES = (
@@ -71,6 +78,7 @@ _BALANCED_SCHEDULES = (
 )
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+BLOCK_DIR_RE = re.compile(r"^block-[0-9]{2}$")
 SCENARIO_FILE_ENV = "BDS_TEST_BOT_SCENARIO_FILE"
 
 
@@ -192,12 +200,69 @@ def _set_sched_affinity(tid: int, cpus: list[int]) -> None:
         raise AffinityError(f"unable to set Linux affinity for TID {tid}: {exc}") from exc
 
 
+def capture_task_affinity(pid: int, *, label: str) -> dict[str, list[int]]:
+    """Capture every current task affinity while requiring a stable task set."""
+
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        raise AffinityError(f"{label} process ID is malformed: {pid!r}")
+    captured: dict[str, list[int]] = {}
+    for _attempt in range(8):
+        tids = _linux_task_ids(pid)
+        for tid in tids:
+            key = str(tid)
+            if key not in captured:
+                captured[key] = _sched_affinity(tid)
+        current_tids = set(_linux_task_ids(pid))
+        if current_tids.issubset({int(tid) for tid in captured}):
+            return {tid: captured[tid] for tid in sorted(captured, key=int) if int(tid) in current_tids}
+    raise AffinityError(f"{label} task set did not stabilize while capturing affinity")
+
+
+def capture_process_affinity(
+    pid: int,
+    *,
+    label: str,
+    process_affinity: list[int] | tuple[int, ...] | None = None,
+    create_time: float | None = None,
+) -> dict[str, Any]:
+    """Capture process identity, process affinity, and all current task affinities."""
+
+    try:
+        process = psutil.Process(pid)
+        observed_create_time = float(process.create_time()) if create_time is None else float(create_time)
+    except (psutil.AccessDenied, psutil.NoSuchProcess, OSError, TypeError, ValueError) as exc:
+        raise AffinityError(f"unable to capture {label} process identity: {exc}") from exc
+    if not math.isfinite(observed_create_time):
+        raise AffinityError(f"{label} process create-time is not finite")
+    if process_affinity is None:
+        try:
+            process_affinity = process.cpu_affinity()
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError, ValueError) as exc:
+            raise AffinityError(f"unable to capture {label} process affinity: {exc}") from exc
+    if not isinstance(process_affinity, (list, tuple)):
+        raise AffinityError(f"{label} process affinity is malformed: {process_affinity!r}")
+    try:
+        normalized = sorted({int(cpu) for cpu in process_affinity})
+    except (TypeError, ValueError) as exc:
+        raise AffinityError(f"{label} process affinity is malformed: {process_affinity!r}") from exc
+    if not normalized or any(cpu < 0 for cpu in normalized):
+        raise AffinityError(f"{label} process affinity is empty or malformed: {process_affinity!r}")
+    return {
+        "pid": pid,
+        "create_time": observed_create_time,
+        "process_affinity": normalized,
+        "tid_affinities": capture_task_affinity(pid, label=label),
+    }
+
+
 def pin_and_verify_task_affinity(
     pid: int,
     cpus: list[int] | tuple[int, ...],
     *,
     label: str,
     exact: bool = True,
+    original_tids: dict[str, list[int]] | None = None,
+    default_original: list[int] | tuple[int, ...] | None = None,
 ) -> dict[str, list[int]]:
     """Pin every current Linux task and repeat until no new task appears."""
 
@@ -214,6 +279,14 @@ def pin_and_verify_task_affinity(
         tids = _linux_task_ids(pid)
         for tid in tids:
             current = _sched_affinity(tid)
+            if original_tids is not None:
+                key = str(tid)
+                if key not in original_tids:
+                    original_tids[key] = (
+                        sorted({int(cpu) for cpu in default_original})
+                        if default_original is not None
+                        else current
+                    )
             if exact and current != target:
                 _set_sched_affinity(tid, target)
                 current = _sched_affinity(tid)
@@ -233,6 +306,146 @@ def pin_and_verify_task_affinity(
     if missing:
         raise AffinityError(f"{label} task enumeration changed after verification: {sorted(missing)}")
     return {tid: observed[tid] for tid in sorted(observed, key=int) if int(tid) in final_tids}
+
+
+def restore_process_affinity(snapshot: dict[str, Any], *, label: str) -> dict[str, Any]:
+    """Restore a captured process/task affinity and verify every current task."""
+
+    if not isinstance(snapshot, dict):
+        raise AffinityError(f"{label} affinity snapshot is missing")
+    pid = snapshot.get("pid")
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        raise AffinityError(f"{label} affinity snapshot has an invalid process ID")
+    try:
+        expected_create_time = float(snapshot["create_time"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise AffinityError(f"{label} affinity snapshot has an invalid create-time") from exc
+    if not math.isfinite(expected_create_time):
+        raise AffinityError(f"{label} affinity snapshot create-time is not finite")
+    process_affinity = snapshot.get("process_affinity")
+    if not isinstance(process_affinity, (list, tuple)):
+        raise AffinityError(f"{label} affinity snapshot has no process affinity")
+    try:
+        expected_process_affinity = sorted({int(cpu) for cpu in process_affinity})
+    except (TypeError, ValueError) as exc:
+        raise AffinityError(f"{label} affinity snapshot process affinity is malformed") from exc
+    if not expected_process_affinity or any(cpu < 0 for cpu in expected_process_affinity):
+        raise AffinityError(f"{label} affinity snapshot process affinity is empty or malformed")
+    original_tids = snapshot.get("tid_affinities")
+    if not isinstance(original_tids, dict) or not original_tids:
+        raise AffinityError(f"{label} affinity snapshot has no per-TID affinity")
+    try:
+        original_tids = {
+            str(int(tid)): sorted({int(cpu) for cpu in cpus})
+            for tid, cpus in original_tids.items()
+        }
+    except (TypeError, ValueError) as exc:
+        raise AffinityError(f"{label} affinity snapshot per-TID affinity is malformed") from exc
+    if any(not cpus or any(cpu < 0 for cpu in cpus) for cpus in original_tids.values()):
+        raise AffinityError(f"{label} affinity snapshot contains an empty or malformed per-TID affinity")
+    process = psutil.Process(pid)
+    try:
+        if not process.is_running() or process.status() == psutil.STATUS_ZOMBIE:
+            raise AffinityError(f"{label} process is not alive during affinity restoration")
+        actual_create_time = float(process.create_time())
+    except AffinityError:
+        raise
+    except (psutil.AccessDenied, psutil.NoSuchProcess, OSError, ValueError) as exc:
+        raise AffinityError(f"unable to inspect {label} during affinity restoration: {exc}") from exc
+    if not math.isfinite(actual_create_time) or abs(actual_create_time - expected_create_time) > 0.01:
+        raise AffinityError(f"{label} process identity changed before affinity restoration")
+
+    restored: dict[str, list[int]] = {}
+    failures: dict[str, str] = {}
+    stable = False
+
+    def task_exited(tid: int) -> bool:
+        try:
+            return tid not in _linux_task_ids(pid)
+        except (AffinityError, OSError):
+            return False
+
+    def record_tid_failure(tid: int, detail: str) -> None:
+        key = str(tid)
+        if task_exited(tid):
+            restored.pop(key, None)
+            failures.pop(key, None)
+        else:
+            restored.pop(key, None)
+            failures.setdefault(key, detail)
+
+    for _attempt in range(8):
+        try:
+            process.cpu_affinity(expected_process_affinity)
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError, ValueError) as exc:
+            raise AffinityError(f"unable to restore {label} process affinity: {exc}") from exc
+        tids = _linux_task_ids(pid)
+        for tid in tids:
+            key = str(tid)
+            target = original_tids.get(key, expected_process_affinity)
+            try:
+                _set_sched_affinity(tid, target)
+            except (AffinityError, OSError) as exc:
+                record_tid_failure(tid, f"{label} TID {tid} could not be restored: {exc}")
+                continue
+            try:
+                observed = _sched_affinity(tid)
+            except (AffinityError, OSError) as exc:
+                record_tid_failure(tid, f"{label} TID {tid} could not be verified: {exc}")
+                continue
+            if observed != target:
+                record_tid_failure(tid, f"{label} TID {tid} was not restored: {observed} != {target}")
+                continue
+            restored[key] = observed
+        current_tids = set(_linux_task_ids(pid))
+        for key in list(failures):
+            if int(key) not in current_tids:
+                failures.pop(key, None)
+        for key in list(restored):
+            if int(key) not in current_tids:
+                restored.pop(key, None)
+        if not current_tids - set(tids):
+            stable = True
+            break
+    if not stable:
+        raise AffinityError(f"{label} task set did not stabilize during affinity restoration")
+    try:
+        observed_process_affinity = sorted(int(cpu) for cpu in process.cpu_affinity())
+    except (psutil.AccessDenied, psutil.NoSuchProcess, OSError, ValueError) as exc:
+        raise AffinityError(f"unable to verify {label} process affinity restoration: {exc}") from exc
+    if observed_process_affinity != expected_process_affinity:
+        raise AffinityError(
+            f"{label} process affinity was not restored: {observed_process_affinity} != {expected_process_affinity}"
+        )
+    final_tids = _linux_task_ids(pid)
+    final_restored: dict[str, list[int]] = {}
+    for tid in final_tids:
+        key = str(tid)
+        target = original_tids.get(key, expected_process_affinity)
+        try:
+            observed = _sched_affinity(tid)
+        except (AffinityError, OSError) as exc:
+            record_tid_failure(tid, f"{label} TID {tid} could not be verified: {exc}")
+            continue
+        if observed != target:
+            record_tid_failure(tid, f"{label} TID {tid} was not restored: {observed} != {target}")
+            continue
+        final_restored[key] = observed
+    surviving_tids = set(_linux_task_ids(pid))
+    surviving_failures = [detail for key, detail in failures.items() if int(key) in surviving_tids]
+    missing = surviving_tids - {int(tid) for tid in final_restored}
+    if missing:
+        surviving_failures.append(f"{label} surviving TIDs were not restored: {sorted(missing)}")
+    if surviving_failures:
+        raise AffinityError("; ".join(surviving_failures))
+    return {
+        "pid": pid,
+        "create_time": actual_create_time,
+        "process_affinity": observed_process_affinity,
+        "tid_affinities": {
+            tid: final_restored[tid] for tid in sorted(final_restored, key=int) if int(tid) in surviving_tids
+        },
+    }
 
 
 def validate_affinity_snapshot(
@@ -325,6 +538,194 @@ def _sha256_file(path: pathlib.Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+_TOP_LEVEL_EVIDENCE_FILES = frozenset(
+    {
+        "candidate-a-blocked-controller-error.json",
+        "candidate-a-evidence-manifest.json",
+        ".candidate-a-upload-ok",
+        "preflight.txt",
+    }
+)
+_BLOCK_LEVEL_EVIDENCE_FILES = frozenset(
+    {
+        "candidate-a-blocked-block.json",
+        "case-status.tsv",
+        EVIDENCE_MANIFEST_NAME,
+    }
+)
+_CASE_EVIDENCE_FILES = frozenset(
+    {
+        "bds.log",
+        "candidate-a-blocked-case.json",
+        "candidate-a-blocked-result.json",
+        "endstone.log",
+        "failure-diagnostics.txt",
+        "metadata.json",
+        "python-attribution-performance.json",
+        "python-attribution-performance.sparkprofile",
+        "python-attribution-profile-summary.json",
+        "python-attribution-result.json",
+        "python-attribution.sparkprofile",
+        "python-attribution-tick-metrics.json",
+        "spark.log",
+        "test-results.json",
+    }
+)
+
+
+def _is_allowed_evidence_file(relative: pathlib.PurePath, *, block_relative: bool = False) -> bool:
+    parts = relative.parts
+    if len(parts) == 1:
+        return parts[0] in _TOP_LEVEL_EVIDENCE_FILES or (block_relative and parts[0] in _BLOCK_LEVEL_EVIDENCE_FILES)
+    if block_relative:
+        if len(parts) != 2 or parts[0] not in TREATMENTS:
+            return False
+        name = parts[1]
+    else:
+        if len(parts) == 2 and BLOCK_DIR_RE.fullmatch(parts[0]):
+            name = parts[1]
+        elif len(parts) == 3 and BLOCK_DIR_RE.fullmatch(parts[0]) and parts[1] in TREATMENTS:
+            name = parts[2]
+            return name in _CASE_EVIDENCE_FILES or (
+                name.startswith("python-attribution-bots-") and name.endswith(".log")
+            )
+        else:
+            return False
+    return name in _BLOCK_LEVEL_EVIDENCE_FILES or name in _CASE_EVIDENCE_FILES or (
+        name.startswith("python-attribution-bots-") and name.endswith(".log")
+    )
+
+
+def _contained_direct_child(root: pathlib.Path, name: str) -> pathlib.Path:
+    resolved_root = root.resolve()
+    target = root / name
+    if target.is_symlink():
+        raise RuntimeError(f"refusing to remove symlink runtime payload: {target}")
+    try:
+        resolved_target = target.resolve()
+        relative = resolved_target.relative_to(resolved_root)
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"runtime payload escapes case root: {target}") from exc
+    if relative.parts != (name,):
+        raise RuntimeError(f"runtime payload is not a direct case-root child: {target}")
+    return target
+
+
+def prune_case_runtime_payloads(case_root: pathlib.Path) -> list[str]:
+    """Remove only generated runtime payload directories from one case root."""
+
+    case_path = pathlib.Path(case_root)
+    if case_path.is_symlink():
+        raise RuntimeError(f"refusing to remove runtime payloads through symlink case root: {case_path}")
+    root = case_path.resolve()
+    if not root.is_dir():
+        raise RuntimeError(f"case evidence root is not a directory: {root}")
+    removed: list[str] = []
+    for name in RUNTIME_PAYLOAD_DIRS:
+        target = root / name
+        if not target.exists() and not target.is_symlink():
+            continue
+        target = _contained_direct_child(root, name)
+        if not target.is_dir():
+            raise RuntimeError(f"runtime payload is not a directory: {target}")
+        shutil.rmtree(target)
+        removed.append(name)
+    return removed
+
+
+def _evidence_files(root: pathlib.Path, *, block_relative: bool = False) -> tuple[list[pathlib.Path], list[str]]:
+    files: list[pathlib.Path] = []
+    errors: list[str] = []
+    for path in root.rglob("*"):
+        relative = path.relative_to(root)
+        if path.is_symlink():
+            errors.append(f"unexpected symlink in evidence: {relative}")
+        elif path.is_file():
+            if _is_allowed_evidence_file(relative, block_relative=block_relative):
+                files.append(path)
+            else:
+                errors.append(f"unexpected evidence file: {relative}")
+        elif path.is_dir():
+            parts = relative.parts
+            if block_relative and len(parts) == 1 and parts[0] in TREATMENTS:
+                continue
+            if not block_relative and len(parts) == 1 and BLOCK_DIR_RE.fullmatch(parts[0]):
+                continue
+            if not block_relative and len(parts) == 2 and parts[0].startswith("block-") and parts[1] in TREATMENTS:
+                continue
+            errors.append(f"unexpected evidence directory: {relative}")
+    return sorted(files, key=lambda path: str(path.relative_to(root))), errors
+
+
+def _write_block_evidence_manifest(block_dir: pathlib.Path) -> dict[str, Any]:
+    files, errors = _evidence_files(block_dir, block_relative=True)
+    if errors:
+        raise RuntimeError("evidence allowlist rejected the block: " + "; ".join(errors))
+    manifest_path = block_dir / EVIDENCE_MANIFEST_NAME
+    files = [path for path in files if path != manifest_path]
+    entries: list[dict[str, Any]] = []
+    total_bytes = 0
+    for path in files:
+        size = path.stat().st_size
+        if size > MAX_EVIDENCE_FILE_BYTES:
+            raise RuntimeError(
+                f"evidence file exceeds {MAX_EVIDENCE_FILE_BYTES} bytes: {path.relative_to(block_dir)} ({size})"
+            )
+        total_bytes += size
+        entries.append(
+            {
+                "path": str(path.relative_to(block_dir)).replace("\\", "/"),
+                "bytes": size,
+                "sha256": _sha256_file(path),
+            }
+        )
+    if total_bytes > MAX_EVIDENCE_BYTES:
+        raise RuntimeError(f"evidence exceeds {MAX_EVIDENCE_BYTES} bytes: {total_bytes}")
+    manifest = {
+        "protocol_version": PROTOCOL_VERSION,
+        "allowed_file_count": len(entries),
+        "total_bytes": total_bytes,
+        "max_file_bytes": MAX_EVIDENCE_FILE_BYTES,
+        "max_total_bytes": MAX_EVIDENCE_BYTES,
+        "runtime_payload_dirs_pruned": list(RUNTIME_PAYLOAD_DIRS),
+        "files": entries,
+    }
+    write_json(manifest_path, manifest)
+    final_files, final_errors = _evidence_files(block_dir, block_relative=True)
+    if final_errors:
+        raise RuntimeError("evidence allowlist rejected the manifest: " + "; ".join(final_errors))
+    final_total = sum(path.stat().st_size for path in final_files)
+    if final_total > MAX_EVIDENCE_BYTES:
+        raise RuntimeError(f"evidence including manifest exceeds {MAX_EVIDENCE_BYTES} bytes: {final_total}")
+    return manifest
+
+
+def prepare_evidence_for_upload(evidence_root: pathlib.Path) -> list[dict[str, Any]]:
+    """Prune case payloads and write a bounded allowlist manifest for Actions upload."""
+
+    root = pathlib.Path(evidence_root).resolve()
+    if not root.is_dir():
+        raise RuntimeError(f"evidence root is not a directory: {root}")
+    manifests: list[dict[str, Any]] = []
+    block_dirs = sorted(path for path in root.iterdir() if path.is_dir() and path.name.startswith("block-"))
+    for block_dir in block_dirs:
+        if block_dir.is_symlink() or not BLOCK_DIR_RE.fullmatch(block_dir.name):
+            raise RuntimeError(f"unexpected block evidence directory: {block_dir.name}")
+        for treatment in TREATMENTS:
+            case_root = block_dir / treatment
+            if case_root.exists() or case_root.is_symlink():
+                prune_case_runtime_payloads(case_root)
+        manifests.append(_write_block_evidence_manifest(block_dir))
+    files, errors = _evidence_files(root)
+    if errors:
+        raise RuntimeError("evidence allowlist rejected the root: " + "; ".join(errors))
+    if any(path.stat().st_size > MAX_EVIDENCE_FILE_BYTES for path in files):
+        raise RuntimeError(f"an evidence file exceeds {MAX_EVIDENCE_FILE_BYTES} bytes")
+    if sum(path.stat().st_size for path in files) > MAX_EVIDENCE_BYTES:
+        raise RuntimeError(f"evidence exceeds {MAX_EVIDENCE_BYTES} bytes")
+    return manifests
 
 
 def _event_counts(events: list[dict[str, Any]]) -> dict[str, int]:
@@ -481,7 +882,7 @@ def _scenario_contract(path: pathlib.Path) -> dict[str, Any]:
         raise BenchmarkConfigurationError(
             "bot scenario must contain exactly one indefinite idle step; movement and packet actions are forbidden"
         )
-    scenario_sha256 = _sha256_file(path)
+    scenario_sha256 = hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
     if scenario_sha256 != BOT_SCENARIO_SHA256:
         raise BenchmarkConfigurationError(
             f"bot scenario SHA mismatch: {scenario_sha256} != {BOT_SCENARIO_SHA256}"
@@ -592,6 +993,8 @@ class CandidateABlockedCase(PythonAttributionPerformance):
             "bot_progress_counter_scope": BOT_PROGRESS_COUNTER_SCOPE,
             "pep_event_scope": "full-profile-cumulative; not window-aligned",
             "affinity_model": "controlled-process CPU isolation; host and kernel work are not excluded",
+            "measurement_process_scope": "managed Endstone/BDS root process (python -m endstone); descendants excluded",
+            "managed_root_tid_scope": MANAGED_ROOT_TID_SCOPE,
             "scenario": scenario_contract,
         }
         super().__init__(platform_name, bot_binary, mode, MEASUREMENT_SECONDS, BOT_COUNT)
@@ -608,7 +1011,12 @@ class CandidateABlockedCase(PythonAttributionPerformance):
         self.measurement_pid: int | None = None
         self.measurement_create_time: float | None = None
         self.initial_measurement_pid: int | None = None
+        self.initial_measurement_create_time: float | None = None
+        self.managed_root_identity: dict[str, Any] | None = None
         self.affinity: dict[str, Any] | None = None
+        self._affinity_baselines: dict[str, dict[str, Any]] = {}
+        self._affinity_restored: bool = False
+        self._affinity_mutated: bool = False
         self._available_cpus: list[int] = []
         self._controlled_cpu: int | None = None
         self._load_cpus: list[int] = []
@@ -628,34 +1036,82 @@ class CandidateABlockedCase(PythonAttributionPerformance):
         if self.case_result_path is not None:
             write_json(self.case_result_path, self.result)
 
-    def _strict_bedrock_processes(self) -> list[psutil.Process]:
+    def _managed_root_process(self) -> psutil.Process:
         if self.server is None or self.server.process is None:
-            return []
-        root = psutil.Process(self.server.process.pid)
-        processes = [root]
+            raise AffinityError("managed Endstone/BDS root process is not started")
+        server_process = self.server.process
+        server_pid = getattr(self.server, "pid", None)
+        server_create_time = getattr(self.server, "create_time", None)
+        server_command = getattr(self.server, "started_command", None)
+        if not isinstance(server_command, list):
+            server_command = getattr(self.server, "cmd", None)
+        if server_pid != server_process.pid or server_create_time is None:
+            raise AffinityError("ServerProcess PID/create-time identity is unavailable")
+        if not isinstance(server_command, list) or not server_command or not all(
+            isinstance(argument, str) for argument in server_command
+        ):
+            raise AffinityError("ServerProcess command identity is unavailable")
+        if server_command[0] != sys.executable:
+            raise AffinityError("ServerProcess does not use the configured Python interpreter")
         try:
-            processes.extend(root.children(recursive=True))
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
-        matches: list[psutil.Process] = []
-        for process in processes:
-            try:
-                name = process.name().lower()
-                # Match the native BDS image, not the Endstone launcher.
-                if name == "bedrock_server" or name == "bedrock_server.exe":
-                    matches.append(process)
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
-        return matches
+            process = psutil.Process(server_process.pid)
+            if not process.is_running() or process.status() == psutil.STATUS_ZOMBIE:
+                raise AffinityError("managed Endstone/BDS root process is not alive")
+            create_time = float(process.create_time())
+            name = process.name()
+            exe = process.exe()
+            cmdline = process.cmdline()
+        except AffinityError:
+            raise
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError, ValueError) as exc:
+            raise AffinityError(f"unable to inspect managed Endstone/BDS root process: {exc}") from exc
+        if abs(create_time - float(server_create_time)) > 0.01:
+            raise AffinityError("managed Endstone/BDS root PID was reused")
+        try:
+            same_interpreter = pathlib.Path(exe).resolve() == pathlib.Path(sys.executable).resolve()
+        except (OSError, RuntimeError, TypeError, ValueError):
+            same_interpreter = False
+        if not same_interpreter:
+            raise AffinityError("managed Endstone/BDS root executable is not sys.executable")
+        expected_folder = str(self.server_dir.resolve())
+        if cmdline != server_command:
+            raise AffinityError("managed process command line does not match ServerProcess command")
+        module_matches = [
+            index
+            for index, argument in enumerate(server_command)
+            if argument == "-m" and index + 1 < len(server_command) and server_command[index + 1] == "endstone"
+        ]
+        folder_matches = [
+            index
+            for index, argument in enumerate(server_command)
+            if (
+                argument == "--server-folder"
+                and index + 1 < len(server_command)
+                and server_command[index + 1] == expected_folder
+            )
+        ]
+        if len(module_matches) != 1 or len(folder_matches) != 1:
+            raise AffinityError("managed process command is missing exact -m endstone/--server-folder identity")
+        identity = {
+            "role": "managed_endstone_bds_root",
+            "pid": process.pid,
+            "create_time": create_time,
+            "server_process_pid": server_pid,
+            "server_process_create_time": float(server_create_time),
+            "interpreter": sys.executable,
+            "name": name,
+            "exe": exe,
+            "server_process_command": list(server_command),
+            "cmdline": list(cmdline),
+            "server_folder": expected_folder,
+            "alive": True,
+        }
+        self.managed_root_identity = identity
+        self.result["managed_root_identity"] = identity
+        return process
 
     def _measurement_process(self) -> psutil.Process:
-        matches = self._strict_bedrock_processes()
-        if len(matches) != 1:
-            raise AffinityError(
-                "expected exactly one BDS measurement process named bedrock_server; "
-                f"found {len(matches)}"
-            )
-        return matches[0]
+        return self._managed_root_process()
 
     def install_artifacts(self) -> None:
         super().install_artifacts()
@@ -719,8 +1175,13 @@ class CandidateABlockedCase(PythonAttributionPerformance):
         controller_tids: dict[str, list[int]],
     ) -> None:
         assert self.measurement_pid is not None and self._controlled_cpu is not None
-        bds_process = psutil.Process(self.measurement_pid)
-        load_process = self.bot.process if self.bot is not None else None
+        bds_process = self._managed_root_process()
+        load_process = None
+        if self.bot is not None and self.bot.process is not None:
+            try:
+                load_process = psutil.Process(self.bot.process.pid)
+            except (psutil.AccessDenied, psutil.NoSuchProcess, OSError, ValueError) as exc:
+                raise AffinityError(f"unable to inspect load generator process: {exc}") from exc
         if load_process is None:
             raise AffinityError("load generator process was not started")
         try:
@@ -741,6 +1202,8 @@ class CandidateABlockedCase(PythonAttributionPerformance):
         )
         self.affinity = (self.affinity or {}) | validated | {
             "bds_pid": self.measurement_pid,
+            "bds_tid_scope": MANAGED_ROOT_TID_SCOPE,
+            "managed_root_identity": self.managed_root_identity,
             "load_generator_pid": load_process.pid,
             "controller_pid": os.getpid(),
             "bds_affinity_after": bds_affinity,
@@ -776,18 +1239,26 @@ class CandidateABlockedCase(PythonAttributionPerformance):
             [self._controlled_cpu],
             label="BDS",
             exact=True,
+            original_tids=self._affinity_baselines.get("bds", {}).get("tid_affinities"),
+            default_original=self._affinity_baselines.get("bds", {}).get("process_affinity"),
         )
+        if self.bot.process is None:
+            raise AffinityError("load generator process was not started")
         load_tids = pin_and_verify_task_affinity(
             self.bot.process.pid,
             self._load_cpus,
             label="load generator",
             exact=True,
+            original_tids=self._affinity_baselines.get("load_generator", {}).get("tid_affinities"),
+            default_original=self._affinity_baselines.get("load_generator", {}).get("process_affinity"),
         )
         controller_tids = pin_and_verify_task_affinity(
             os.getpid(),
             self._load_cpus,
             label="controller",
             exact=True,
+            original_tids=self._affinity_baselines.get("controller", {}).get("tid_affinities"),
+            default_original=self._affinity_baselines.get("controller", {}).get("process_affinity"),
         )
         self._record_affinity_sample(
             bds_tids=bds_tids,
@@ -801,7 +1272,23 @@ class CandidateABlockedCase(PythonAttributionPerformance):
         if not self._load_cpus:
             raise AffinityError("no non-BDS CPUs are available for the load generator")
         try:
-            self.bot.process.cpu_affinity(self._load_cpus)
+            load_process = psutil.Process(self.bot.process.pid)
+            load_baseline = capture_process_affinity(
+                load_process.pid,
+                label="load generator",
+                process_affinity=load_process.cpu_affinity(),
+            )
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError, ValueError, AffinityError) as exc:
+            if isinstance(exc, AffinityError):
+                raise
+            raise AffinityError(f"unable to capture load generator affinity: {exc}") from exc
+        self._affinity_baselines["load_generator"] = load_baseline
+        self._affinity_mutated = True
+        if self.affinity is None:
+            self.affinity = {}
+        self.affinity["original_affinity"] = self._affinity_baselines
+        try:
+            load_process.cpu_affinity(self._load_cpus)
         except (psutil.AccessDenied, psutil.NoSuchProcess, OSError, ValueError) as exc:
             raise AffinityError(f"unable to set load generator affinity: {exc}") from exc
         self._verify_all_affinity()
@@ -818,19 +1305,37 @@ class CandidateABlockedCase(PythonAttributionPerformance):
         try:
             available = sorted(int(cpu) for cpu in os.sched_getaffinity(0))
             controlled, load_cpus = choose_controlled_cpu(available)
-            before = sorted(available)
+            controller_baseline = capture_process_affinity(
+                os.getpid(),
+                label="controller",
+                process_affinity=_sched_affinity(os.getpid()),
+            )
+            bds_baseline = capture_process_affinity(
+                process.pid,
+                label="BDS",
+                process_affinity=process.cpu_affinity(),
+                create_time=process.create_time(),
+            )
+            self._affinity_baselines = {"controller": controller_baseline, "bds": bds_baseline}
+            self._affinity_mutated = True
+            self._affinity_restored = False
+            before = bds_baseline["process_affinity"]
             process.cpu_affinity([controlled])
             bds_tids = pin_and_verify_task_affinity(
                 process.pid,
                 [controlled],
                 label="BDS",
                 exact=True,
+                original_tids=bds_baseline["tid_affinities"],
+                default_original=bds_baseline["process_affinity"],
             )
             controller_tids = pin_and_verify_task_affinity(
                 os.getpid(),
                 load_cpus,
                 label="controller",
                 exact=True,
+                original_tids=controller_baseline["tid_affinities"],
+                default_original=controller_baseline["process_affinity"],
             )
             observed = sorted(int(cpu) for cpu in process.cpu_affinity())
             controller_affinity = _sched_affinity(os.getpid())
@@ -846,7 +1351,10 @@ class CandidateABlockedCase(PythonAttributionPerformance):
         self.affinity = {
             "bds_pid": process.pid,
             "initial_bds_pid": self.initial_measurement_pid,
+            "initial_bds_create_time": self.initial_measurement_create_time,
             "bds_create_time": self.measurement_create_time,
+            "bds_tid_scope": MANAGED_ROOT_TID_SCOPE,
+            "managed_root_identity": self.managed_root_identity,
             "bds_affinity_before": before,
             "bds_affinity_after": sorted(observed),
             "controlled_cpu": controlled,
@@ -862,6 +1370,8 @@ class CandidateABlockedCase(PythonAttributionPerformance):
             "load_generator_tid_affinities": None,
             "runner_cpu_topology": {
                 "allowed_cpus": self._available_cpus,
+                "controlled_cpu": controlled,
+                "load_cpus": self._load_cpus,
                 "cpu_count": os.cpu_count(),
                 "controlled_process_isolation": True,
                 "host_work_excluded": False,
@@ -870,6 +1380,8 @@ class CandidateABlockedCase(PythonAttributionPerformance):
             "verification_count": 0,
             "verification_samples": [],
             "verified": False,
+            "original_affinity": self._affinity_baselines,
+            "restoration": {"status": "PENDING", "verified": False},
         }
         self.result["affinity"] = self.affinity
         self.check(
@@ -880,16 +1392,53 @@ class CandidateABlockedCase(PythonAttributionPerformance):
         )
         self._write_results()
 
+    def _restore_affinity(self) -> None:
+        if not self._affinity_mutated or self._affinity_restored:
+            return
+        restored: dict[str, Any] = {}
+        failures: list[str] = []
+        for label in ("load_generator", "bds", "controller"):
+            snapshot = self._affinity_baselines.get(label)
+            if snapshot is None:
+                continue
+            try:
+                restored[label] = restore_process_affinity(snapshot, label=label)
+            except AffinityError as exc:
+                failures.append(f"{label}: {exc}")
+        if self.affinity is None:
+            self.affinity = {}
+        if failures:
+            self.affinity["restoration"] = {
+                "status": "FAIL",
+                "verified": False,
+                "errors": failures,
+                "restored": restored,
+            }
+            self.result["affinity"] = self.affinity
+            self._write_results()
+            raise AffinityError("affinity restoration could not be proven: " + "; ".join(failures))
+        self._affinity_restored = True
+        self.affinity["original_affinity"] = self._affinity_baselines
+        self.affinity["restoration"] = {
+            "status": "PASS",
+            "verified": True,
+            "restored": restored,
+        }
+        self.result["affinity"] = self.affinity
+        self._write_results()
+
     def _verify_measurement_process(self) -> None:
         if self.measurement_pid is None or self.measurement_create_time is None or self._controlled_cpu is None:
             raise AffinityError("BDS measurement affinity was not configured")
+        process = self._managed_root_process()
+        if process.pid != self.measurement_pid:
+            raise AffinityError("managed Endstone/BDS root PID changed during the measurement")
         try:
-            process = psutil.Process(self.measurement_pid)
             create_time = process.create_time()
         except (psutil.AccessDenied, psutil.NoSuchProcess, OSError) as exc:
-            raise AffinityError(f"BDS measurement process disappeared or is inaccessible: {exc}") from exc
+            raise AffinityError(f"managed Endstone/BDS root disappeared or is inaccessible: {exc}") from exc
         if abs(create_time - self.measurement_create_time) > 0.01:
-            raise AffinityError("BDS measurement PID was reused during the measurement")
+            raise AffinityError("managed Endstone/BDS root PID was reused during the measurement")
         self._verify_all_affinity()
         self.affinity["verified"] = True
         self.result["affinity"] = self.affinity
@@ -901,13 +1450,17 @@ class CandidateABlockedCase(PythonAttributionPerformance):
         return self._read_process_cpu_seconds()
 
     def _read_process_cpu_seconds(self) -> float:
-        if self.measurement_pid is None:
+        if self.measurement_pid is None or self.measurement_create_time is None:
             raise AffinityError("BDS measurement process is not configured")
+        process = self._managed_root_process()
+        if process.pid != self.measurement_pid:
+            raise AffinityError("managed Endstone/BDS root PID changed while reading CPU time")
         try:
-            process = psutil.Process(self.measurement_pid)
             times = process.cpu_times()
         except (psutil.AccessDenied, psutil.NoSuchProcess, OSError) as exc:
             raise AffinityError(f"unable to read BDS process CPU counter: {exc}") from exc
+        if abs(process.create_time() - self.measurement_create_time) > 0.01:
+            raise AffinityError("managed Endstone/BDS root PID was reused while reading CPU time")
         return float(times.user) + float(times.system)
 
     def _cpu_snapshot(self) -> tuple[int, float]:
@@ -924,9 +1477,18 @@ class CandidateABlockedCase(PythonAttributionPerformance):
     def process_rss_bytes(self) -> int:
         if self.measurement_pid is None:
             return super().process_rss_bytes()
+        if self.measurement_create_time is None:
+            raise AffinityError("BDS measurement process create-time is not configured")
         try:
-            return int(psutil.Process(self.measurement_pid).memory_info().rss)
-        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+            process = self._managed_root_process()
+            if process.pid != self.measurement_pid:
+                raise AffinityError("managed Endstone/BDS root PID changed while reading RSS")
+            if abs(process.create_time() - self.measurement_create_time) > 0.01:
+                raise AffinityError("managed Endstone/BDS root PID was reused while reading RSS")
+            return int(process.memory_info().rss)
+        except AffinityError:
+            raise
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError, ValueError):
             return 0
 
     def bootstrap_server(self) -> None:
@@ -934,6 +1496,8 @@ class CandidateABlockedCase(PythonAttributionPerformance):
         self.wait_plugin()
         first = self._measurement_process()
         self.initial_measurement_pid = first.pid
+        if self.managed_root_identity is not None:
+            self.initial_measurement_create_time = self.managed_root_identity["create_time"]
         if not self.server or not self.server.graceful_stop(60):
             if self.server:
                 self.server.force_kill_tree()
@@ -957,8 +1521,12 @@ class CandidateABlockedCase(PythonAttributionPerformance):
         self.command_check("world-mob-spawning", "gamerule doMobSpawning true")
         self.command_check("world-random-tick", "gamerule randomTickSpeed 1")
         second = self._measurement_process()
-        if second.pid == self.initial_measurement_pid:
-            raise RuntimeError("measurement BDS process was not fresh after bootstrap restart")
+        if second.pid == self.initial_measurement_pid or (
+            self.initial_measurement_create_time is not None
+            and self.managed_root_identity is not None
+            and abs(self.managed_root_identity["create_time"] - self.initial_measurement_create_time) <= 0.01
+        ):
+            raise RuntimeError("managed Endstone/BDS root process was not fresh after bootstrap restart")
         self._world = _world_contract(self.server_dir)
         self.protocol["world"] = self._world
         self.result["world"] = self._world
@@ -1207,6 +1775,8 @@ class CandidateABlockedCase(PythonAttributionPerformance):
                     "scope": "not applicable to attribution-off treatment",
                 }
             metrics["viewer_url"] = viewer_url
+            stage = "affinity-restore"
+            self._restore_affinity()
             stage = "bots-disconnect"
             bot_before_disconnect = self.bot
             if self.bot is not None:
@@ -1244,6 +1814,11 @@ class CandidateABlockedCase(PythonAttributionPerformance):
                 self.result["performance"] = metrics
             self._write_results()
             try:
+                self._restore_affinity()
+            except AffinityError as restoration_error:
+                self.result["error_summary"] += f"; affinity restoration failed: {restoration_error}"
+                self._write_results()
+            try:
                 self._bot_events = self.bot.event_snapshot() if self.bot is not None else self._bot_events
                 self.result["workload"] = self._workload_evidence()
             except Exception:  # noqa: BLE001,S110 - cleanup must not hide the original failure
@@ -1267,9 +1842,20 @@ class CandidateABlockedCase(PythonAttributionPerformance):
                 pass
             return 1
         finally:
+            try:
+                self._restore_affinity()
+            except AffinityError as restoration_error:
+                self.result["status"] = "FAIL"
+                self.result["state"] = "failed"
+                self.result["error_summary"] = (
+                    f"{self.result.get('error_summary') or 'benchmark failed'}; "
+                    f"affinity restoration failed: {restoration_error}"
+                )
             self.result["completed_at"] = now_iso()
             self.protocol["world"] = self._world
             self.protocol["affinity"] = self.affinity
+            self.protocol["managed_root_identity"] = self.managed_root_identity
+            self.protocol["managed_root_tid_scope"] = MANAGED_ROOT_TID_SCOPE
             self.protocol["counter_windows"] = self.result.get("counter_windows") or (
                 self.result.get("performance") or {}
             ).get("counter_windows")
@@ -1373,6 +1959,8 @@ def run_block(
         "bot_progress_counter_scope": BOT_PROGRESS_COUNTER_SCOPE,
         "pep_event_scope": "full-profile-cumulative; not window-aligned",
         "affinity_model": "controlled-process CPU isolation; host and kernel work are not excluded",
+        "measurement_process_scope": "managed Endstone/BDS root process (python -m endstone); descendants excluded",
+        "managed_root_tid_scope": MANAGED_ROOT_TID_SCOPE,
         "scenario": scenario_contract,
         "world_snapshot_id": WORLD_SNAPSHOT_ID,
     }
@@ -1438,20 +2026,51 @@ def run_block(
             stream.flush()
     manifest["case_status"] = rows
     manifest["status"] = "PASS" if overall == 0 else "FAIL"
+    manifest["evidence_gate"] = {
+        "status": "PASS",
+        "manifest_count": 1,
+        "max_total_bytes": MAX_EVIDENCE_BYTES,
+        "max_file_bytes": MAX_EVIDENCE_FILE_BYTES,
+    }
     write_json(block_dir / "candidate-a-blocked-block.json", manifest)
+    try:
+        prepare_evidence_for_upload(evidence_root)
+    except Exception as exc:  # noqa: BLE001 - fail closed while retaining case evidence
+        overall = 1
+        manifest["status"] = "FAIL"
+        manifest["evidence_gate"] = {
+            "status": "FAIL",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+        write_json(block_dir / "candidate-a-blocked-block.json", manifest)
+        print(f"Candidate A evidence gate failed: {type(exc).__name__}: {exc}", file=sys.stderr)
     return overall
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--platform", default="linux", choices=["linux"])
-    parser.add_argument("--bot", required=True)
-    parser.add_argument("--block-index", required=True, type=int)
+    parser.add_argument("--bot")
+    parser.add_argument("--block-index", type=int)
     parser.add_argument("--evidence-root", default="evidence")
+    parser.add_argument(
+        "--prepare-evidence",
+        action="store_true",
+        help="prune generated case payloads and verify the upload evidence allowlist",
+    )
     parser.add_argument("--baseline-sha", default=BASELINE_SHA)
     parser.add_argument("--candidate-sha", default=CANDIDATE_SHA)
     parser.add_argument("--bot-ref", default=BOT_REF)
     args = parser.parse_args()
+    if args.prepare_evidence:
+        try:
+            prepare_evidence_for_upload(pathlib.Path(args.evidence_root).resolve())
+            return 0
+        except Exception as exc:  # noqa: BLE001 - emit configuration evidence for Actions upload
+            print(f"Candidate A evidence preparation failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 2
+    if not args.bot or args.block_index is None:
+        parser.error("--bot and --block-index are required unless --prepare-evidence is supplied")
     try:
         return run_block(
             evidence_root=pathlib.Path(args.evidence_root).resolve(),
