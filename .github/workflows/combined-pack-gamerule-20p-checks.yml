@@ -1,0 +1,92 @@
+name: Combined 20-player controller checks
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/combined-pack-gamerule-20p.yml"
+      - ".github/workflows/combined-pack-gamerule-20p-checks.yml"
+      - "controller/combined_pack_gamerule_fleet_validation.py"
+      - "controller/combined_pack_gamerule_fleet_exact_runner.py"
+      - "controller/python_evidence_provenance.py"
+      - "controller/cross_platform_fleet_validation.py"
+      - "controller/fleet_spark_validation.py"
+      - "tests/test_combined_pack_exact_runner.py"
+      - "tests/test_python_evidence_provenance.py"
+      - "tests/test_cross_platform_fleet_signal_exit.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install focused dependencies
+        run: python -m pip install --disable-pip-version-check psutil packaging hatchling pyyaml ruff
+
+      - name: Run focused tests
+        run: >-
+          python -m unittest
+          tests.test_combined_pack_exact_runner
+          tests.test_python_evidence_provenance
+          tests.test_cross_platform_fleet_signal_exit
+
+      - name: Compile 20-player controllers
+        run: >-
+          python -m py_compile
+          controller/combined_pack_gamerule_fleet_validation.py
+          controller/combined_pack_gamerule_fleet_exact_runner.py
+          controller/python_evidence_provenance.py
+          controller/cross_platform_fleet_validation.py
+          controller/fleet_spark_validation.py
+          tests/test_combined_pack_exact_runner.py
+
+      - name: Ruff focused files
+        run: >-
+          ruff check
+          controller/combined_pack_gamerule_fleet_exact_runner.py
+          tests/test_combined_pack_exact_runner.py
+
+      - name: Parse 20-player workflows
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          for path in (
+              Path('.github/workflows/combined-pack-gamerule-20p.yml'),
+              Path('.github/workflows/combined-pack-gamerule-20p-checks.yml'),
+          ):
+              with path.open(encoding='utf-8') as stream:
+                  yaml.safe_load(stream)
+              print(f'parsed {path}')
+          PY
+
+      - name: Verify immutable 20-player provenance pins
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          text = Path('.github/workflows/combined-pack-gamerule-20p.yml').read_text(encoding='utf-8')
+          required = (
+              'c76c814289ee3be8a7236389b6bdeb5728b154e4',
+              '32992839821',
+              '9616075557',
+              '9616071559',
+              '0.11.10.dev387',
+              '1.26.44.3',
+              'b8c4875bb1fafaa5dd9b8e91b16b613af47bf37a',
+          )
+          missing = [value for value in required if value not in text]
+          if missing:
+              raise SystemExit(f'missing immutable provenance pins: {missing}')
+          print('immutable 20-player provenance pins: PASS')
+          PY
