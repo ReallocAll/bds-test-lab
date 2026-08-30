@@ -4,6 +4,7 @@ import gzip
 import json
 import struct
 import urllib.request
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
@@ -258,6 +259,27 @@ def contains_python_chain(profile: ProfilePayload, expected: list[str]) -> bool:
             if cursor == len(expected):
                 return True
     return False
+
+
+def iter_leaf_paths(profile: ProfilePayload) -> Iterator[tuple[str, tuple[Node, ...]]]:
+    """Yield each reachable root-to-leaf path from the decoded profile trees."""
+
+    for thread in profile.threads:
+        def visit(index: int, current: tuple[Node, ...], active: set[int]) -> Iterator[tuple[str, tuple[Node, ...]]]:
+            if index < 0 or index >= len(thread.nodes) or index in active:
+                return
+            node = thread.nodes[index]
+            path = current + (node,)
+            next_active = active | {index}
+            children = [child for child in node.children_refs if child not in next_active]
+            if not children:
+                yield thread.name, path
+                return
+            for child in children:
+                yield from visit(child, path, next_active)
+
+        for root in thread.children_refs:
+            yield from visit(root, (), set())
 
 
 def python_nodes(profile: ProfilePayload) -> list[tuple[str, Node]]:
