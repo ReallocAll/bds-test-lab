@@ -57,7 +57,6 @@ class _StartedServer:
             "Server started.",
             "[EndstoneServer] Version: 1.26.44.3",
             "[Endstone] Enabling spark v0.6.0",
-            "[CiLifecycleControl] CI lifecycle control enabled",
         ]
         if not predicate(lines):
             raise AssertionError("test fixture did not satisfy wait predicate")
@@ -71,6 +70,10 @@ class _WaitProcess:
     def __init__(self, returncode: int = 0) -> None:
         self.returncode = returncode
         self.wait_timeouts: list[float] = []
+        self.signals: list[int] = []
+
+    def send_signal(self, value: int) -> None:
+        self.signals.append(value)
 
     def wait(self, timeout: float) -> int:
         self.wait_timeouts.append(timeout)
@@ -126,16 +129,16 @@ class CombinedPackExactRunnerTest(unittest.TestCase):
         ):
             exact._start_exact_server(validator)  # type: ignore[arg-type]
 
-    def test_framework_shutdown_process_uses_endstone_shutdown_command(self) -> None:
+    def test_framework_shutdown_process_sends_control_break(self) -> None:
         server = exact._FrameworkShutdownServerProcess.__new__(exact._FrameworkShutdownServerProcess)
         process = _WaitProcess(returncode=0)
-        commands: list[str] = []
         server.process = process  # type: ignore[assignment]
         server.is_alive = lambda: True  # type: ignore[method-assign]
-        server.command = lambda command: commands.append(command) or 0  # type: ignore[method-assign]
 
-        self.assertTrue(server.graceful_stop(7.5))
-        self.assertEqual(commands, ["cishutdown"])
+        with mock.patch.object(exact, "_CTRL_BREAK_EVENT", 123):
+            self.assertTrue(server.graceful_stop(7.5))
+
+        self.assertEqual(process.signals, [123])
         self.assertEqual(process.wait_timeouts, [7.5])
 
     def test_framework_shutdown_requires_zero_exit_code(self) -> None:
@@ -143,11 +146,21 @@ class CombinedPackExactRunnerTest(unittest.TestCase):
         process = _WaitProcess(returncode=17)
         server.process = process  # type: ignore[assignment]
         server.is_alive = lambda: True  # type: ignore[method-assign]
-        server.command = lambda _command: 0  # type: ignore[method-assign]
 
-        self.assertFalse(server.graceful_stop(3.0))
+        with mock.patch.object(exact, "_CTRL_BREAK_EVENT", 123):
+            self.assertFalse(server.graceful_stop(3.0))
 
-    def test_windows_start_uses_documented_no_interactive_mode_and_control_plugin(self) -> None:
+    def test_framework_shutdown_rejects_missing_control_break_support(self) -> None:
+        server = exact._FrameworkShutdownServerProcess.__new__(exact._FrameworkShutdownServerProcess)
+        process = _WaitProcess(returncode=0)
+        server.process = process  # type: ignore[assignment]
+        server.is_alive = lambda: True  # type: ignore[method-assign]
+
+        with mock.patch.object(exact, "_CTRL_BREAK_EVENT", None):
+            self.assertFalse(server.graceful_stop(3.0))
+        self.assertEqual(process.signals, [])
+
+    def test_windows_start_uses_documented_no_interactive_mode_and_process_group_control(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             validator = _Validator()
@@ -170,7 +183,8 @@ class CombinedPackExactRunnerTest(unittest.TestCase):
         self.assertIn("--no-interactive", _StartedServer.created_cmd)
         self.assertIn("--server-folder", _StartedServer.created_cmd)
         self.assertEqual(validator.result["bds_version"], "26.44")
-        self.assertIn(("ci-lifecycle-control", "PASS"), [(name, status) for name, status, _ in validator.checks])
+        lifecycle = [fields for name, status, fields in validator.checks if name == "windows-headless-lifecycle" and status == "PASS"]
+        self.assertEqual(lifecycle, [{"shutdown_control": "CTRL_BREAK_EVENT"}])
         self.assertEqual(validator.checks[-1][0:2], ("exact-bds-version", "PASS"))
 
 
