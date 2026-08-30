@@ -7,9 +7,11 @@ on:
       - "controller/candidate_a_blocked_hardening.py"
       - "controller/candidate_a_blocked_analyzer.py"
       - "controller/candidate_a_trigger.py"
+      - "controller/cross_platform_fleet_validation.py"
       - "tests/test_candidate_a_blocked.py"
       - "tests/test_candidate_a_runner_hardening.py"
       - "tests/test_candidate_a_trigger.py"
+      - "tests/test_cross_platform_fleet_signal_exit.py"
       - "scenarios/candidate-a-stationary.json"
       - ".github/workflows/candidate-a-blocked.yml"
       - ".github/workflows/candidate-a-runner-checks.yml"
@@ -38,6 +40,7 @@ jobs:
           tests.test_candidate_a_blocked
           tests.test_candidate_a_runner_hardening
           tests.test_candidate_a_trigger
+          tests.test_cross_platform_fleet_signal_exit
 
       - name: Compile runner modules
         run: >-
@@ -46,14 +49,17 @@ jobs:
           controller/candidate_a_blocked_hardening.py
           controller/candidate_a_blocked_analyzer.py
           controller/candidate_a_trigger.py
+          controller/cross_platform_fleet_validation.py
 
       - name: Ruff focused files
         run: >-
           ruff check
           controller/candidate_a_blocked_hardening.py
           controller/candidate_a_trigger.py
+          controller/cross_platform_fleet_validation.py
           tests/test_candidate_a_runner_hardening.py
           tests/test_candidate_a_trigger.py
+          tests/test_cross_platform_fleet_signal_exit.py
 
       - name: Parse benchmark workflows
         run: |
