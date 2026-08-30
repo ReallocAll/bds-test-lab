@@ -1,4 +1,1 @@
-candidate-a-invalid-diagnostic
-baseline_sha=15b79e814ee6542f8a2382df09353e9c2009c8d1
-candidate_sha=78314038b67d506ec48da9a61181c0048fb3658e
-runner_diagnostics=c3f3ffe5adbd8bcb9d7cee9c5d0b3af0a26edb3e
+full-B
