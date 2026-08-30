@@ -1,8 +1,6 @@
-#!/usr/bin/env python3
 from __future__ import annotations
 
 import os
-import pathlib
 import shutil
 import sys
 from typing import Any
@@ -31,7 +29,7 @@ def validate_component_provenance(metadata: dict[str, Any], component: str) -> d
     components = metadata.get("components")
     observed = components.get(component) if isinstance(components, dict) else None
     if not isinstance(observed, dict):
-        raise RuntimeError(f"artifact metadata is missing component {component!r}")
+        raise TypeError(f"artifact metadata is missing component {component!r}")
 
     env_prefix = component.upper()
     expected_sha = os.environ.get(f"EXPECTED_{env_prefix}_SHA", "").strip().lower()
