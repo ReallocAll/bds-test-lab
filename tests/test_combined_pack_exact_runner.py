@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import controller.combined_pack_gamerule_fleet_exact_runner as exact
@@ -39,6 +41,31 @@ class _Validator:
         self.checks.append((name, status, dict(kwargs)))
 
 
+class _StartedServer:
+    created_cmd: list[str] | None = None
+
+    def __init__(self, cmd: list[str], root: Path, log_path: Path) -> None:
+        del root, log_path
+        type(self).created_cmd = list(cmd)
+
+    def start(self) -> None:
+        pass
+
+    def wait_for(self, predicate, timeout: float, description: str) -> list[str]:
+        del timeout, description
+        lines = [
+            "Server started.",
+            "[EndstoneServer] Version: 1.26.44.3",
+            "[endstone-spark] enabled",
+        ]
+        if not predicate(lines):
+            raise AssertionError("test fixture did not satisfy wait predicate")
+        return lines
+
+    def snapshot(self) -> list[str]:
+        return ["[EndstoneServer] Version: 1.26.44.3"]
+
+
 class CombinedPackExactRunnerTest(unittest.TestCase):
     def test_install_artifacts_requires_exact_component_identity(self) -> None:
         validator = _Validator()
@@ -65,6 +92,7 @@ class CombinedPackExactRunnerTest(unittest.TestCase):
 
     def test_start_server_requires_protocol_and_full_runtime_version(self) -> None:
         validator = _Validator()
+        validator.platform = "linux"  # type: ignore[attr-defined]
         with (
             mock.patch.object(exact, "_ORIGINAL_START_SERVER", lambda _self: None),
             mock.patch.dict(os.environ, {"EXPECTED_BDS_VERSION": "1.26.44.3"}, clear=True),
@@ -78,6 +106,7 @@ class CombinedPackExactRunnerTest(unittest.TestCase):
 
     def test_start_server_rejects_full_runtime_drift(self) -> None:
         validator = _Validator()
+        validator.platform = "linux"  # type: ignore[attr-defined]
         validator.server.snapshot = lambda: ["Version: 1.26.45.0"]  # type: ignore[method-assign]
         with (
             mock.patch.object(exact, "_ORIGINAL_START_SERVER", lambda _self: None),
@@ -85,6 +114,31 @@ class CombinedPackExactRunnerTest(unittest.TestCase):
             self.assertRaisesRegex(RuntimeError, "full version mismatch"),
         ):
             exact._start_exact_server(validator)  # type: ignore[arg-type]
+
+    def test_windows_start_uses_documented_no_interactive_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            validator = _Validator()
+            validator.platform = "windows"  # type: ignore[attr-defined]
+            validator.root = root  # type: ignore[attr-defined]
+            validator.server_dir = root / "bedrock_server"  # type: ignore[attr-defined]
+            validator.server_dir.mkdir()  # type: ignore[attr-defined]
+            validator.log_path = root / "bds.log"  # type: ignore[attr-defined]
+            validator.result_path = root / "test-results.json"  # type: ignore[attr-defined]
+            validator.server_dir.joinpath("version.txt").write_text("26.44", encoding="utf-8")  # type: ignore[attr-defined]
+            _StartedServer.created_cmd = None
+            with (
+                mock.patch.object(exact, "ServerProcess", _StartedServer),
+                mock.patch.dict(os.environ, {"EXPECTED_BDS_VERSION": "1.26.44.3"}, clear=True),
+            ):
+                exact._start_exact_server(validator)  # type: ignore[arg-type]
+
+        self.assertIsNotNone(_StartedServer.created_cmd)
+        assert _StartedServer.created_cmd is not None
+        self.assertIn("--no-interactive", _StartedServer.created_cmd)
+        self.assertIn("--server-folder", _StartedServer.created_cmd)
+        self.assertEqual(validator.result["bds_version"], "26.44")
+        self.assertEqual(validator.checks[-1][0:2], ("exact-bds-version", "PASS"))
 
 
 if __name__ == "__main__":
