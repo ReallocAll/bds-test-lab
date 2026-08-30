@@ -75,7 +75,7 @@ def write_exact_cases(block_dir: Path, block_index: int = 1) -> None:
 class CandidateARunnerHardeningTest(unittest.TestCase):
     def test_registered_stationary_scenario_sha_is_exact(self) -> None:
         scenario = Path(__file__).parents[1] / "scenarios" / "candidate-a-stationary.json"
-        observed = hashlib.sha256(scenario.read_bytes()).hexdigest()
+        observed = hashlib.sha256(scenario.read_text(encoding="utf-8").encode("utf-8")).hexdigest()
         self.assertEqual(observed, hardening.ACTUAL_SCENARIO_SHA256)
         self.assertEqual(base.BOT_SCENARIO_SHA256, observed)
 

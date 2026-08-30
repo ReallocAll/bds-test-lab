@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from controller.run_test import IntegrationTest
+from controller.run_test import IntegrationTest, ServerProcess
 
 
 class _FakeServer:
@@ -43,6 +44,25 @@ class WindowsAllocationValidationTest(unittest.TestCase):
         self.assertEqual(checks[-1][0:2], ("allocation-profiler", "PASS"))
         self.assertEqual(checks[-1][2]["viewer_url"], url)
         self.assertNotIn("expected_disabled", checks[-1][2])
+
+
+class ServerProcessIdentityTest(unittest.TestCase):
+    def test_start_records_pid_and_create_time_for_managed_root_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = ServerProcess(
+                [sys.executable, "-c", "import time; time.sleep(2)"],
+                root,
+                root / "server.log",
+            )
+            server.start()
+            try:
+                self.assertIsNotNone(server.process)
+                self.assertEqual(server.pid, server.process.pid)
+                self.assertIsInstance(server.create_time, float)
+            finally:
+                server.force_kill_tree()
+                server.close()
 
 
 if __name__ == "__main__":

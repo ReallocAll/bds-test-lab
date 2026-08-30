@@ -232,6 +232,16 @@ jobs:
           echo "Block controller exit code: $code"
           exit "$code"
 
+      - name: Prune runtime payloads and gate upload evidence
+        id: prepare-evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m controller.candidate_a_blocked_benchmark \
+            --prepare-evidence \
+            --evidence-root evidence
+
       - name: Resolve evidence upload eligibility
         id: evidence_gate
         if: ${{ always() }}
@@ -246,19 +256,28 @@ jobs:
           fi
 
       - name: Upload block evidence
-        if: ${{ always() && steps.evidence_gate.outputs.eligible == 'true' }}
+        if: ${{ always() && steps.prepare-evidence.outcome == 'success' && steps.evidence_gate.outputs.eligible == 'true' }}
         uses: actions/upload-artifact@v7
         with:
           name: candidate-a-blocked-block-${{ matrix.offset }}-${{ github.run_id }}
           path: |
-            evidence/block-*/candidate-a-blocked-block.json
-            evidence/block-*/case-status.tsv
-            evidence/block-*/*/*.json
-            evidence/block-*/*/*.log
-            evidence/block-*/*/*.sparkprofile
-            !evidence/**/downloads/**
-            !evidence/**/work/**
-            !evidence/**/hotspot-wheel/**
+            evidence/**/candidate-a-blocked-*.json
+            evidence/**/candidate-a-evidence-manifest.json
+            evidence/**/case-status.tsv
+            evidence/**/preflight.txt
+            evidence/**/metadata.json
+            evidence/**/bds.log
+            evidence/**/endstone.log
+            evidence/**/spark.log
+            evidence/**/failure-diagnostics.txt
+            evidence/**/test-results.json
+            evidence/**/python-attribution-bots-*.log
+            evidence/**/python-attribution-performance.json
+            evidence/**/python-attribution-performance.sparkprofile
+            evidence/**/python-attribution-profile-summary.json
+            evidence/**/python-attribution-result.json
+            evidence/**/python-attribution.sparkprofile
+            evidence/**/python-attribution-tick-metrics.json
           if-no-files-found: error
           retention-days: 30
 

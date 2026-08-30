@@ -7,7 +7,9 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import pathlib
+import re
 import statistics
 from collections import abc
 from itertools import pairwise
@@ -26,15 +28,20 @@ from controller.candidate_a_blocked_benchmark import (
     CHUNK_RADIUS,
     CPU_METRIC_RESOLUTION_LIMIT_PERCENTAGE_POINTS,
     ENDSTONE_SHA,
+    EVIDENCE_MANIFEST_NAME,
     HOTSPOT_ITERATIONS,
     HOTSPOT_ITERATIONS_RATIONALE,
     HOTSPOT_MODE,
     INPUT_COUNTER_KEYS,
     LEGAL_START_BLOCKS,
+    MANAGED_ROOT_TID_SCOPE,
     MAX_BLOCKS,
+    MAX_EVIDENCE_BYTES,
+    MAX_EVIDENCE_FILE_BYTES,
     MEASUREMENT_SECONDS,
     PROGRESS_COUNTER_KEYS,
     PROTOCOL_VERSION,
+    RUNTIME_PAYLOAD_DIRS,
     SAMPLE_INTERVAL_MS,
     STATIONARY_BOUNDED_AREA_POLICY,
     TREATMENTS,
@@ -458,6 +465,138 @@ def _check_window(result: dict[str, Any], errors: list[str]) -> dict[str, Any] |
     return windows
 
 
+def _valid_cpu_list(value: Any) -> bool:
+    return (
+        isinstance(value, list)
+        and all(isinstance(cpu, int) and not isinstance(cpu, bool) and cpu >= 0 for cpu in value)
+        and value == sorted(set(value))
+    )
+
+
+def _valid_tid_map(value: Any) -> bool:
+    if not isinstance(value, dict) or not value:
+        return False
+    tids: list[int] = []
+    for raw_tid, cpus in value.items():
+        if isinstance(raw_tid, bool):
+            return False
+        try:
+            tid = int(raw_tid)
+        except (TypeError, ValueError):
+            return False
+        if tid <= 0 or not _valid_cpu_list(cpus):
+            return False
+        tids.append(tid)
+    return len(tids) == len(set(tids))
+
+
+def _is_absolute_path(value: str) -> bool:
+    return pathlib.PurePosixPath(value).is_absolute() or pathlib.PureWindowsPath(value).is_absolute()
+
+
+def _check_affinity_snapshot(
+    snapshot: Any,
+    *,
+    label: str,
+    expected_pid: Any,
+    errors: list[str],
+) -> None:
+    if not isinstance(snapshot, dict):
+        errors.append(f"{label} affinity snapshot is missing")
+        return
+    pid = snapshot.get("pid")
+    if (
+        isinstance(pid, bool)
+        or not isinstance(pid, int)
+        or pid <= 0
+        or pid != expected_pid
+    ):
+        errors.append(f"{label} affinity snapshot PID is missing or mismatched")
+    create_time = snapshot.get("create_time")
+    if (
+        isinstance(create_time, bool)
+        or not isinstance(create_time, (int, float))
+        or not math.isfinite(float(create_time))
+    ):
+        errors.append(f"{label} affinity snapshot create-time is missing or invalid")
+    if not _valid_cpu_list(snapshot.get("process_affinity")):
+        errors.append(f"{label} original process affinity is missing or malformed")
+    if not _valid_tid_map(snapshot.get("tid_affinities")):
+        errors.append(f"{label} original per-TID affinity is missing or malformed")
+
+
+def _check_affinity_restoration(affinity: dict[str, Any], errors: list[str]) -> None:
+    original = affinity.get("original_affinity")
+    if not isinstance(original, dict):
+        errors.append("original process and per-TID affinity evidence is missing")
+        return
+    expected_pids = {
+        "controller": affinity.get("controller_pid"),
+        "bds": affinity.get("bds_pid"),
+        "load_generator": affinity.get("load_generator_pid"),
+    }
+    for label, expected_pid in expected_pids.items():
+        _check_affinity_snapshot(original.get(label), label=label, expected_pid=expected_pid, errors=errors)
+    restoration = affinity.get("restoration")
+    if not isinstance(restoration, dict) or restoration.get("status") != "PASS" or restoration.get("verified") is not True:
+        errors.append("affinity restoration was not proven")
+        return
+    restored = restoration.get("restored")
+    if not isinstance(restored, dict):
+        errors.append("restored affinity evidence is missing")
+        return
+    for label, expected_pid in expected_pids.items():
+        snapshot = original.get(label)
+        restored_snapshot = restored.get(label)
+        _check_affinity_snapshot(
+            restored_snapshot,
+            label=f"restored {label}",
+            expected_pid=expected_pid,
+            errors=errors,
+        )
+        if not isinstance(snapshot, dict) or not isinstance(restored_snapshot, dict):
+            continue
+        if restored_snapshot.get("process_affinity") != snapshot.get("process_affinity"):
+            errors.append(f"{label} process affinity was not restored to its original value")
+        original_tids = snapshot.get("tid_affinities")
+        restored_tids = restored_snapshot.get("tid_affinities")
+        if isinstance(original_tids, dict) and isinstance(restored_tids, dict):
+            original_by_tid = {str(raw_tid): cpus for raw_tid, cpus in original_tids.items()}
+            restored_by_tid = {str(raw_tid): cpus for raw_tid, cpus in restored_tids.items()}
+            for raw_tid, cpus in original_by_tid.items():
+                restored_cpus = restored_by_tid.get(raw_tid)
+                if restored_cpus is not None and restored_cpus != cpus:
+                    errors.append(f"{label} TID {raw_tid} affinity was not restored to its original value")
+            process_affinity = snapshot.get("process_affinity")
+            for raw_tid, cpus in restored_by_tid.items():
+                if raw_tid not in original_by_tid and cpus != process_affinity:
+                    errors.append(f"{label} new TID {raw_tid} affinity was not restored to process affinity")
+
+
+def _topology_signature(affinity: Any) -> str | None:
+    if not isinstance(affinity, dict):
+        return None
+    topology = affinity.get("runner_cpu_topology")
+    if not isinstance(topology, dict):
+        return None
+    signature = {
+        "allowed_cpus": topology.get("allowed_cpus"),
+        "controlled_cpu": topology.get("controlled_cpu", affinity.get("controlled_cpu")),
+        "load_cpus": topology.get("load_cpus", affinity.get("load_generator_affinity")),
+        "cpu_count": topology.get("cpu_count"),
+        "controlled_process_isolation": topology.get("controlled_process_isolation"),
+        "host_work_excluded": topology.get("host_work_excluded"),
+        "kernel_and_unrelated_host_work_excluded": topology.get("kernel_and_unrelated_host_work_excluded"),
+    }
+    original = affinity.get("original_affinity")
+    if isinstance(original, dict):
+        signature["original_process_affinity"] = {
+            label: value.get("process_affinity") if isinstance(value, dict) else None
+            for label, value in sorted(original.items())
+        }
+    return json.dumps(signature, sort_keys=True, separators=(",", ":"))
+
+
 def _check_affinity(result: dict[str, Any], errors: list[str]) -> dict[str, Any] | None:
     affinity = result.get("affinity")
     if not isinstance(affinity, dict):
@@ -465,6 +604,80 @@ def _check_affinity(result: dict[str, Any], errors: list[str]) -> dict[str, Any]
         return None
     if affinity.get("verified") is not True:
         errors.append("controlled-process CPU affinity was not verified")
+    if affinity.get("bds_tid_scope") != MANAGED_ROOT_TID_SCOPE:
+        errors.append("BDS TID affinity scope is not the managed Endstone/BDS root")
+    identity = affinity.get("managed_root_identity")
+    if not isinstance(identity, dict):
+        errors.append("managed Endstone/BDS root process identity is missing")
+    else:
+        identity_pid = identity.get("pid")
+        server_pid = identity.get("server_process_pid")
+        if (
+            isinstance(identity_pid, bool)
+            or not isinstance(identity_pid, int)
+            or identity_pid <= 0
+            or isinstance(server_pid, bool)
+            or not isinstance(server_pid, int)
+            or server_pid != identity_pid
+        ):
+            errors.append("managed root identity does not match the ServerProcess PID")
+        for field in ("create_time", "server_process_create_time"):
+            value = identity.get(field)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+                errors.append(f"managed root identity {field} is missing or invalid")
+        if (
+            isinstance(identity.get("create_time"), (int, float))
+            and isinstance(identity.get("server_process_create_time"), (int, float))
+            and abs(float(identity["create_time"]) - float(identity["server_process_create_time"])) > 0.01
+        ):
+            errors.append("managed root identity create-time does not match ServerProcess create-time")
+        if identity.get("role") != "managed_endstone_bds_root":
+            errors.append("managed root identity role is missing or invalid")
+        if not isinstance(identity.get("name"), str) or not identity["name"].strip():
+            errors.append("managed root process name is missing")
+        if not isinstance(identity.get("exe"), str) or not identity["exe"].strip():
+            errors.append("managed root process executable is missing")
+        interpreter = identity.get("interpreter")
+        server_command = identity.get("server_process_command")
+        if not isinstance(interpreter, str) or not interpreter.strip() or not _is_absolute_path(interpreter):
+            errors.append("managed root Python interpreter identity is missing or not absolute")
+        if not isinstance(server_command, list) or not server_command or not all(
+            isinstance(argument, str) for argument in server_command
+        ):
+            errors.append("managed root ServerProcess command is missing")
+        elif isinstance(interpreter, str) and (server_command[0] != interpreter):
+            errors.append("managed root ServerProcess command does not start with the recorded interpreter")
+        cmdline = identity.get("cmdline")
+        folder = identity.get("server_folder")
+        if not isinstance(cmdline, list) or not all(isinstance(argument, str) for argument in cmdline):
+            errors.append("managed root process command line is missing")
+        elif not isinstance(folder, str) or not folder:
+            errors.append("managed root server folder is missing")
+        else:
+            if not _is_absolute_path(folder):
+                errors.append("managed root server folder is not absolute")
+            module_present = [
+                index
+                for index, argument in enumerate(cmdline)
+                if argument == "-m" and index + 1 < len(cmdline) and cmdline[index + 1] == "endstone"
+            ]
+            folder_present = [
+                index
+                for index, argument in enumerate(cmdline)
+                if argument == "--server-folder" and index + 1 < len(cmdline) and cmdline[index + 1] == folder
+            ]
+            if len(module_present) != 1 or len(folder_present) != 1:
+                errors.append("managed root command line lacks exact -m endstone/--server-folder identity")
+        if isinstance(server_command, list) and isinstance(cmdline, list) and cmdline != server_command:
+            errors.append("managed root command line does not match the recorded ServerProcess command")
+        if (
+            isinstance(interpreter, str)
+            and isinstance(identity.get("exe"), str)
+            and os.path.realpath(identity["exe"]) != os.path.realpath(interpreter)
+        ):
+            errors.append("managed root executable does not match the recorded Python interpreter")
+        if identity.get("alive") is not True:
+            errors.append("managed root liveness was not verified")
     controlled = affinity.get("controlled_cpu")
     bds = affinity.get("bds_affinity_after", affinity.get("bds_affinity"))
     load = affinity.get("load_generator_affinity")
@@ -589,6 +802,10 @@ def _check_affinity(result: dict[str, Any], errors: list[str]) -> dict[str, Any]
                 errors.append("runner topology allowed CPU set differs from affinity evidence")
         else:
             errors.append("runner topology allowed CPU set is missing")
+        if topology.get("controlled_cpu", controlled) != controlled:
+            errors.append("runner topology controlled CPU differs from affinity evidence")
+        if topology.get("load_cpus", load) != load:
+            errors.append("runner topology load CPU set differs from affinity evidence")
         cpu_count = topology.get("cpu_count")
         if isinstance(cpu_count, bool) or not isinstance(cpu_count, int) or cpu_count < 1:
             errors.append("runner topology CPU count is missing or invalid")
@@ -664,6 +881,22 @@ def _check_affinity(result: dict[str, Any], errors: list[str]) -> dict[str, Any]
         errors.append("initial BDS process ID is missing from affinity evidence")
     elif isinstance(bds_pid, int) and initial_pid == bds_pid:
         errors.append("measurement BDS process was not fresh after bootstrap")
+    initial_create_time = affinity.get("initial_bds_create_time")
+    if (
+        isinstance(initial_create_time, bool)
+        or not isinstance(initial_create_time, (int, float))
+        or not math.isfinite(float(initial_create_time))
+    ):
+        errors.append("initial managed root create-time is missing from affinity evidence")
+    if (
+        isinstance(identity, dict)
+        and isinstance(identity.get("create_time"), (int, float))
+        and abs(float(identity["create_time"]) - float(affinity.get("bds_create_time", float("nan")))) > 0.01
+    ):
+        errors.append("BDS affinity create-time does not match managed root identity")
+    if isinstance(identity, dict) and isinstance(bds_pid, int) and identity.get("pid") != bds_pid:
+        errors.append("managed root identity PID does not match BDS affinity evidence")
+    _check_affinity_restoration(affinity, errors)
     return affinity
 
 
@@ -861,6 +1094,8 @@ def validate_case(
         "bot_progress_counter_scope": BOT_PROGRESS_COUNTER_SCOPE,
         "pep_event_scope": "full-profile-cumulative; not window-aligned",
         "affinity_model": "controlled-process CPU isolation; host and kernel work are not excluded",
+        "measurement_process_scope": "managed Endstone/BDS root process (python -m endstone); descendants excluded",
+        "managed_root_tid_scope": MANAGED_ROOT_TID_SCOPE,
     }.items():
         if protocol.get(key) != expected:
             errors.append(f"{expected_id}: protocol {key} mismatch: {protocol.get(key)!r} != {expected!r}")
@@ -916,7 +1151,7 @@ def validate_case(
     affinity = _check_affinity(result, errors)
     workload = _check_workload(result, errors)
     metrics: dict[str, float] | None = None
-    if not errors or result.get("performance") is not None:
+    if not errors:
         try:
             metrics = _metric_values(result)
         except EvidenceError as exc:
@@ -1004,6 +1239,8 @@ def validate_case(
             except (KeyError, TypeError, ValueError):
                 pass
 
+    if errors:
+        metrics = None
     report = {
         "case_id": expected_id,
         "block_index": expected_block,
@@ -1022,6 +1259,155 @@ def validate_case(
         "endstone_metadata": endstone_metadata,
     }
     return metrics, report
+
+
+def _verify_evidence_manifest(manifest_path: pathlib.Path, errors: list[str]) -> None:
+    if manifest_path.is_symlink():
+        errors.append(f"evidence manifest is a symlink: {manifest_path}")
+        return
+    block_dir = manifest_path.parent
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        errors.append(f"unable to parse evidence manifest {manifest_path}: {exc}")
+        return
+    if not isinstance(payload, dict):
+        errors.append(f"evidence manifest is not an object: {manifest_path}")
+        return
+    if payload.get("protocol_version") != PROTOCOL_VERSION:
+        errors.append(f"evidence manifest protocol mismatch: {manifest_path}")
+    if payload.get("max_file_bytes") != MAX_EVIDENCE_FILE_BYTES:
+        errors.append(f"evidence manifest file-size limit mismatch: {manifest_path}")
+    if payload.get("max_total_bytes") != MAX_EVIDENCE_BYTES:
+        errors.append(f"evidence manifest total-size limit mismatch: {manifest_path}")
+    if payload.get("runtime_payload_dirs_pruned") != list(RUNTIME_PAYLOAD_DIRS):
+        errors.append(f"evidence manifest runtime payload declaration mismatch: {manifest_path}")
+    entries = payload.get("files")
+    if not isinstance(entries, list):
+        errors.append(f"evidence manifest file list is missing: {manifest_path}")
+        return
+    expected_count = payload.get("allowed_file_count")
+    total_bytes = payload.get("total_bytes")
+    if isinstance(expected_count, bool) or not isinstance(expected_count, int) or expected_count != len(entries):
+        errors.append(f"evidence manifest file count is malformed: {manifest_path}")
+    if isinstance(total_bytes, bool) or not isinstance(total_bytes, int) or total_bytes < 0:
+        errors.append(f"evidence manifest total byte count is malformed: {manifest_path}")
+        total_bytes = -1
+    if isinstance(total_bytes, int) and total_bytes > MAX_EVIDENCE_BYTES:
+        errors.append(f"evidence manifest exceeds total byte limit: {manifest_path}")
+    listed_paths: set[str] = set()
+    listed_total = 0
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            errors.append(f"evidence manifest entry {index} is malformed: {manifest_path}")
+            continue
+        raw_path = entry.get("path")
+        if not isinstance(raw_path, str) or not raw_path or "\\" in raw_path:
+            errors.append(f"evidence manifest entry {index} path is malformed: {manifest_path}")
+            continue
+        relative = pathlib.PurePosixPath(raw_path)
+        if relative.is_absolute() or not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+            errors.append(f"evidence manifest entry {index} escapes its block: {manifest_path}")
+            continue
+        normalized_path = relative.as_posix()
+        if normalized_path in listed_paths or normalized_path == EVIDENCE_MANIFEST_NAME:
+            errors.append(f"evidence manifest contains duplicate or self-referential path: {manifest_path}")
+            continue
+        listed_paths.add(normalized_path)
+        size = entry.get("bytes")
+        digest = entry.get("sha256")
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0 or size > MAX_EVIDENCE_FILE_BYTES:
+            errors.append(f"evidence manifest entry {normalized_path} has an invalid size")
+            continue
+        if not isinstance(digest, str) or len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+            errors.append(f"evidence manifest entry {normalized_path} has an invalid SHA-256")
+            continue
+        listed_total += size
+        target = block_dir.joinpath(*relative.parts)
+        try:
+            contained = target.resolve().relative_to(block_dir.resolve())
+        except (OSError, ValueError):
+            errors.append(f"evidence manifest entry {normalized_path} escapes its block")
+            continue
+        if contained != pathlib.Path(*relative.parts):
+            errors.append(f"evidence manifest entry {normalized_path} is not contained in its block")
+            continue
+        if target.is_symlink() or not target.is_file():
+            errors.append(f"evidence manifest entry is missing or symlinked: {manifest_path.parent.name}/{normalized_path}")
+            continue
+        try:
+            actual_size = target.stat().st_size
+            actual_digest = hashlib.sha256(target.read_bytes()).hexdigest()
+        except OSError as exc:
+            errors.append(f"evidence manifest entry cannot be read: {manifest_path.parent.name}/{normalized_path}: {exc}")
+            continue
+        if actual_size != size:
+            errors.append(f"evidence manifest byte mismatch for {manifest_path.parent.name}/{normalized_path}")
+        if actual_digest != digest:
+            errors.append(f"evidence manifest SHA-256 mismatch for {manifest_path.parent.name}/{normalized_path}")
+    if isinstance(total_bytes, int) and total_bytes != listed_total:
+        errors.append(f"evidence manifest total does not equal listed files: {manifest_path}")
+    actual_paths: set[str] = set()
+    try:
+        for path in block_dir.rglob("*"):
+            relative = path.relative_to(block_dir)
+            if path.is_symlink():
+                errors.append(f"evidence tree contains a symlink: {manifest_path.parent.name}/{relative.as_posix()}")
+            elif path.is_file():
+                normalized_path = relative.as_posix()
+                if normalized_path != EVIDENCE_MANIFEST_NAME:
+                    actual_paths.add(normalized_path)
+    except OSError as exc:
+        errors.append(f"unable to inspect evidence tree for {manifest_path}: {exc}")
+    for missing in sorted(actual_paths - listed_paths):
+        errors.append(f"evidence manifest omits file: {manifest_path.parent.name}/{missing}")
+    for treatment in TREATMENTS:
+        for directory in RUNTIME_PAYLOAD_DIRS:
+            payload_dir = block_dir / treatment / directory
+            if payload_dir.exists() or payload_dir.is_symlink():
+                errors.append(f"evidence runtime payload was not pruned: {manifest_path.parent.name}/{treatment}/{directory}")
+
+
+def _verify_evidence_manifests(
+    roots: abc.Iterable[pathlib.Path], *, expected_blocks: abc.Iterable[int]
+) -> int:
+    errors: list[str] = []
+    expected = set(expected_blocks)
+    manifests_by_block: dict[int, pathlib.Path] = {}
+    candidates: list[pathlib.Path] = []
+    for root in roots:
+        if root.is_file():
+            if root.name == EVIDENCE_MANIFEST_NAME:
+                candidates.append(root)
+        elif root.is_dir():
+            candidates.extend(sorted(root.rglob(EVIDENCE_MANIFEST_NAME)))
+        else:
+            continue
+    if not candidates:
+        errors.append("no evidence manifests found; exactly one is required per expected block")
+    for manifest_path in candidates:
+        parent_name = manifest_path.parent.name
+        if not re.fullmatch(r"block-[0-9]{2}", parent_name):
+            errors.append(f"evidence manifest is not inside a block directory: {manifest_path}")
+            continue
+        block_index = int(parent_name.removeprefix("block-"))
+        if block_index not in expected:
+            errors.append(f"evidence manifest is outside expected evaluated blocks: {manifest_path}")
+            continue
+        if block_index in manifests_by_block:
+            errors.append(
+                f"multiple evidence manifests found for block {block_index:02d}: "
+                f"{manifests_by_block[block_index]} and {manifest_path}"
+            )
+            continue
+        manifests_by_block[block_index] = manifest_path
+    for block_index in sorted(expected - set(manifests_by_block)):
+        errors.append(f"evidence manifest is missing for expected block {block_index:02d}")
+    for manifest_path in manifests_by_block.values():
+        _verify_evidence_manifest(manifest_path, errors)
+    if errors:
+        raise EvidenceError("; ".join(errors))
+    return len(manifests_by_block)
 
 
 def _iter_case_files(roots: abc.Iterable[pathlib.Path]) -> list[tuple[pathlib.Path, dict[str, Any]]]:
@@ -1145,11 +1531,17 @@ def analyze_evidence(
             "primary_metric": "process_cpu_percent_of_one_core",
         }
     end_block = start_block + batch_size - 1
+    expected_blocks = tuple(range(1, end_block + 1))
     if end_block > max_blocks:
         errors.append(f"batch end block {end_block} exceeds maximum {max_blocks}")
     if start_block not in LEGAL_START_BLOCKS:
         errors.append(f"start block {start_block} is not one of {LEGAL_START_BLOCKS}")
 
+    try:
+        evidence_manifest_count = _verify_evidence_manifests(roots, expected_blocks=expected_blocks)
+    except EvidenceError as exc:
+        evidence_manifest_count = 0
+        errors.append(str(exc))
     try:
         files = _iter_case_files(roots)
     except EvidenceError as exc:
@@ -1187,6 +1579,7 @@ def analyze_evidence(
     scenario_sha: str | None = None
     world_id: str | None = None
     endstone_signatures: set[str] = set()
+    topology_signatures: set[str] = set()
     expected_cases = []
     for block in range(1, end_block + 1):
         for position, treatment in enumerate(block_schedule(block)):
@@ -1240,12 +1633,17 @@ def analyze_evidence(
         endstone_metadata = report.get("endstone_metadata")
         if isinstance(endstone_metadata, dict):
             endstone_signatures.add(json.dumps(endstone_metadata, sort_keys=True, separators=(",", ":")))
+        topology_signature = _topology_signature(report.get("affinity"))
+        if topology_signature is not None:
+            topology_signatures.add(topology_signature)
         if report_metrics is not None:
             metrics_by_case[(block, treatment)] = report_metrics
         errors.extend(report.get("errors") or [])
 
     if len(endstone_signatures) != 1:
         errors.append("Endstone artifact metadata is missing or drifts across the cumulative experiment")
+    if len(topology_signatures) > 1:
+        errors.append("runner CPU topology differs across cases or blocks")
     workload_balance = _workload_balance(reports)
     errors.extend(workload_balance["errors"])
     did: dict[str, dict[str, Any]] = {}
@@ -1297,6 +1695,7 @@ def analyze_evidence(
         "batch_size": batch_size,
         "case_count": len(expected_ids),
         "observed_case_count": len(actual_ids),
+        "evidence_manifest_count": evidence_manifest_count,
         "schedule": {
             str(block): list(block_schedule(block)) for block in range(1, end_block + 1)
         },
@@ -1330,6 +1729,8 @@ def analyze_evidence(
             "endstone_sha": ENDSTONE_SHA,
             "endstone_metadata_consistent": len(endstone_signatures) == 1,
             "endstone_metadata_signatures": sorted(endstone_signatures),
+            "topology_consistent": len(topology_signatures) == 1,
+            "topology_signatures": sorted(topology_signatures),
             "scenario_sha256": scenario_sha,
             "world_snapshot_id": world_id or WORLD_SNAPSHOT_ID,
             "native_boundary_misses": sorted(
