@@ -62,9 +62,12 @@ class PythonAttributionPerformanceRunnerTest(unittest.TestCase):
             ),
         )
         for env, pattern in cases:
-            with self.subTest(pattern=pattern), mock.patch.dict(os.environ, env, clear=True):
-                with self.assertRaisesRegex(RuntimeError, pattern):
-                    validate_component_provenance(metadata, "endstone")
+            with (
+                self.subTest(pattern=pattern),
+                mock.patch.dict(os.environ, env, clear=True),
+                self.assertRaisesRegex(RuntimeError, pattern),
+            ):
+                validate_component_provenance(metadata, "endstone")
 
     def test_component_provenance_rejects_malformed_expected_id(self) -> None:
         metadata = {
@@ -72,9 +75,11 @@ class PythonAttributionPerformanceRunnerTest(unittest.TestCase):
                 "spark": {"sha": "c" * 40, "run_id": 1, "artifact": {"id": 2}}
             }
         }
-        with mock.patch.dict(os.environ, {"EXPECTED_SPARK_RUN_ID": "not-an-id"}, clear=True):
-            with self.assertRaisesRegex(RuntimeError, "positive integer"):
-                validate_component_provenance(metadata, "spark")
+        with (
+            mock.patch.dict(os.environ, {"EXPECTED_SPARK_RUN_ID": "not-an-id"}, clear=True),
+            self.assertRaisesRegex(RuntimeError, "positive integer"),
+        ):
+            validate_component_provenance(metadata, "spark")
 
     def test_bds_version_guard_accepts_exact_version(self) -> None:
         with mock.patch.dict(os.environ, {"EXPECTED_BDS_VERSION": "1.26.44.3"}, clear=True):
