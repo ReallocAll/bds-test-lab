@@ -109,17 +109,30 @@ jobs:
         run: |
           set -euo pipefail
           for sha in "$BASELINE_SHA" "$CANDIDATE_SHA"; do
+            require_python=false
+            if [[ "$sha" == "$CANDIDATE_SHA" ]]; then
+              require_python=true
+            fi
             for attempt in $(seq 1 80); do
               json="$(gh api "repos/ReallocAll/spark/actions/runs?head_sha=${sha}&per_page=100")"
               build="$(jq -r '[.workflow_runs[] | select(.name == "Build")][0].conclusion // ""' <<<"$json")"
               python_ci="$(jq -r '[.workflow_runs[] | select(.name == "Python attribution")][0].conclusion // ""' <<<"$json")"
-              echo "Spark CI sha=$sha attempt=$attempt Build=${build:-pending} Python=${python_ci:-pending}"
-              if [[ "$build" == success && "$python_ci" == success ]]; then
+              if [[ "$require_python" == true ]]; then
+                python_status="${python_ci:-pending}"
+              else
+                python_status="not-applicable-before-workflow"
+              fi
+              echo "Spark CI sha=$sha attempt=$attempt Build=${build:-pending} Python=$python_status"
+              if [[ "$build" == success && ( "$require_python" == false || "$python_ci" == success ) ]]; then
                 break
               fi
-              for conclusion in "$build" "$python_ci"; do
+              conclusions=("$build")
+              if [[ "$require_python" == true ]]; then
+                conclusions+=("$python_ci")
+              fi
+              for conclusion in "${conclusions[@]}"; do
                 if [[ "$conclusion" == failure || "$conclusion" == cancelled || "$conclusion" == timed_out ]]; then
-                  echo "Exact Spark CI failed for $sha: Build=$build Python=$python_ci" >&2
+                  echo "Exact Spark CI failed for $sha: Build=$build Python=$python_status" >&2
                   exit 1
                 fi
               done
