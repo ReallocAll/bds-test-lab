@@ -31,6 +31,9 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Verify trigger resolver has no third-party imports
+        run: python -S -m controller.candidate_a_trigger --help
+
       - name: Install focused dependencies
         run: python -m pip install --disable-pip-version-check psutil packaging hatchling pyyaml ruff
 
