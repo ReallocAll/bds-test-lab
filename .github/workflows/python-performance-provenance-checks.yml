@@ -4,10 +4,16 @@ on:
   pull_request:
     paths:
       - "providers/artifact_provider.py"
+      - "controller/python_evidence_provenance.py"
+      - "controller/python_attribution_exact_runner.py"
+      - "controller/python_dependency_exact_runner.py"
       - "controller/python_attribution_performance_runner.py"
       - "tests/test_artifact_provider.py"
+      - "tests/test_python_evidence_provenance.py"
       - "tests/test_python_attribution_performance_runner.py"
       - ".github/workflows/python-attribution-performance.yml"
+      - ".github/workflows/python-attribution-bds-e2e.yml"
+      - ".github/workflows/python-attribution-dependency-e2e.yml"
       - ".github/workflows/python-performance-provenance-checks.yml"
   workflow_dispatch:
 
@@ -32,29 +38,39 @@ jobs:
         run: >-
           python -m unittest
           tests.test_artifact_provider
+          tests.test_python_evidence_provenance
           tests.test_python_attribution_performance_runner
 
       - name: Compile provenance modules
         run: >-
           python -m py_compile
           providers/artifact_provider.py
+          controller/python_evidence_provenance.py
+          controller/python_attribution_exact_runner.py
+          controller/python_dependency_exact_runner.py
           controller/python_attribution_performance_runner.py
 
       - name: Ruff focused files
         run: >-
           ruff check
           providers/artifact_provider.py
+          controller/python_evidence_provenance.py
+          controller/python_attribution_exact_runner.py
+          controller/python_dependency_exact_runner.py
           controller/python_attribution_performance_runner.py
           tests/test_artifact_provider.py
+          tests/test_python_evidence_provenance.py
           tests/test_python_attribution_performance_runner.py
 
-      - name: Parse performance workflows
+      - name: Parse Python evidence workflows
         run: |
           python - <<'PY'
           from pathlib import Path
           import yaml
           for path in (
               Path('.github/workflows/python-attribution-performance.yml'),
+              Path('.github/workflows/python-attribution-bds-e2e.yml'),
+              Path('.github/workflows/python-attribution-dependency-e2e.yml'),
               Path('.github/workflows/python-performance-provenance-checks.yml'),
           ):
               with path.open(encoding='utf-8') as stream:

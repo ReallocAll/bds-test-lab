@@ -34,7 +34,6 @@ env:
   EXPECTED_SPARK_SHA: ${{ github.event.inputs.spark_sha || '' }}
   EXPECTED_ENDSTONE_SHA: "c76c814289ee3be8a7236389b6bdeb5728b154e4"
   EXPECTED_ENDSTONE_RUN_ID: "32992839821"
-  EXPECTED_ENDSTONE_ARTIFACT_ID: "9616075557"
   EXPECTED_ENDSTONE_VERSION: "0.11.10.dev387"
   EXPECTED_BDS_VERSION: "1.26.44.3"
   EXPECTED_BOT_REF: "b8c4875bb1fafaa5dd9b8e91b16b613af47bf37a"
@@ -51,12 +50,16 @@ jobs:
           - platform: linux
             os: ubuntu-24.04
             bot_name: bds-test-bot
+            endstone_artifact_id: "9616075557"
           - platform: windows
             os: windows-2022
             bot_name: bds-test-bot.exe
+            endstone_artifact_id: "9616071559"
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
+    env:
+      EXPECTED_ENDSTONE_ARTIFACT_ID: ${{ matrix.endstone_artifact_id }}
 
     steps:
       - name: Checkout test lab
@@ -95,7 +98,10 @@ jobs:
           print(f"Spark SHA: {expected}")
           print(f"Bot ref: {bot_ref}")
           print(f"Endstone SHA: {os.environ['EXPECTED_ENDSTONE_SHA']}")
-          print(f"Endstone run/artifact: {os.environ['EXPECTED_ENDSTONE_RUN_ID']}/{os.environ['EXPECTED_ENDSTONE_ARTIFACT_ID']}")
+          print(
+              "Endstone run/artifact: "
+              f"{os.environ['EXPECTED_ENDSTONE_RUN_ID']}/{os.environ['EXPECTED_ENDSTONE_ARTIFACT_ID']}"
+          )
           print(f"BDS: {os.environ['EXPECTED_BDS_VERSION']}")
           print(f"Soak minutes: {soak}")
           PY

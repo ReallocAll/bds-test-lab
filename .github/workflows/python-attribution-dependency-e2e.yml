@@ -7,10 +7,22 @@ on:
       - test/python-attribution-regression-validation
     paths:
       - ".github/workflows/python-attribution-dependency-e2e.yml"
+      - "controller/python_dependency_exact_runner.py"
       - "controller/python_dependency_validation.py"
+      - "controller/python_attribution_exact_runner.py"
+      - "controller/python_evidence_provenance.py"
       - "controller/python_profile_payload.py"
       - "fixtures/spark-python-dependency-test/**"
   workflow_dispatch:
+    inputs:
+      spark_sha:
+        description: "Exact ReallocAll/spark SHA to validate"
+        required: true
+        default: "78314038b67d506ec48da9a61181c0048fb3658e"
+      profile_seconds:
+        description: "Seconds for the dependency execution profile"
+        required: false
+        default: "60"
 
 permissions:
   contents: read
@@ -19,10 +31,16 @@ permissions:
 env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
-  EXPECTED_SPARK_SHA: "43caee792284dda6b784db8c99ce83ca21ea3ea4"
+  EXPECTED_SPARK_SHA: ${{ github.event.inputs.spark_sha || '78314038b67d506ec48da9a61181c0048fb3658e' }}
+  EXPECTED_ENDSTONE_SHA: "c76c814289ee3be8a7236389b6bdeb5728b154e4"
+  EXPECTED_ENDSTONE_RUN_ID: "32992839821"
+  EXPECTED_ENDSTONE_ARTIFACT_ID: "9616075557"
+  EXPECTED_ENDSTONE_VERSION: "0.11.10.dev387"
+  EXPECTED_BDS_VERSION: "1.26.44.3"
   BOT_REF: "b8c4875bb1fafaa5dd9b8e91b16b613af47bf37a"
   BDS_TEST_BOT_SCENARIO_FILE: bot-src/scenarios/mixed-actions.json
   SPARK_PYTHON_DEPENDENCY_ITERATIONS: "1800"
+  PROFILE_SECONDS: ${{ github.event.inputs.profile_seconds || '60' }}
 
 jobs:
   dependency:
@@ -32,6 +50,18 @@ jobs:
     steps:
       - name: Checkout test lab
         uses: actions/checkout@v7
+
+      - name: Validate immutable provenance inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SPARK_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "Spark SHA is not exact" >&2; exit 1; }
+          [[ "$EXPECTED_ENDSTONE_SHA" == "c76c814289ee3be8a7236389b6bdeb5728b154e4" ]] || { echo "Endstone SHA drift" >&2; exit 1; }
+          [[ "$EXPECTED_ENDSTONE_RUN_ID" == "32992839821" ]] || { echo "Endstone run drift" >&2; exit 1; }
+          [[ "$EXPECTED_ENDSTONE_ARTIFACT_ID" == "9616075557" ]] || { echo "Endstone artifact drift" >&2; exit 1; }
+          [[ "$EXPECTED_ENDSTONE_VERSION" == "0.11.10.dev387" ]] || { echo "Endstone version drift" >&2; exit 1; }
+          [[ "$EXPECTED_BDS_VERSION" == "1.26.44.3" ]] || { echo "BDS version drift" >&2; exit 1; }
+          [[ "$BOT_REF" == "b8c4875bb1fafaa5dd9b8e91b16b613af47bf37a" ]] || { echo "bot SHA drift" >&2; exit 1; }
 
       - name: Require exact Spark CI success
         shell: bash
@@ -84,9 +114,32 @@ jobs:
 
       - name: Run real BDS dependency attribution profile
         run: >-
-          python -m controller.python_dependency_validation
+          python -m controller.python_dependency_exact_runner
           --bot dist/bds-test-bot
-          --profile-seconds 60
+          --profile-seconds ${{ env.PROFILE_SECONDS }}
+
+      - name: Add dependency evidence to summary
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f python-attribution-result.json ]]; then
+            python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          data = json.loads(Path('python-attribution-result.json').read_text())
+          metadata = json.loads(Path('metadata.json').read_text()) if Path('metadata.json').is_file() else {}
+          components = metadata.get('components') or {}
+          spark = components.get('spark') or {}
+          endstone = components.get('endstone') or {}
+          print("## Python external dependency attribution")
+          print(f"Status: **{data.get('status')}**")
+          print(f"Spark SHA: `{spark.get('sha')}`")
+          print(f"Endstone SHA: `{endstone.get('sha')}`")
+          print(f"Endstone run/artifact: `{endstone.get('run_id')}` / `{(endstone.get('artifact') or {}).get('id')}`")
+          print(f"BDS: `{data.get('bds_version')}`")
+          print(f"Profile: {data.get('spark_profile_viewer_url')}")
+          PY
+          fi
 
       - name: Upload dependency evidence
         if: always()

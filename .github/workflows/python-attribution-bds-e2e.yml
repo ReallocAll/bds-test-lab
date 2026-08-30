@@ -6,19 +6,17 @@ on:
       - test/python-attribution-validation
     paths:
       - ".github/workflows/python-attribution-bds-e2e.yml"
+      - "controller/python_attribution_exact_runner.py"
       - "controller/python_attribution_validation.py"
+      - "controller/python_evidence_provenance.py"
       - "controller/python_profile_payload.py"
       - "fixtures/spark-python-hotspot-test/**"
   workflow_dispatch:
     inputs:
       spark_sha:
         description: "Exact ReallocAll/spark SHA to validate"
-        required: false
-        default: "b10964200f8dc3ed64e434da8edac08eabb84c41"
-      bot_ref:
-        description: "Exact ReallocAll/bds-test-bot ref"
-        required: false
-        default: "b8c4875bb1fafaa5dd9b8e91b16b613af47bf37a"
+        required: true
+        default: "78314038b67d506ec48da9a61181c0048fb3658e"
       profile_seconds:
         description: "Seconds per Spark execution profile"
         required: false
@@ -35,8 +33,12 @@ permissions:
 env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
-  EXPECTED_SPARK_SHA: ${{ github.event.inputs.spark_sha || 'b10964200f8dc3ed64e434da8edac08eabb84c41' }}
-  BOT_REF: ${{ github.event.inputs.bot_ref || 'b8c4875bb1fafaa5dd9b8e91b16b613af47bf37a' }}
+  EXPECTED_SPARK_SHA: ${{ github.event.inputs.spark_sha || '78314038b67d506ec48da9a61181c0048fb3658e' }}
+  EXPECTED_ENDSTONE_SHA: "c76c814289ee3be8a7236389b6bdeb5728b154e4"
+  EXPECTED_ENDSTONE_RUN_ID: "32992839821"
+  EXPECTED_ENDSTONE_VERSION: "0.11.10.dev387"
+  EXPECTED_BDS_VERSION: "1.26.44.3"
+  BOT_REF: "b8c4875bb1fafaa5dd9b8e91b16b613af47bf37a"
   PROFILE_SECONDS: ${{ github.event.inputs.profile_seconds || '60' }}
 
 jobs:
@@ -50,6 +52,7 @@ jobs:
           - platform: linux
             os: ubuntu-24.04
             bot_name: bds-test-bot
+            endstone_artifact_id: "9616075557"
             mode: off
             scenario: chunk-walk
             scenario_label: mixed-actions
@@ -59,6 +62,7 @@ jobs:
           - platform: linux
             os: ubuntu-24.04
             bot_name: bds-test-bot
+            endstone_artifact_id: "9616075557"
             mode: single
             scenario: chunk-walk
             scenario_label: mixed-actions
@@ -68,6 +72,7 @@ jobs:
           - platform: linux
             os: ubuntu-24.04
             bot_name: bds-test-bot
+            endstone_artifact_id: "9616075557"
             mode: nested
             scenario: chunk-walk
             scenario_label: mixed-actions
@@ -77,6 +82,7 @@ jobs:
           - platform: linux
             os: ubuntu-24.04
             bot_name: bds-test-bot
+            endstone_artifact_id: "9616075557"
             mode: dual
             scenario: chunk-walk
             scenario_label: mixed-actions
@@ -86,6 +92,7 @@ jobs:
           - platform: linux
             os: ubuntu-24.04
             bot_name: bds-test-bot
+            endstone_artifact_id: "9616075557"
             mode: mixed
             scenario: chunk-walk
             scenario_label: mixed-actions
@@ -95,6 +102,7 @@ jobs:
           - platform: linux
             os: ubuntu-24.04
             bot_name: bds-test-bot
+            endstone_artifact_id: "9616075557"
             mode: fleet
             scenario: chunk-walk
             scenario_label: mixed-actions
@@ -104,6 +112,7 @@ jobs:
           - platform: linux
             os: ubuntu-24.04
             bot_name: bds-test-bot
+            endstone_artifact_id: "9616075557"
             mode: single
             scenario: chunk-walk
             scenario_label: chunk-walk
@@ -113,6 +122,7 @@ jobs:
           - platform: linux
             os: ubuntu-24.04
             bot_name: bds-test-bot
+            endstone_artifact_id: "9616075557"
             mode: nested
             scenario: chunk-fly
             scenario_label: chunk-fly
@@ -122,6 +132,7 @@ jobs:
           - platform: windows
             os: windows-2022
             bot_name: bds-test-bot.exe
+            endstone_artifact_id: "9616071559"
             mode: single
             scenario: chunk-walk
             scenario_label: mixed-actions
@@ -131,6 +142,7 @@ jobs:
           - platform: windows
             os: windows-2022
             bot_name: bds-test-bot.exe
+            endstone_artifact_id: "9616071559"
             mode: dual
             scenario: chunk-walk
             scenario_label: mixed-actions
@@ -140,6 +152,7 @@ jobs:
           - platform: windows
             os: windows-2022
             bot_name: bds-test-bot.exe
+            endstone_artifact_id: "9616071559"
             mode: fleet
             scenario: chunk-walk
             scenario_label: mixed-actions
@@ -149,12 +162,30 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     env:
+      EXPECTED_ENDSTONE_ARTIFACT_ID: ${{ matrix.endstone_artifact_id }}
       BDS_TEST_BOT_SCENARIO_FILE: ${{ matrix.scenario_file }}
       SPARK_PYTHON_HOTSPOT_ITERATIONS: ${{ matrix.iterations }}
 
     steps:
       - name: Checkout test lab
         uses: actions/checkout@v7
+
+      - name: Validate immutable provenance inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SPARK_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "Spark SHA is not exact" >&2; exit 1; }
+          [[ "$EXPECTED_ENDSTONE_SHA" == "c76c814289ee3be8a7236389b6bdeb5728b154e4" ]] || { echo "Endstone SHA drift" >&2; exit 1; }
+          [[ "$EXPECTED_ENDSTONE_RUN_ID" == "32992839821" ]] || { echo "Endstone run drift" >&2; exit 1; }
+          case "${{ matrix.platform }}" in
+            linux) expected_artifact="9616075557" ;;
+            windows) expected_artifact="9616071559" ;;
+            *) echo "unsupported platform" >&2; exit 1 ;;
+          esac
+          [[ "$EXPECTED_ENDSTONE_ARTIFACT_ID" == "$expected_artifact" ]] || { echo "Endstone artifact drift" >&2; exit 1; }
+          [[ "$EXPECTED_ENDSTONE_VERSION" == "0.11.10.dev387" ]] || { echo "Endstone version drift" >&2; exit 1; }
+          [[ "$EXPECTED_BDS_VERSION" == "1.26.44.3" ]] || { echo "BDS version drift" >&2; exit 1; }
+          [[ "$BOT_REF" == "b8c4875bb1fafaa5dd9b8e91b16b613af47bf37a" ]] || { echo "bot SHA drift" >&2; exit 1; }
 
       - name: Wait for exact Spark CI
         shell: bash
@@ -222,7 +253,7 @@ jobs:
 
       - name: Run real BDS Python attribution profile
         run: >-
-          python -m controller.python_attribution_validation
+          python -m controller.python_attribution_exact_runner
           --platform ${{ matrix.platform }}
           --bot dist/${{ matrix.bot_name }}
           --count ${{ matrix.count }}
@@ -239,10 +270,17 @@ jobs:
           import json
           from pathlib import Path
           data = json.loads(Path('python-attribution-result.json').read_text())
+          metadata = json.loads(Path('metadata.json').read_text()) if Path('metadata.json').is_file() else {}
+          components = metadata.get('components') or {}
+          spark = components.get('spark') or {}
+          endstone = components.get('endstone') or {}
           summary = data.get('profile_summary') or {}
           print(f"## {data.get('platform')} / {data.get('hotspot_mode')} / {data.get('bot_count')} bot(s)")
           print()
           print(f"Status: **{data.get('status')}**")
+          print(f"Spark SHA: `{spark.get('sha')}`")
+          print(f"Endstone SHA: `{endstone.get('sha')}`")
+          print(f"Endstone run/artifact: `{endstone.get('run_id')}` / `{(endstone.get('artifact') or {}).get('id')}`")
           print(f"BDS: `{data.get('bds_version')}`")
           print(f"Python: `{data.get('python_version')}`")
           print(f"Spark URL: {data.get('spark_profile_viewer_url')}")
