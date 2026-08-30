@@ -56,7 +56,7 @@ class _StartedServer:
         lines = [
             "Server started.",
             "[EndstoneServer] Version: 1.26.44.3",
-            "[endstone-spark] enabled",
+            "[Endstone] Enabling spark v0.6.0",
         ]
         if not predicate(lines):
             raise AssertionError("test fixture did not satisfy wait predicate")
