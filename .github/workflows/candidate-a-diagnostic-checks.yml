@@ -1,0 +1,53 @@
+name: Candidate A diagnostic checks
+
+on:
+  pull_request:
+    paths:
+      - "controller/candidate_a_case_diagnostic.py"
+      - ".github/workflows/candidate-a-diagnostic.yml"
+      - ".github/workflows/candidate-a-diagnostic-checks.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install static-check dependencies
+        run: python -m pip install --disable-pip-version-check pyyaml ruff
+
+      - name: Compile diagnostic source
+        run: python -m py_compile controller/candidate_a_case_diagnostic.py
+
+      - name: Ruff diagnostic source
+        run: ruff check controller/candidate_a_case_diagnostic.py
+
+      - name: Parse workflows and enforce evidence isolation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          diagnostic_workflow = Path('.github/workflows/candidate-a-diagnostic.yml')
+          checks_workflow = Path('.github/workflows/candidate-a-diagnostic-checks.yml')
+          for path in (diagnostic_workflow, checks_workflow):
+              yaml.safe_load(path.read_text(encoding='utf-8'))
+
+          source = Path('controller/candidate_a_case_diagnostic.py').read_text(encoding='utf-8')
+          workflow = diagnostic_workflow.read_text(encoding='utf-8')
+          assert 'formal_upload_marker_created": False' in source
+          assert 'candidate-a-invalid-diagnostic-' in workflow
+          assert 'test ! -e evidence-diagnostic/.candidate-a-upload-ok' in workflow
+          assert 'controller.candidate_a_blocked_analyzer' not in workflow
+          print('diagnostic evidence isolation: OK')
+          PY
