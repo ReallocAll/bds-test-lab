@@ -1,0 +1,63 @@
+name: Python performance provenance checks
+
+on:
+  pull_request:
+    paths:
+      - "providers/artifact_provider.py"
+      - "controller/python_attribution_performance_runner.py"
+      - "tests/test_artifact_provider.py"
+      - "tests/test_python_attribution_performance_runner.py"
+      - ".github/workflows/python-attribution-performance.yml"
+      - ".github/workflows/python-performance-provenance-checks.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install focused dependencies
+        run: python -m pip install --disable-pip-version-check psutil packaging hatchling pyyaml ruff
+
+      - name: Run focused tests
+        run: >-
+          python -m unittest
+          tests.test_artifact_provider
+          tests.test_python_attribution_performance_runner
+
+      - name: Compile provenance modules
+        run: >-
+          python -m py_compile
+          providers/artifact_provider.py
+          controller/python_attribution_performance_runner.py
+
+      - name: Ruff focused files
+        run: >-
+          ruff check
+          providers/artifact_provider.py
+          controller/python_attribution_performance_runner.py
+          tests/test_artifact_provider.py
+          tests/test_python_attribution_performance_runner.py
+
+      - name: Parse performance workflows
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          for path in (
+              Path('.github/workflows/python-attribution-performance.yml'),
+              Path('.github/workflows/python-performance-provenance-checks.yml'),
+          ):
+              with path.open(encoding='utf-8') as stream:
+                  yaml.safe_load(stream)
+              print(f'parsed {path}')
+          PY

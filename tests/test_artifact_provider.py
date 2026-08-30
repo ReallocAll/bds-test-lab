@@ -98,7 +98,9 @@ class ArtifactProviderTest(unittest.TestCase):
             return endstone_run, endstone_artifact
 
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
-            os.environ, {"EXPECTED_SPARK_SHA": expected_sha}, clear=False
+            os.environ,
+            {"EXPECTED_SPARK_SHA": expected_sha, "EXPECTED_ENDSTONE_SHA": ""},
+            clear=False,
         ), mock.patch.object(
             artifact_provider, "discover", side_effect=fake_discover
         ), mock.patch.object(
@@ -118,6 +120,102 @@ class ArtifactProviderTest(unittest.TestCase):
             ],
         )
         self.assertEqual(result["components"]["spark"]["sha"], expected_sha)
+
+    def test_resolve_artifacts_pins_both_components_from_environment(self) -> None:
+        spark_sha = "1" * 40
+        endstone_sha = "2" * 40
+        runs = {
+            "endstone": {
+                "id": 50,
+                "head_branch": "develop",
+                "head_sha": endstone_sha,
+                "conclusion": "success",
+            },
+            "spark": {
+                "id": 51,
+                "head_branch": "feature",
+                "head_sha": spark_sha,
+                "conclusion": "success",
+            },
+        }
+        artifacts = {
+            "endstone": {"id": 60, "name": "endstone-linux.zip"},
+            "spark": {"id": 61, "name": "spark-linux"},
+        }
+        calls: list[tuple[str, str, str | None]] = []
+
+        def fake_discover(component: str, platform: str, expected_sha: str | None = None):
+            calls.append((component, platform, expected_sha))
+            return runs[component], artifacts[component]
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ,
+            {"EXPECTED_SPARK_SHA": spark_sha, "EXPECTED_ENDSTONE_SHA": endstone_sha},
+            clear=False,
+        ), mock.patch.object(
+            artifact_provider, "discover", side_effect=fake_discover
+        ), mock.patch.object(
+            artifact_provider,
+            "_download_artifact",
+            side_effect=lambda _repo, _artifact, destination: Path(destination) / "payload",
+        ), mock.patch.object(artifact_provider, "save_metadata"):
+            result = artifact_provider.resolve_artifacts(
+                "linux", Path(tmp) / "downloads", Path(tmp) / "metadata.json"
+            )
+
+        self.assertEqual(
+            calls,
+            [
+                ("endstone", "linux", endstone_sha),
+                ("spark", "linux", spark_sha),
+            ],
+        )
+        self.assertEqual(result["components"]["endstone"]["sha"], endstone_sha)
+        self.assertEqual(result["components"]["spark"]["sha"], spark_sha)
+
+    def test_explicit_component_shas_override_environment(self) -> None:
+        spark_sha = "3" * 40
+        endstone_sha = "4" * 40
+        calls: list[tuple[str, str, str | None]] = []
+
+        def fake_discover(component: str, platform: str, expected_sha: str | None = None):
+            calls.append((component, platform, expected_sha))
+            return (
+                {
+                    "id": 70,
+                    "head_branch": "feature",
+                    "head_sha": expected_sha,
+                    "conclusion": "success",
+                },
+                {"id": 71, "name": f"{component}-linux"},
+            )
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ,
+            {"EXPECTED_SPARK_SHA": "5" * 40, "EXPECTED_ENDSTONE_SHA": "6" * 40},
+            clear=False,
+        ), mock.patch.object(
+            artifact_provider, "discover", side_effect=fake_discover
+        ), mock.patch.object(
+            artifact_provider,
+            "_download_artifact",
+            side_effect=lambda _repo, _artifact, destination: Path(destination) / "payload",
+        ), mock.patch.object(artifact_provider, "save_metadata"):
+            artifact_provider.resolve_artifacts(
+                "linux",
+                Path(tmp) / "downloads",
+                Path(tmp) / "metadata.json",
+                spark_sha=spark_sha,
+                endstone_sha=endstone_sha,
+            )
+
+        self.assertEqual(
+            calls,
+            [
+                ("endstone", "linux", endstone_sha),
+                ("spark", "linux", spark_sha),
+            ],
+        )
 
 
 if __name__ == "__main__":
