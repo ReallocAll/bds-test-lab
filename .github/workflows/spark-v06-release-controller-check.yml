@@ -13,6 +13,7 @@ on:
       - "tests/test_artifact_provider.py"
       - "tests/test_run_test.py"
       - "tests/test_block_actor_validation.py"
+      - "tests/test_release_validation.py"
       - ".github/workflows/spark-v06-release-validation.yml"
       - ".github/workflows/spark-block-actor-validation.yml"
       - ".github/workflows/spark-v06-release-controller-check.yml"
@@ -26,6 +27,7 @@ on:
       - "tests/test_artifact_provider.py"
       - "tests/test_run_test.py"
       - "tests/test_block_actor_validation.py"
+      - "tests/test_release_validation.py"
       - ".github/workflows/spark-v06-release-validation.yml"
       - ".github/workflows/spark-block-actor-validation.yml"
       - ".github/workflows/spark-v06-release-controller-check.yml"
@@ -43,7 +45,7 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install controller dependencies
-        run: python -m pip install --disable-pip-version-check psutil packaging
+        run: python -m pip install --disable-pip-version-check psutil packaging pyyaml
       - name: Compile release controllers
         run: >-
           python -m py_compile
@@ -55,13 +57,29 @@ jobs:
           tests/test_artifact_provider.py
           tests/test_run_test.py
           tests/test_block_actor_validation.py
+          tests/test_release_validation.py
       - name: Run controller tests
         run: >-
           python -m unittest
           tests.test_artifact_provider
           tests.test_run_test
           tests.test_block_actor_validation
+          tests.test_release_validation
           -v
+      - name: Parse release workflows
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          for path in (
+              Path('.github/workflows/spark-v06-release-validation.yml'),
+              Path('.github/workflows/spark-block-actor-validation.yml'),
+              Path('.github/workflows/spark-v06-release-controller-check.yml'),
+          ):
+              with path.open(encoding='utf-8') as stream:
+                  yaml.safe_load(stream)
+              print(f'parsed {path}')
+          PY
       - name: Verify module imports
         run: |
           python - <<'PY'
