@@ -1,21 +1,20 @@
 # Latest BDS integration test
 
-- Lab commit: `deb638fa4db763937c6c1811ddf51a6b6bb4d070`
-- Lab Actions: [33243106215](https://github.com/ReallocAll/bds-test-lab/actions/runs/33243106215)
-- State: **PASS**
-- Spark SHA: `c14e2897b6a956437dcfccd1cf9e531fac6b8bb0`
+- Lab commit: `79a6e3193a97481c19dd2f167aeb636d62de1bf7`
+- Lab Actions: [33295029866](https://github.com/ReallocAll/bds-test-lab/actions/runs/33295029866)
+- State: **FAIL**
+- Spark SHA: `15b79e814ee6542f8a2382df09353e9c2009c8d1`
 - Endstone SHA: `c76c814289ee3be8a7236389b6bdeb5728b154e4`
-- Completed: `2026-08-29T08:57:18.542293Z`
+- Completed: `2026-08-30T05:42:39.733063Z`
 
 ## Platforms
 
 | Platform | Result | BDS | Shutdown | Crash replay | Soak | Execution | Allocation | Recovery |
 |---|---|---|---|---|---|---|---|---|
-| Windows | **PASS** | `26.44` | `graceful` | `PASS` | `30m` | [viewer](https://spark.lucko.me/eLU09zLwR0) | [viewer](https://spark.lucko.me/C8CSp8txqn) | [viewer](https://spark.lucko.me/icg4YL6xIS) |
+| Windows | **FAIL** | `26.44` | `forced_after_failure` | `not_started` | `30m` |  |  |  |
 
-- windows soak RSS: start `617738240`, end `57110528`, peak `619487232`
-- windows soak threads: start `56`, end `40`, peak `56`
-| Linux | **PASS** | `26.44` | `graceful` | `PASS` | `30m` | [viewer](https://spark.lucko.me/ktIUXyr3TM) | [viewer](https://spark.lucko.me/yk3uAiurcv) | [viewer](https://spark.lucko.me/lKeZ8Rq5o5) |
+**Windows error:** `RuntimeError: Execution profiler produced no spark viewer URL`
+| Linux | **running** | `26.44` | `controlled_crash_for_recovery` | `PASS` | `30m` | [viewer](https://spark.lucko.me/BqB6FQYnJI) | [viewer](https://spark.lucko.me/ph5uEYjiEi) | [viewer](https://spark.lucko.me/53g9jYprz4) |
 
-- linux soak RSS: start `853667840`, end `860094464`, peak `860094464`
-- linux soak threads: start `27`, end `28`, peak `28`
+- linux soak RSS: start `None`, end `None`, peak `None`
+- linux soak threads: start `None`, end `None`, peak `None`
