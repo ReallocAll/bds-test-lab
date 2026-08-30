@@ -8,9 +8,14 @@ from controller.python_attribution_performance_runner import (
     validate_bds_version,
     validate_component_provenance,
 )
+from controller.python_attribution_validation import EXPECTED_SOURCE
 
 
 class PythonAttributionPerformanceRunnerTest(unittest.TestCase):
+    def test_hotspot_plugin_source_identity_uses_installed_module_name(self) -> None:
+        self.assertEqual(EXPECTED_SOURCE, "spark_python_hotspot_test")
+        self.assertNotEqual(EXPECTED_SOURCE, "spark-python-hotspot-test")
+
     def test_exact_component_provenance_accepts_matching_endstone_identity(self) -> None:
         metadata = {
             "components": {
