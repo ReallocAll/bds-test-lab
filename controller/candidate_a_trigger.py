@@ -5,7 +5,8 @@ from __future__ import annotations
 import argparse
 import pathlib
 
-from controller.candidate_a_blocked_benchmark import BLOCK_SIZE, LEGAL_START_BLOCKS
+BLOCK_SIZE = 4
+LEGAL_START_BLOCKS = (1, 5, 9, 13, 17)
 
 
 class TriggerConfigurationError(ValueError):
