@@ -81,16 +81,29 @@ class PythonAttributionPerformanceRunnerTest(unittest.TestCase):
         ):
             validate_component_provenance(metadata, "spark")
 
-    def test_bds_version_guard_accepts_exact_version(self) -> None:
-        with mock.patch.dict(os.environ, {"EXPECTED_BDS_VERSION": "1.26.44.3"}, clear=True):
-            self.assertEqual(validate_bds_version({"bds_version": "1.26.44.3"}), "1.26.44.3")
+    def test_bds_version_guard_accepts_exact_protocol_and_runtime(self) -> None:
+        env = {
+            "EXPECTED_BDS_VERSION": "1.26.44.3",
+            "EXPECTED_BDS_PROTOCOL_VERSION": "26.44",
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(
+                validate_bds_version({"bds_version": "26.44"}, ["[INFO] Version: 1.26.44.3"]),
+                "26.44",
+            )
 
-    def test_bds_version_guard_rejects_drift_or_missing_version(self) -> None:
-        with mock.patch.dict(os.environ, {"EXPECTED_BDS_VERSION": "1.26.44.3"}, clear=True):
-            with self.assertRaisesRegex(RuntimeError, "BDS version mismatch"):
-                validate_bds_version({"bds_version": "1.26.45.0"})
-            with self.assertRaisesRegex(RuntimeError, "BDS version mismatch"):
-                validate_bds_version({})
+    def test_bds_version_guard_rejects_protocol_runtime_or_missing_evidence(self) -> None:
+        env = {
+            "EXPECTED_BDS_VERSION": "1.26.44.3",
+            "EXPECTED_BDS_PROTOCOL_VERSION": "26.44",
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "protocol version mismatch"):
+                validate_bds_version({"bds_version": "26.45"}, ["Version: 1.26.44.3"])
+            with self.assertRaisesRegex(RuntimeError, "full version mismatch"):
+                validate_bds_version({"bds_version": "26.44"}, ["Version: 1.26.45.0"])
+            with self.assertRaisesRegex(RuntimeError, "full-version runtime evidence is required"):
+                validate_bds_version({"bds_version": "26.44"})
 
     def test_unpinned_component_and_bds_keep_legacy_behavior(self) -> None:
         metadata = {
