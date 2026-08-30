@@ -6,7 +6,7 @@ class CiLifecycleControl(Plugin):
     """CI-only lifecycle command with no scheduled or event-driven work."""
 
     api_version = "0.11"
-    commands = {
+    commands = {  # noqa: RUF012 - Endstone discovers command metadata from the plugin class.
         "cishutdown": {
             "description": "Gracefully shut down Endstone for CI lifecycle validation",
             "usages": ["/cishutdown"],
