@@ -12,6 +12,7 @@ from unittest import mock
 
 from controller import candidate_a_blocked_benchmark as base
 from controller import candidate_a_blocked_hardening as hardening
+from tests.test_candidate_a_blocked import _case_result
 
 
 class FakeProcess:
@@ -31,36 +32,10 @@ class FakeProcess:
 
 
 def exact_case_result(treatment: str) -> dict[str, object]:
-    expected_spark = base.BASELINE_SHA if treatment.endswith("-B") else base.CANDIDATE_SHA
-    return {
-        "status": "PASS",
-        "state": "completed",
-        "performance": {
-            "counter_windows": {
-                "warmup": {
-                    "configured_seconds": base.WARMUP_SECONDS,
-                    "observed_seconds": float(base.WARMUP_SECONDS),
-                },
-                "measurement": {
-                    "configured_seconds": base.MEASUREMENT_SECONDS,
-                    "observed_seconds": float(base.MEASUREMENT_SECONDS),
-                },
-            }
-        },
-        "artifact_metadata": {
-            "components": {
-                "spark": {"sha": expected_spark},
-                "endstone": {"sha": base.ENDSTONE_SHA},
-            }
-        },
-        "protocol": {
-            "endstone_artifact": {
-                "sha": base.ENDSTONE_SHA,
-                "run_id": 32992839821,
-                "artifact": {"id": 9616075557, "name": "endstone-linux"},
-            }
-        },
-    }
+    position = base.block_schedule(1).index(treatment)
+    result = _case_result(1, position, treatment, 1.0)
+    result["state"] = "completed"
+    return result
 
 
 def write_exact_cases(block_dir: Path, block_index: int = 1) -> None:
@@ -70,6 +45,8 @@ def write_exact_cases(block_dir: Path, block_index: int = 1) -> None:
         (case_dir / "candidate-a-blocked-result.json").write_text(
             json.dumps(exact_case_result(treatment)), encoding="utf-8"
         )
+        if treatment.startswith("full"):
+            (case_dir / "python-attribution-performance.sparkprofile").write_bytes(b"profile")
 
 
 class CandidateARunnerHardeningTest(unittest.TestCase):
@@ -93,23 +70,75 @@ class CandidateARunnerHardeningTest(unittest.TestCase):
                 FakeProcess(cmdline=[sys.executable, "-m", "http.server"])
             )
 
+    def test_measurement_process_preserves_authoritative_identity_and_diagnostic(self) -> None:
+        case = object.__new__(hardening.HardenedCandidateABlockedCase)
+        case.result = {}
+        case.protocol = {}
+        authoritative = {
+            "role": "managed_endstone_bds_root",
+            "pid": 4242,
+            "create_time": 1234.5,
+            "server_process_pid": 4242,
+            "server_process_create_time": 1234.5,
+        }
+        diagnostic = {
+            "pid": 4242,
+            "create_time": 1234.5,
+            "validated_python_module": "endstone",
+        }
+
+        def base_measurement(instance: object) -> FakeProcess:
+            instance.managed_root_identity = authoritative
+            instance.result["managed_root_identity"] = authoritative
+            return process
+
+        process = FakeProcess()
+        with (
+            mock.patch.object(
+                base.CandidateABlockedCase,
+                "_managed_root_process",
+                autospec=True,
+                side_effect=base_measurement,
+            ),
+            mock.patch.object(hardening, "validate_endstone_root_process", return_value=diagnostic),
+        ):
+            observed = case._measurement_process()
+
+        self.assertIs(observed, process)
+        self.assertEqual(case.managed_root_identity, authoritative)
+        self.assertEqual(case.result["managed_root_identity"], authoritative)
+        self.assertEqual(case.result["measurement_process_identity"], diagnostic)
+        self.assertEqual(case.protocol["measurement_process_identity"], diagnostic)
+
     def test_bot_affinity_wraps_fleet_popen_with_psutil(self) -> None:
         case = object.__new__(hardening.HardenedCandidateABlockedCase)
         case.bot = SimpleNamespace(process=SimpleNamespace(pid=7777))
         case._load_cpus = [0, 1, 2]
         case.affinity = {}
+        case._affinity_baselines = {}
+        case._affinity_mutated = False
         case._verify_all_affinity = mock.Mock()
         case.check = mock.Mock()
         case._write_results = mock.Mock()
         process = mock.Mock()
         process.pid = 7777
+        load_snapshot = {
+            "pid": 7777,
+            "create_time": 1234.5,
+            "process_affinity": [0, 1, 2, 3],
+            "tid_affinities": {"7777": [0, 1, 2, 3]},
+        }
 
-        with mock.patch.object(hardening.psutil, "Process", return_value=process) as constructor:
+        with (
+            mock.patch.object(hardening.psutil, "Process", return_value=process) as constructor,
+            mock.patch.object(base, "capture_process_affinity", return_value=load_snapshot),
+        ):
             case._set_bot_affinity()
 
         constructor.assert_called_once_with(7777)
-        process.cpu_affinity.assert_called_once_with([0, 1, 2])
+        process.cpu_affinity.assert_has_calls([mock.call(), mock.call([0, 1, 2])])
         case._verify_all_affinity.assert_called_once_with()
+        self.assertEqual(case.affinity["original_affinity"]["load_generator"], load_snapshot)
 
     def test_record_affinity_sample_queries_psutil_bot_process(self) -> None:
         case = object.__new__(hardening.HardenedCandidateABlockedCase)
@@ -121,6 +150,11 @@ class CandidateARunnerHardeningTest(unittest.TestCase):
         case._affinity_samples = []
         case._affinity_phase = "warmup"
         case.result = {}
+        case.managed_root_identity = {
+            "role": "managed_endstone_bds_root",
+            "pid": 100,
+            "create_time": 2000.0,
+        }
 
         bds_process = mock.Mock()
         bds_process.pid = 100
@@ -157,6 +191,8 @@ class CandidateARunnerHardeningTest(unittest.TestCase):
         validator.assert_called_once()
         self.assertEqual(case.affinity["load_generator_pid"], 200)
         self.assertEqual(case.affinity["load_generator_affinity"], [0, 1, 2])
+        self.assertEqual(case.affinity["bds_tid_scope"], base.MANAGED_ROOT_TID_SCOPE)
+        self.assertEqual(case.affinity["managed_root_identity"]["pid"], 100)
         self.assertEqual(case.affinity["verification_count"], 1)
 
     def test_controller_affinity_restore_covers_original_and_new_tids(self) -> None:
@@ -251,6 +287,29 @@ class CandidateARunnerHardeningTest(unittest.TestCase):
             self.assertFalse(gate["safe"])
             self.assertIn("did not complete successfully", gate["checks"][0]["reason"])
 
+    def test_upload_gate_rejects_missing_semantic_affinity_evidence(self) -> None:
+        mutations = {
+            "managed root identity": lambda affinity: affinity.__setitem__("managed_root_identity", None),
+            "original load generator snapshot": lambda affinity: affinity["original_affinity"].pop("load_generator"),
+            "restored load generator snapshot": lambda affinity: affinity["restoration"]["restored"].pop(
+                "load_generator"
+            ),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temp:
+                block_dir = Path(temp) / "block-01"
+                write_exact_cases(block_dir)
+                treatment = base.block_schedule(1)[0]
+                path = block_dir / treatment / "candidate-a-blocked-result.json"
+                result = json.loads(path.read_text(encoding="utf-8"))
+                mutate(result["affinity"])
+                path.write_text(json.dumps(result), encoding="utf-8")
+
+                gate = hardening.evaluate_upload_gate(block_dir, base.block_schedule(1))
+
+            self.assertFalse(gate["safe"])
+            self.assertIn("shared case validation failed", gate["checks"][0]["reason"])
+
     def test_block_rewrites_manifest_and_only_creates_safe_upload_marker(self) -> None:
         topology = {"allowed_cpus": [0, 1, 2, 3], "cpu_count": 4}
         with tempfile.TemporaryDirectory() as temp:
@@ -326,6 +385,20 @@ class CandidateARunnerHardeningTest(unittest.TestCase):
             )
             self.assertFalse(manifest["artifact_upload_gate"]["eligible"])
             self.assertEqual(manifest["artifact_upload_gate"]["block_exit_code"], 1)
+
+    def test_block_removes_stale_upload_marker_before_early_scenario_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            marker = root / hardening.UPLOAD_GATE_NAME
+            marker.write_text(json.dumps({"eligible": True}), encoding="utf-8")
+
+            with (
+                mock.patch.object(base, "BOT_SCENARIO_SHA256", "stale-scenario-sha"),
+                self.assertRaises(base.BenchmarkConfigurationError),
+            ):
+                hardening.hardened_run_block(evidence_root=root, block_index=1)
+
+            self.assertFalse(marker.exists())
 
 
 if __name__ == "__main__":
