@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import importlib.metadata
 import os
+import re
+from collections.abc import Iterable
 from typing import Any
+
+_BDS_VERSION_LINE_RE = re.compile(r"\bVersion:\s*([0-9]+(?:\.[0-9]+)+)\s*$")
 
 
 def _positive_int_env(name: str) -> int | None:
@@ -61,10 +65,75 @@ def validate_endstone_runtime_version() -> str | None:
     return observed
 
 
-def validate_bds_version(result: dict[str, Any]) -> str | None:
-    expected = os.environ.get("EXPECTED_BDS_VERSION", "").strip()
+def _observed_full_bds_version(server_lines: Iterable[str]) -> str | None:
+    versions: list[str] = []
+    for line in server_lines:
+        match = _BDS_VERSION_LINE_RE.search(str(line).strip())
+        if match:
+            versions.append(match.group(1))
+    if not versions:
+        return None
+    unique = list(dict.fromkeys(versions))
+    if len(unique) != 1:
+        raise RuntimeError(f"BDS runtime reported multiple full versions: {unique}")
+    return unique[0]
+
+
+def _derived_bds_protocol_version(full_version: str) -> str:
+    parts = full_version.split(".")
+    if len(parts) != 4 or parts[0] != "1" or not all(part.isdigit() for part in parts):
+        raise RuntimeError(f"cannot derive BDS protocol version from full version {full_version!r}")
+    return f"{int(parts[1])}.{int(parts[2])}"
+
+
+def validate_bds_version(
+    result: dict[str, Any],
+    server_lines: Iterable[str] | None = None,
+) -> str | None:
+    """Validate Endstone's protocol value and, with runtime evidence, the full BDS version.
+
+    Endstone writes the Bedrock protocol/marketing version (for example ``26.44``)
+    to ``version.txt``. The BDS process logs its full package version (for example
+    ``1.26.44.3``). Exact evidence runners pass the live server log, so both values
+    are checked and the protocol value is never mistaken for the full version.
+    """
+
+    expected_full = os.environ.get("EXPECTED_BDS_VERSION", "").strip()
+    explicit_protocol = os.environ.get("EXPECTED_BDS_PROTOCOL_VERSION", "").strip()
     observed_value = result.get("bds_version")
-    observed = str(observed_value).strip() if observed_value is not None else ""
-    if expected and observed != expected:
-        raise RuntimeError(f"BDS version mismatch: observed={observed!r} expected={expected!r}")
-    return observed or None
+    observed_protocol = str(observed_value).strip() if observed_value is not None else ""
+
+    if server_lines is not None:
+        expected_protocol = explicit_protocol or (
+            _derived_bds_protocol_version(expected_full) if expected_full else ""
+        )
+        if expected_protocol and observed_protocol != expected_protocol:
+            raise RuntimeError(
+                "BDS protocol version mismatch: "
+                f"observed={observed_protocol!r} expected={expected_protocol!r}"
+            )
+        if expected_full:
+            observed_full = _observed_full_bds_version(server_lines)
+            if observed_full != expected_full:
+                raise RuntimeError(
+                    f"BDS full version mismatch: observed={observed_full!r} expected={expected_full!r}"
+                )
+        return observed_protocol or None
+
+    if explicit_protocol:
+        if observed_protocol != explicit_protocol:
+            raise RuntimeError(
+                "BDS protocol version mismatch: "
+                f"observed={observed_protocol!r} expected={explicit_protocol!r}"
+            )
+        if expected_full:
+            raise RuntimeError("BDS full-version runtime evidence is required for exact provenance")
+        return observed_protocol or None
+
+    # Legacy callers historically stored a full version directly in bds_version.
+    # Preserve that behavior when no live server-log evidence is supplied.
+    if expected_full and observed_protocol != expected_full:
+        raise RuntimeError(
+            f"BDS version mismatch: observed={observed_protocol!r} expected={expected_full!r}"
+        )
+    return observed_protocol or None

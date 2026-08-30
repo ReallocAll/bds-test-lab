@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from controller.python_attribution_validation import PythonAttributionValidation, main
 from controller.python_evidence_provenance import (
     validate_bds_version,
@@ -30,8 +32,15 @@ def _install_exact_artifacts(self: PythonAttributionValidation) -> None:
 
 def _start_exact_server(self: PythonAttributionValidation) -> None:
     _ORIGINAL_START_SERVER(self)
-    observed = validate_bds_version(self.result)
-    self.check("exact-bds-version", "PASS", observed=observed)
+    assert self.server is not None
+    observed = validate_bds_version(self.result, self.server.snapshot())
+    self.check(
+        "exact-bds-version",
+        "PASS",
+        observed_protocol=observed,
+        expected_protocol=os.environ.get("EXPECTED_BDS_PROTOCOL_VERSION", "").strip() or None,
+        expected_full=os.environ.get("EXPECTED_BDS_VERSION", "").strip() or None,
+    )
 
 
 PythonAttributionValidation.install_artifacts = _install_exact_artifacts

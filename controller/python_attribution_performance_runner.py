@@ -65,12 +65,14 @@ def _install_real_endstone_plugin(self: PythonAttributionPerformance) -> None:
 
 def _bootstrap_exact_bds(self: PythonAttributionPerformance) -> None:
     _ORIGINAL_BOOTSTRAP_SERVER(self)
-    observed = validate_bds_version(self.result)
+    assert self.server is not None
+    observed = validate_bds_version(self.result, self.server.snapshot())
     self.check(
         "exact-bds-version",
         "PASS",
-        observed=observed,
-        expected=os.environ.get("EXPECTED_BDS_VERSION", "").strip() or None,
+        observed_protocol=observed,
+        expected_protocol=os.environ.get("EXPECTED_BDS_PROTOCOL_VERSION", "").strip() or None,
+        expected_full=os.environ.get("EXPECTED_BDS_VERSION", "").strip() or None,
     )
 
 
