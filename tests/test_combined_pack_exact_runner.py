@@ -69,6 +69,7 @@ class _StartedServer:
 
 class _WaitProcess:
     def __init__(self, returncode: int = 0) -> None:
+        self.pid = 4242
         self.returncode = returncode
         self.wait_timeouts: list[float] = []
 
