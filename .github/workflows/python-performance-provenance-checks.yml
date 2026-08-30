@@ -8,9 +8,11 @@ on:
       - "controller/python_attribution_exact_runner.py"
       - "controller/python_dependency_exact_runner.py"
       - "controller/python_attribution_performance_runner.py"
+      - "controller/python_performance_trigger.py"
       - "tests/test_artifact_provider.py"
       - "tests/test_python_evidence_provenance.py"
       - "tests/test_python_attribution_performance_runner.py"
+      - "tests/test_python_performance_trigger.py"
       - ".github/workflows/python-attribution-performance.yml"
       - ".github/workflows/python-attribution-bds-e2e.yml"
       - ".github/workflows/python-attribution-dependency-e2e.yml"
@@ -40,6 +42,7 @@ jobs:
           tests.test_artifact_provider
           tests.test_python_evidence_provenance
           tests.test_python_attribution_performance_runner
+          tests.test_python_performance_trigger
 
       - name: Compile provenance modules
         run: >-
@@ -49,6 +52,7 @@ jobs:
           controller/python_attribution_exact_runner.py
           controller/python_dependency_exact_runner.py
           controller/python_attribution_performance_runner.py
+          controller/python_performance_trigger.py
 
       - name: Ruff focused files
         run: >-
@@ -58,9 +62,11 @@ jobs:
           controller/python_attribution_exact_runner.py
           controller/python_dependency_exact_runner.py
           controller/python_attribution_performance_runner.py
+          controller/python_performance_trigger.py
           tests/test_artifact_provider.py
           tests/test_python_evidence_provenance.py
           tests/test_python_attribution_performance_runner.py
+          tests/test_python_performance_trigger.py
 
       - name: Parse Python evidence workflows
         run: |
