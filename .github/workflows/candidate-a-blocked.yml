@@ -1,6 +1,11 @@
 name: Candidate A blocked CPU benchmark
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - "triggers/candidate-a-blocked.txt"
   workflow_dispatch:
     inputs:
       start_block:
@@ -183,7 +188,7 @@ jobs:
           set +e
           set -uo pipefail
           block_index=$((10#$START_BLOCK + ${{ matrix.offset }}))
-          python -m controller.candidate_a_blocked_benchmark \
+          python -m controller.candidate_a_blocked_hardening \
             --platform linux \
             --bot dist/bds-test-bot \
             --block-index "$block_index" \
@@ -195,8 +200,21 @@ jobs:
           echo "Block controller exit code: $code"
           exit "$code"
 
-      - name: Upload block evidence
+      - name: Resolve evidence upload eligibility
+        id: evidence_gate
         if: ${{ always() }}
+        shell: bash
+        run: |
+          if [[ -s evidence/.candidate-a-upload-ok ]]; then
+            echo "eligible=true" >> "$GITHUB_OUTPUT"
+            echo "Exact artifacts and runner topology passed the upload gate."
+          else
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            echo "Evidence upload suppressed because artifact preparation or runner topology did not satisfy the contract."
+          fi
+
+      - name: Upload block evidence
+        if: ${{ always() && steps.evidence_gate.outputs.eligible == 'true' }}
         uses: actions/upload-artifact@v7
         with:
           name: candidate-a-blocked-block-${{ matrix.offset }}-${{ github.run_id }}
@@ -230,7 +248,7 @@ jobs:
           merge-multiple: true
 
       - name: Download prior batch evidence
-        if: ${{ inputs.prior_run_ids != '' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.prior_run_ids != '' }}
         shell: bash
         env:
           PRIOR_RUN_IDS: ${{ inputs.prior_run_ids }}
