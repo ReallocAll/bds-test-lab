@@ -47,6 +47,8 @@ def _metadata_text(value: str | None) -> str:
 
 
 class PythonAttributionValidation(IntegrationTest):
+    disable_bstats = True
+
     def __init__(
         self,
         platform_name: str,
@@ -93,6 +95,7 @@ class PythonAttributionValidation(IntegrationTest):
         """Use a larger startup budget only for the slow Windows validation runners."""
         cmd = [sys.executable, "-m", "endstone", "--yes", "--server-folder", str(self.server_dir)]
         self.server = ServerProcess(cmd, self.root, self.log_path)
+        self._prepare_bstats_before_start()
         self.server.start()
         ready_timeout = 420 if self.platform == "windows" else 240
         self.server.wait_for(

@@ -302,8 +302,11 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--platform", required=True, choices=["linux", "windows"])
     parser.add_argument("--soak-minutes", type=int, default=int(os.environ.get("BDS_SOAK_MINUTES", "30")))
+    parser.add_argument("--disable-bstats", action="store_true")
     args = parser.parse_args()
-    return ExtendedIntegrationTest(args.platform, args.soak_minutes).execute_extended()
+    validator = ExtendedIntegrationTest(args.platform, args.soak_minutes)
+    validator.disable_bstats = args.disable_bstats
+    return validator.execute_extended()
 
 
 if __name__ == "__main__":

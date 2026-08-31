@@ -40,6 +40,8 @@ def matches_function(value: str, name: str) -> bool:
 
 
 class PythonDependencyValidation(base_validation.PythonAttributionValidation):
+    disable_bstats = True
+
     def install_artifacts(self) -> None:
         # The base attribution installer deliberately expects the hotspot fixture's
         # wheel name. This validation uses a separate real dependency plugin, so

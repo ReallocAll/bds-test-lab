@@ -94,6 +94,8 @@ def decode_data_packs(health_data: bytes) -> list[dict[str, Any]]:
 
 
 class CombinedPackGameruleFleetValidation(CrossPlatformFleetSparkValidation):
+    disable_bstats = True
+
     def __init__(self, platform_name: str, bot_binary: pathlib.Path, profile_seconds: int) -> None:
         super().__init__(platform_name, bot_binary, BOT_COUNT, BOT_SCENARIO, profile_seconds)
         self.capture = BytebinCapture(self.root / f"combined-health-capture-{platform_name}")

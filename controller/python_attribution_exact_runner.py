@@ -14,6 +14,7 @@ _ORIGINAL_START_SERVER = PythonAttributionValidation.start_server
 
 
 def _install_exact_artifacts(self: PythonAttributionValidation) -> None:
+    self.disable_bstats = True
     _ORIGINAL_INSTALL_ARTIFACTS(self)
     spark = validate_component_provenance(self.metadata, "spark")
     endstone = validate_component_provenance(self.metadata, "endstone")

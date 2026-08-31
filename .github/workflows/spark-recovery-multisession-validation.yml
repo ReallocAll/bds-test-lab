@@ -45,14 +45,21 @@ jobs:
         run: python -m controller.assert_spark_artifact --platform linux --expected-sha ${{ env.EXPECTED_SPARK_SHA }}
       - name: Run multi-session crash replay
         run: python -m controller.recovery_multisession_validation --platform linux
-      - name: Upload evidence
+
+      - name: Verify bStats evidence before upload
         if: always()
+        id: verify-bstats
+        run: python -m controller.verify_bstats_evidence --result test-results.json
+
+      - name: Upload evidence
+        if: ${{ always() && steps.verify-bstats.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:
           name: spark-recovery-multisession-${{ github.run_id }}
           path: |
             metadata.json
             test-results.json
+            bstats-config.toml
             bds.log
             endstone.log
             spark.log

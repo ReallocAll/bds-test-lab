@@ -8,6 +8,9 @@ on:
       - ".github/workflows/python-attribution-bds-e2e.yml"
       - "controller/python_attribution_exact_runner.py"
       - "controller/python_attribution_validation.py"
+      - "controller/run_test.py"
+      - "controller/bstats.py"
+      - "controller/verify_bstats_evidence.py"
       - "controller/python_evidence_provenance.py"
       - "controller/python_profile_payload.py"
       - "fixtures/spark-python-hotspot-test/**"
@@ -261,6 +264,14 @@ jobs:
           --mode ${{ matrix.mode }}
           --profile-seconds ${{ env.PROFILE_SECONDS }}
 
+      - name: Verify bStats evidence before upload
+        if: always()
+        id: verify-bstats
+        run: >-
+          python -m controller.verify_bstats_evidence
+          --result test-results.json
+          --result python-attribution-result.json
+
       - name: Add profile evidence to summary
         if: always()
         shell: bash
@@ -294,7 +305,7 @@ jobs:
           fi
 
       - name: Upload profile evidence
-        if: always()
+        if: ${{ always() && steps.verify-bstats.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:
           name: python-attribution-${{ matrix.platform }}-${{ matrix.mode }}-${{ matrix.scenario_label }}-${{ matrix.count }}-${{ github.run_id }}
@@ -305,6 +316,7 @@ jobs:
             spark.log
             test-results.json
             python-attribution-result.json
+            bstats-config.toml
             python-attribution-profile-summary.json
             python-attribution.sparkprofile
             python-attribution-bots-${{ matrix.platform }}-${{ matrix.count }}-${{ matrix.scenario }}.log

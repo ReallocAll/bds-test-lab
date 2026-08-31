@@ -11,6 +11,7 @@ _ORIGINAL_INSTALL_ARTIFACTS = PythonDependencyValidation.install_artifacts
 
 
 def _install_exact_artifacts(self: PythonDependencyValidation) -> None:
+    self.disable_bstats = True
     _ORIGINAL_INSTALL_ARTIFACTS(self)
     spark = validate_component_provenance(self.metadata, "spark")
     endstone = validate_component_provenance(self.metadata, "endstone")

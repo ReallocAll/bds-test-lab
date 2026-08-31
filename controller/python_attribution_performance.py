@@ -40,6 +40,8 @@ def percentile(values: list[float], q: float) -> float:
 
 
 class PythonAttributionPerformance(PythonAttributionValidation):
+    disable_bstats = False
+
     def __init__(
         self,
         platform_name: str,

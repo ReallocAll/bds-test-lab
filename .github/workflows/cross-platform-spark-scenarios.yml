@@ -10,6 +10,8 @@ on:
       - "controller/fleet_spark_validation.py"
       - "controller/bot_validation.py"
       - "controller/run_test.py"
+      - "controller/bstats.py"
+      - "controller/verify_bstats_evidence.py"
       - "providers/artifact_provider.py"
       - "scenario-trigger.json"
   workflow_dispatch:
@@ -146,6 +148,14 @@ jobs:
           --scenario ${{ matrix.scenario }}
           --profile-seconds ${{ env.PROFILE_SECONDS }}
 
+      - name: Verify bStats evidence before upload
+        if: always()
+        id: verify-bstats
+        run: >-
+          python -m controller.verify_bstats_evidence
+          --result test-results.json
+          --result fleet-spark-result.json
+
       - name: Add scenario evidence to summary
         if: always()
         shell: bash
@@ -171,7 +181,7 @@ jobs:
           fi >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload scenario evidence
-        if: always()
+        if: ${{ always() && steps.verify-bstats.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:
           name: spark-cross-platform-${{ matrix.platform }}-${{ matrix.scenario }}-${{ matrix.count }}-${{ github.run_id }}
@@ -183,6 +193,7 @@ jobs:
             fleet-${{ matrix.platform }}-${{ matrix.count }}-${{ matrix.scenario }}.log
             test-results.json
             fleet-spark-result.json
+            bstats-config.toml
             failure-diagnostics.txt
             work/${{ matrix.platform }}/bedrock_server/server.properties
             work/${{ matrix.platform }}/bedrock_server/version.txt

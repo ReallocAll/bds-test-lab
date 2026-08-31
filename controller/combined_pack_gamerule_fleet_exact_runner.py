@@ -14,7 +14,13 @@ from controller.python_evidence_provenance import (
     validate_component_provenance,
     validate_endstone_runtime_version,
 )
-from controller.run_test import READY_HINTS, SPARK_LOAD_HINTS, ServerProcess, write_json
+from controller.run_test import (
+    READY_HINTS,
+    SPARK_LOAD_HINTS,
+    IntegrationTest,
+    ServerProcess,
+    write_json,
+)
 
 _ORIGINAL_INSTALL_ARTIFACTS = CombinedPackGameruleFleetValidation.install_artifacts
 _ORIGINAL_START_SERVER = CombinedPackGameruleFleetValidation.start_server
@@ -64,6 +70,7 @@ class _FrameworkShutdownServerProcess(ServerProcess):
 
 
 def _install_exact_artifacts(self: CombinedPackGameruleFleetValidation) -> None:
+    self.disable_bstats = True
     _ORIGINAL_INSTALL_ARTIFACTS(self)
     spark = validate_component_provenance(self.metadata, "spark")
     endstone = validate_component_provenance(self.metadata, "endstone")
@@ -92,6 +99,7 @@ def _start_windows_interactive_server(self: CombinedPackGameruleFleetValidation)
         str(self.server_dir),
     ]
     self.server = _FrameworkShutdownServerProcess(cmd, self.root, self.log_path)
+    IntegrationTest._prepare_bstats_before_start(self)
     self.server.start()
     self.server.wait_for(
         lambda lines: any(any(hint in line.lower() for hint in READY_HINTS) for line in lines),
