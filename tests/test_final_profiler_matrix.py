@@ -92,6 +92,8 @@ def diagnostic_values(*, allocation: bool, live_only: bool = False) -> dict[str,
             values[key] = "1.0"
         elif key == "Allocation interval bytes":
             values[key] = str(DEFAULT_ALLOCATION_INTERVAL_BYTES)
+        elif "drop" in key.lower() or "dropped" in key.lower() or "overflow" in key.lower():
+            values[key] = "0"
         else:
             values[key] = "1"
     if live_only:
@@ -258,6 +260,23 @@ class ProfilePayloadValidationTest(unittest.TestCase):
         incomplete["Execution data incomplete"] = "true"
         with self.assertRaisesRegex(ProfileValidationError, "Execution data is incomplete"):
             validate_profile_payload(profile_fixture("default", diagnostics=incomplete), "default")
+
+    def test_allocation_pending_capacity_drops_are_drop_metrics(self) -> None:
+        diagnostics = diagnostic_values(allocation=True)
+        diagnostics["Allocation pending capacity drops"] = "0"
+        result = validate_profile_payload(profile_fixture("allocation", diagnostics=diagnostics), "allocation")
+        self.assertEqual(result["diagnostics"]["drops"]["Allocation pending capacity drops"], 0)
+        self.assertNotIn("Allocation pending capacity drops", result["diagnostics"]["capacities"])
+
+        diagnostics["Allocation pending capacity drops"] = "1"
+        with self.assertRaisesRegex(ProfileValidationError, "diagnostic drop .*must be zero"):
+            validate_profile_payload(profile_fixture("allocation", diagnostics=diagnostics), "allocation")
+
+    def test_zero_ordinary_capacity_is_rejected(self) -> None:
+        diagnostics = diagnostic_values(allocation=True)
+        diagnostics["Allocation pending sample capacity"] = "0"
+        with self.assertRaisesRegex(ProfileValidationError, "diagnostic capacity .*must be positive"):
+            validate_profile_payload(profile_fixture("allocation", diagnostics=diagnostics), "allocation")
 
     def test_empty_and_tampered_profile_files_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
