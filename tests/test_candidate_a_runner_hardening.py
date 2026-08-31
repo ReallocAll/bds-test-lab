@@ -12,6 +12,7 @@ from unittest import mock
 
 from controller import candidate_a_blocked_benchmark as base
 from controller import candidate_a_blocked_hardening as hardening
+from controller.bstats import B_STATS_CONFIG_BYTES, B_STATS_EVIDENCE_PATH
 from tests.test_candidate_a_blocked import _case_result
 
 
@@ -47,6 +48,7 @@ def write_exact_cases(block_dir: Path, block_index: int = 1) -> None:
         )
         if treatment.startswith("full"):
             (case_dir / "python-attribution-performance.sparkprofile").write_bytes(b"profile")
+        (case_dir / B_STATS_EVIDENCE_PATH).write_bytes(B_STATS_CONFIG_BYTES)
 
 
 class CandidateARunnerHardeningTest(unittest.TestCase):
