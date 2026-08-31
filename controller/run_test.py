@@ -33,6 +33,7 @@ ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 VIEWER_RE = re.compile(r"https://spark\.lucko\.me/[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+")
 READY_HINTS = ("server started.", "server started in", "server started")
 SPARK_LOAD_HINTS = ("enabling spark", "enabled spark", "spark v", "loaded spark")
+_CHILD_SECRET_ENV_NAMES = frozenset({"GH_TOKEN", "REPO_PAT"})
 
 
 def now_iso() -> str:
@@ -46,6 +47,16 @@ def clean_line(line: str) -> str:
 
 def write_json(path: pathlib.Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def child_process_env() -> dict[str, str]:
+    """Copy the controller environment without GitHub API credentials."""
+
+    environment = os.environ.copy()
+    for key in list(environment):
+        if key.upper() in _CHILD_SECRET_ENV_NAMES:
+            environment.pop(key, None)
+    return environment
 
 
 def run_checked(cmd: list[str], timeout: int = 300, cwd: pathlib.Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -84,7 +95,7 @@ class ServerProcess:
         self._log = None
 
     def start(self) -> None:
-        kwargs: dict[str, Any] = {}
+        kwargs: dict[str, Any] = {"env": child_process_env()}
         if os.name == "nt":
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:

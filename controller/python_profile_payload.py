@@ -45,6 +45,20 @@ class ProfilePayload:
     sources: dict[str, str] = field(default_factory=dict)
     class_sources: dict[str, str] = field(default_factory=dict)
     threads: list[ThreadTree] = field(default_factory=list)
+    number_of_ticks: int = 0
+    thread_dumper_type: int = -1
+    thread_dumper_present: bool = False
+    all_threads: bool = False
+    data_aggregator_type: int = -1
+    data_aggregator_present: bool = False
+    ticked: bool = False
+    tick_threshold_us: int = 0
+    number_of_included_ticks: int = 0
+    included_ticks_present: bool = False
+    thread_grouper: int = -1
+    sampler_engine: int = -1
+    sampler_engine_version: str = ""
+    metadata_present: bool = False
 
     @property
     def duration_seconds(self) -> float:
@@ -142,14 +156,43 @@ def _source_entry(value: bytes) -> tuple[str, str]:
     return key, display_name
 
 
+def _parse_thread_dumper(value: bytes, profile: ProfilePayload) -> None:
+    profile.thread_dumper_present = True
+    for number, wire, item in _fields(value):
+        if number == 1 and wire == 0:
+            profile.thread_dumper_type = int(item)
+            profile.all_threads = profile.thread_dumper_type == 0
+
+
+def _parse_data_aggregator(value: bytes, profile: ProfilePayload) -> None:
+    profile.data_aggregator_present = True
+    for number, wire, item in _fields(value):
+        if number == 1 and wire == 0:
+            profile.data_aggregator_type = int(item)
+            profile.ticked = profile.data_aggregator_type == 1
+        elif number == 2 and wire == 0:
+            profile.thread_grouper = int(item)
+        elif number == 3 and wire == 0:
+            profile.tick_threshold_us = int(item)
+        elif number == 4 and wire == 0:
+            profile.number_of_included_ticks = int(item)
+            profile.included_ticks_present = True
+
+
 def _parse_metadata(value: bytes, profile: ProfilePayload) -> None:
     for number, wire, item in _fields(value):
         if number == 2 and wire == 0:
             profile.start_time_ms = int(item)
         elif number == 3 and wire == 0:
             profile.interval = int(item)
+        elif number == 4 and wire == 2:
+            _parse_thread_dumper(item, profile)
+        elif number == 5 and wire == 2:
+            _parse_data_aggregator(item, profile)
         elif number == 11 and wire == 0:
             profile.end_time_ms = int(item)
+        elif number == 12 and wire == 0:
+            profile.number_of_ticks = int(item)
         elif number == 13 and wire == 2:
             key, display_name = _source_entry(item)
             if key:
@@ -160,6 +203,10 @@ def _parse_metadata(value: bytes, profile: ProfilePayload) -> None:
                 profile.extra_metadata[key] = val
         elif number == 15 and wire == 0:
             profile.sampler_mode = int(item)
+        elif number == 16 and wire == 0:
+            profile.sampler_engine = int(item)
+        elif number == 17 and wire == 2:
+            profile.sampler_engine_version = _text(item)
 
 
 def _parse_node(value: bytes) -> Node:
@@ -200,6 +247,7 @@ def parse_sampler_data(data: bytes) -> ProfilePayload:
         raise ValueError("empty Spark profile payload")
     for number, wire, item in _fields(data):
         if number == 1 and wire == 2:
+            profile.metadata_present = True
             _parse_metadata(item, profile)
         elif number == 2 and wire == 2:
             profile.threads.append(_parse_thread(item))
@@ -265,15 +313,20 @@ def iter_leaf_paths(profile: ProfilePayload) -> Iterator[tuple[str, tuple[Node, 
     """Yield each reachable root-to-leaf path from the decoded profile trees."""
 
     for thread in profile.threads:
-        def visit(index: int, current: tuple[Node, ...], active: set[int]) -> Iterator[tuple[str, tuple[Node, ...]]]:
-            if index < 0 or index >= len(thread.nodes) or index in active:
+        def visit(
+            index: int,
+            current: tuple[Node, ...],
+            active: set[int],
+            tree: ThreadTree = thread,
+        ) -> Iterator[tuple[str, tuple[Node, ...]]]:
+            if index < 0 or index >= len(tree.nodes) or index in active:
                 return
-            node = thread.nodes[index]
+            node = tree.nodes[index]
             path = current + (node,)
             next_active = active | {index}
             children = [child for child in node.children_refs if child not in next_active]
             if not children:
-                yield thread.name, path
+                yield tree.name, path
                 return
             for child in children:
                 yield from visit(child, path, next_active)
@@ -300,6 +353,20 @@ def profile_summary(profile: ProfilePayload) -> dict[str, object]:
         "duration_seconds": profile.duration_seconds,
         "sampler_mode": profile.sampler_mode,
         "interval": profile.interval,
+        "number_of_ticks": profile.number_of_ticks,
+        "thread_dumper_type": profile.thread_dumper_type,
+        "thread_dumper_present": profile.thread_dumper_present,
+        "all_threads": profile.all_threads,
+        "data_aggregator_type": profile.data_aggregator_type,
+        "data_aggregator_present": profile.data_aggregator_present,
+        "ticked": profile.ticked,
+        "tick_threshold_us": profile.tick_threshold_us,
+        "number_of_included_ticks": profile.number_of_included_ticks,
+        "included_ticks_present": profile.included_ticks_present,
+        "thread_grouper": profile.thread_grouper,
+        "sampler_engine": profile.sampler_engine,
+        "sampler_engine_version": profile.sampler_engine_version,
+        "metadata_present": profile.metadata_present,
         "thread_count": len(profile.threads),
         "root_weight": sum(thread.weight for thread in profile.threads),
         "python_node_count": len(python),

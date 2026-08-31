@@ -1,0 +1,177 @@
+name: Final Spark Profiler Mode Matrix (Linux)
+
+on:
+  workflow_dispatch:
+    inputs:
+      spark_sha:
+        description: "Exact ReallocAll/spark commit SHA to validate"
+        required: true
+        type: string
+      bot_ref:
+        description: "Exact ReallocAll/bds-test-bot commit SHA"
+        required: true
+        type: string
+
+concurrency:
+  group: final-spark-profiler-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  SPARK_SHA: ${{ inputs.spark_sha }}
+  BOT_REF: ${{ inputs.bot_ref }}
+
+jobs:
+  profiler-mode:
+    name: Linux Spark profiler (${{ matrix.mode }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [default, "1ms", all-thread, only-ticks-over, allocation, alloc-live-only]
+
+    steps:
+      - name: Checkout test lab
+        uses: actions/checkout@v7
+
+      - name: Validate exact dispatch SHAs
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$SPARK_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "spark_sha must be a full 40-character commit SHA" >&2
+            exit 1
+          fi
+          if [[ ! "$BOT_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "bot_ref must be a full 40-character commit SHA" >&2
+            exit 1
+          fi
+          {
+            echo "SPARK_SHA=${SPARK_SHA,,}"
+            echo "BOT_REF=${BOT_REF,,}"
+          } >> "$GITHUB_ENV"
+
+      - name: Checkout bot at exact SHA
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/bds-test-bot
+          ref: ${{ env.BOT_REF }}
+          path: bot-src
+          persist-credentials: false
+
+      - name: Set up Go 1.25
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Build and record exact bot revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$BOT_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "bot_ref must be a full 40-character commit SHA" >&2
+            exit 1
+          fi
+          cd bot-src
+          actual_bot_sha="$(git rev-parse HEAD)"
+          test "${actual_bot_sha,,}" = "${BOT_REF,,}"
+          go mod download
+          go test ./...
+          go build -trimpath -o ../dist-bds-test-bot ./cmd/bds-test-bot
+          chmod +x ../dist-bds-test-bot
+          echo "BOT_SHA=$actual_bot_sha" >> "$GITHUB_ENV"
+          echo "Bot SHA: $actual_bot_sha"
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install validation dependencies
+        run: python -m pip install --disable-pip-version-check psutil
+
+      - name: Require exact Spark artifact
+        env:
+          GH_TOKEN: ${{ secrets.REPO_PAT }}
+        run: >-
+          python -m controller.assert_spark_artifact
+          --platform linux
+          --expected-sha "$SPARK_SHA"
+
+      - name: Run isolated real-BDS profiler mode case
+        env:
+          GH_TOKEN: ${{ secrets.REPO_PAT }}
+        run: >-
+          python -m controller.final_profiler_matrix
+          --mode "${{ matrix.mode }}"
+          --bot "$GITHUB_WORKSPACE/dist-bds-test-bot"
+          --spark-sha "$SPARK_SHA"
+          --bot-ref "$BOT_REF"
+          --evidence-root evidence
+
+      - name: Verify canonical bStats evidence
+        if: always()
+        run: >-
+          python -m controller.verify_bstats_evidence
+          --result "evidence/${{ matrix.mode }}/test-results.json"
+
+      - name: Add mode evidence to summary
+        if: always()
+        shell: bash
+        env:
+          MODE: ${{ matrix.mode }}
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path("evidence") / os.environ["MODE"] / "test-results.json"
+          print(f"## Linux Spark profiler mode: `{os.environ['MODE']}`")
+          print()
+          if not path.is_file():
+              print("Result: **missing**")
+          else:
+              data = json.loads(path.read_text(encoding="utf-8"))
+              provenance = data.get("provenance") or {}
+              profile = data.get("profile") or {}
+              print(f"Result: **{data.get('status')}**")
+              print(f"Spark SHA: `{provenance.get('spark_sha')}`")
+              print(f"Endstone SHA: `{(provenance.get('endstone') or {}).get('sha')}`")
+              print(f"BDS: `{provenance.get('bds_version')}`")
+              print(f"Bot SHA: `{provenance.get('bot_sha')}`")
+              print(f"Command: `{(data.get('options') or {}).get('command')}`")
+              print(f"Viewer: {profile.get('viewer_url')}")
+              print(f"Raw payload: `{profile.get('raw_sha256')}` ({profile.get('raw_bytes')} bytes)")
+              print(f"Assertions: `{data.get('semantic_assertions')}`")
+              print(f"Shutdown: `{data.get('shutdown_status')}`")
+          PY
+
+      - name: Upload prepared mode evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: final-spark-profiler-${{ matrix.mode }}-${{ github.run_id }}
+          path: |
+            evidence/${{ matrix.mode }}/test-results.json
+            evidence/${{ matrix.mode }}/profiler-mode-result.json
+            evidence/${{ matrix.mode }}/metadata.json
+            evidence/${{ matrix.mode }}/bstats-config.toml
+            evidence/${{ matrix.mode }}/evidence-manifest.json
+            evidence/${{ matrix.mode }}/*.sparkprofile
+            evidence/${{ matrix.mode }}/*-profile-summary.json
+            evidence/${{ matrix.mode }}/bds.log
+            evidence/${{ matrix.mode }}/endstone.log
+            evidence/${{ matrix.mode }}/spark.log
+            evidence/${{ matrix.mode }}/bot.log
+            evidence/${{ matrix.mode }}/failure-diagnostics.txt
+            evidence/${{ matrix.mode }}/work/linux/bedrock_server/server.properties
+            evidence/${{ matrix.mode }}/work/linux/bedrock_server/version.txt
+          if-no-files-found: warn
+          retention-days: 30

@@ -9,6 +9,7 @@ from typing import Any
 
 from controller.bot_validation import BotProcess
 from controller.fleet_spark_validation import FleetSparkValidation
+from controller.run_test import child_process_env
 
 
 class ScenarioFileBotProcess(BotProcess):
@@ -58,6 +59,7 @@ class ScenarioFileBotProcess(BotProcess):
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+            env=child_process_env(),
         )
         self._reader = threading.Thread(target=self._read_loop, name="scenario-bot-log-reader", daemon=True)
         self._reader.start()
