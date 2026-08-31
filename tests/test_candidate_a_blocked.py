@@ -1283,6 +1283,59 @@ class CandidateABlockedBenchmarkTest(unittest.TestCase):
         self.assertEqual(fixture.result["failed_stage"], "bds-affinity")
         self.assertGreaterEqual(restore.call_count, 1)
 
+    def test_candidate_a_passes_exact_endstone_sha_to_artifact_discovery(self) -> None:
+        scenario_contract = {"sha256": SCENARIO_SHA}
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            with mock.patch("controller.run_test.pathlib.Path.cwd", return_value=root):
+                fixture = CandidateABlockedCase(
+                    platform_name="linux",
+                    bot_binary=Path("bot"),
+                    block_index=1,
+                    position=0,
+                    treatment="off-B",
+                    baseline_sha=BASELINE_SHA,
+                    candidate_sha=CANDIDATE_SHA,
+                    bot_ref=BOT_REF,
+                    scenario_contract=scenario_contract,
+                )
+
+            wheel = root / "endstone.whl"
+            spark_binary = root / "endstone_spark.so"
+            wheel.write_bytes(b"wheel")
+            spark_binary.write_bytes(b"spark")
+            observed: list[str | None] = []
+
+            def fake_resolve(*_args, **_kwargs):
+                observed.append(os.environ.get("EXPECTED_ENDSTONE_SHA"))
+                return {
+                    "components": {
+                        "endstone": {
+                            "repository": "EndstoneMC/endstone",
+                            "sha": ENDSTONE_SHA,
+                            "run_id": 404,
+                            "artifact": {"id": 505, "name": "endstone-linux.zip"},
+                        },
+                        "spark": {"sha": fixture.expected_spark_sha},
+                    }
+                }
+
+            def fake_wheel_build(command: list[str], *_args, **_kwargs) -> None:
+                wheel_dir = Path(command[command.index("--wheel-dir") + 1])
+                wheel_dir.mkdir(parents=True, exist_ok=True)
+                (wheel_dir / "endstone_spark_python_hotspot_test-0.1.0-py3-none-any.whl").write_bytes(b"wheel")
+
+            with mock.patch.dict(
+                os.environ, {"EXPECTED_ENDSTONE_SHA": "branch-fallback"}, clear=False
+            ), mock.patch("controller.run_test.resolve_artifacts", side_effect=fake_resolve), mock.patch(
+                "controller.run_test.locate_one", side_effect=[wheel, spark_binary]
+            ), mock.patch("controller.run_test.run_checked"), mock.patch(
+                "controller.python_attribution_validation.run_checked", side_effect=fake_wheel_build
+            ):
+                fixture.install_artifacts()
+
+        self.assertEqual(observed, [ENDSTONE_SHA])
+
     def test_workflow_upload_requires_successful_evidence_preparation(self) -> None:
         workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "candidate-a-blocked.yml").read_text(
             encoding="utf-8"
