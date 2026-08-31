@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import pathlib
@@ -90,6 +91,13 @@ class ServerProcess:
         self.create_time: float | None = None
         self.started_command: list[str] | None = None
         self.lines: list[str] = []
+        self.lifecycle_diagnostic: dict[str, Any] = {}
+        self._forced = False
+        self._managed_processes: dict[int, float | None] = {}
+        self._root_identity_status = "unknown"
+        self._root_identity_evidence: dict[str, Any] = {}
+        self._process_tree_error: str | None = None
+        self._unverified_processes: dict[int, str] = {}
         self._lock = threading.Lock()
         self._reader: threading.Thread | None = None
         self._log = None
@@ -108,6 +116,7 @@ class ServerProcess:
             self.create_time = psutil.Process(self.pid).create_time()
         except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
             self.create_time = None
+        self._managed_processes = {self.pid: self.create_time}
         self._reader = threading.Thread(target=self._read_loop, name="bds-log-reader", daemon=True)
         self._reader.start()
 
@@ -128,6 +137,228 @@ class ServerProcess:
 
     def is_alive(self) -> bool:
         return self.process is not None and self.process.poll() is None
+
+    @property
+    def was_forced(self) -> bool:
+        return self._forced
+
+    @staticmethod
+    def _same_process_identity(expected: float | None, actual: float | None) -> bool:
+        return expected is not None and actual is not None and expected == actual
+
+    def process_tree_snapshot(self) -> list[dict[str, Any]]:
+        """Return liveness for the wrapper and descendants known to this server."""
+
+        self._process_tree_error = None
+        if self.pid is None:
+            self._root_identity_status = "unknown"
+            self._root_identity_evidence = {}
+            self._process_tree_error = "wrapper-pid-unavailable"
+            self._unverified_processes = {}
+            return []
+        expected_root = self._managed_processes.get(self.pid)
+        if expected_root is None:
+            expected_root = self.create_time
+        if expected_root is not None:
+            self._managed_processes[self.pid] = expected_root
+        process_ids = set(self._managed_processes)
+        unverified_processes = getattr(self, "_unverified_processes", {})
+        self._unverified_processes = unverified_processes
+        process_ids.update(unverified_processes)
+        root = None
+        observed_root: float | None = None
+        root_status = "unknown"
+        try:
+            root = psutil.Process(self.pid)
+        except psutil.NoSuchProcess:
+            process_exited = self.process is None or self.process.poll() is not None
+            root_status = "absent" if expected_root is not None and process_exited else "unknown"
+        except (psutil.AccessDenied, OSError) as exc:
+            self._process_tree_error = type(exc).__name__
+        else:
+            try:
+                observed_root = root.create_time()
+            except (psutil.AccessDenied, psutil.NoSuchProcess, OSError) as exc:
+                self._process_tree_error = type(exc).__name__
+            else:
+                if expected_root is None:
+                    root_status = "unknown"
+                elif self._same_process_identity(expected_root, observed_root):
+                    root_status = "verified"
+                else:
+                    root_status = "mismatch"
+        self._root_identity_status = root_status
+        self._root_identity_evidence = {
+            "status": root_status,
+            "expected_create_time": expected_root,
+            "observed_create_time": observed_root,
+        }
+
+        if root_status == "verified" and root is not None:
+            try:
+                descendants = root.children(recursive=True)
+            except (psutil.AccessDenied, psutil.NoSuchProcess, OSError) as exc:
+                self._process_tree_error = type(exc).__name__
+                descendants = []
+            for process in [root, *descendants]:
+                try:
+                    create_time = process.create_time()
+                except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+                    if process.pid != self.pid:
+                        process_ids.add(process.pid)
+                        self._unverified_processes[process.pid] = "creation-time-unavailable"
+                    continue
+                expected = self._managed_processes.get(process.pid)
+                if process.pid == self.pid:
+                    expected = expected_root
+                if expected is not None and expected != create_time:
+                    if process.pid != self.pid:
+                        process_ids.add(process.pid)
+                        self._unverified_processes[process.pid] = "identity-mismatch"
+                    continue
+                if process.pid != self.pid and create_time is None:
+                    process_ids.add(process.pid)
+                    self._unverified_processes[process.pid] = "creation-time-unavailable"
+                    continue
+                if create_time is not None:
+                    self._managed_processes[process.pid] = create_time
+                    self._unverified_processes.pop(process.pid, None)
+                process_ids.add(process.pid)
+        elif root_status not in ("absent",):
+            process_ids.add(self.pid)
+
+        records: list[dict[str, Any]] = []
+        for pid in sorted(process_ids):
+            expected = self._managed_processes.get(pid)
+            record: dict[str, Any] = {
+                "pid": pid,
+                "is_wrapper": pid == self.pid,
+                "create_time": expected,
+                "alive": None if root_status not in ("verified", "absent") else False,
+                "identity_match": False,
+            }
+            if pid in self._unverified_processes or root_status not in ("verified", "absent"):
+                record["error"] = self._unverified_processes.get(pid, f"wrapper-identity-{root_status}")
+                records.append(record)
+                continue
+            if pid == self.pid and root_status == "absent":
+                record["identity_match"] = True
+                record["alive"] = False
+                records.append(record)
+                continue
+            try:
+                process = psutil.Process(pid)
+                actual = process.create_time()
+                record["create_time"] = actual
+                record["identity_match"] = self._same_process_identity(expected, actual)
+                if not record["identity_match"]:
+                    record["error"] = "identity-mismatch"
+                    records.append(record)
+                    continue
+                try:
+                    record["name"] = process.name()
+                except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+                    record["name"] = None
+                try:
+                    record["alive"] = process.is_running()
+                except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+                    record["alive"] = None
+            except psutil.NoSuchProcess:
+                record["identity_match"] = True
+                record["alive"] = False
+            except (psutil.AccessDenied, OSError) as exc:
+                record["error"] = type(exc).__name__
+                record["alive"] = None
+            records.append(record)
+        return records
+
+    def managed_residual_processes(self) -> list[str]:
+        return [
+            f"{record.get('name') or 'unknown'} (pid={record['pid']})"
+            for record in self.process_tree_snapshot()
+            if record.get("alive") is True and record.get("identity_match") is True
+        ]
+
+    @staticmethod
+    def _bds_child_liveness(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            record
+            for record in records
+            if not record.get("is_wrapper") and "bedrock_server" in str(record.get("name") or "").lower()
+        ]
+
+    def _process_tree_cleanup_outcome(self, records: list[dict[str, Any]]) -> str:
+        if (
+            getattr(self, "_root_identity_status", "unknown") not in ("verified", "absent")
+            or getattr(self, "_process_tree_error", None) is not None
+            or getattr(self, "_unverified_processes", {})
+            or any(record.get("alive") is None for record in records)
+            or any(record.get("identity_match") is not True for record in records)
+        ):
+            return "verification-failed"
+        if any(record.get("alive") is True and record.get("identity_match") is True for record in records):
+            return "residual-processes"
+        return "clean"
+
+    def _windows_root_target_status(self, records: list[dict[str, Any]]) -> str:
+        status = getattr(self, "_root_identity_status", "unknown")
+        if status == "mismatch":
+            return status
+        wrapper = next((record for record in records if record.get("is_wrapper")), None)
+        if status == "absent":
+            return "absent" if wrapper is None or wrapper.get("identity_match") is True else "unknown"
+        if status == "verified":
+            if wrapper is None or wrapper.get("identity_match") is not True:
+                return "unknown"
+            if wrapper.get("alive") is True:
+                return "verified"
+            if wrapper.get("alive") is False:
+                return "absent"
+            return "unknown"
+        if wrapper is not None and wrapper.get("identity_match") is True:
+            if wrapper.get("alive") is True:
+                return "verified"
+            if wrapper.get("alive") is False:
+                return "absent"
+        return status
+
+    def _begin_lifecycle(self, method: str, command: str, timeout: float) -> dict[str, Any]:
+        before = self.process_tree_snapshot()
+        diagnostic: dict[str, Any] = {
+            "method": method,
+            "stop_method": method,
+            "command": command,
+            "wrapper_pid": self.pid,
+            "pid": self.pid,
+            "timeout_seconds": timeout,
+            "alive_before": self.is_alive(),
+            "wrapper_identity": copy.deepcopy(getattr(self, "_root_identity_evidence", {})),
+            "process_tree_before": before,
+            "bds_child_liveness_before": self._bds_child_liveness(before),
+            "acknowledgement_evidence": {"command_sent": False, "observed": False},
+            "timeout_reason": None,
+            "cleanup_outcome": "not_attempted",
+        }
+        self.lifecycle_diagnostic = diagnostic
+        return diagnostic
+
+    def _finish_lifecycle(
+        self,
+        diagnostic: dict[str, Any],
+        *,
+        outcome: str,
+        returncode: int | None = None,
+        timeout_reason: str | None = None,
+    ) -> None:
+        after = self.process_tree_snapshot()
+        diagnostic["outcome"] = outcome
+        diagnostic["returncode"] = returncode
+        diagnostic["return_code"] = returncode
+        diagnostic["process_tree_after"] = after
+        diagnostic["bds_child_liveness_after"] = self._bds_child_liveness(after)
+        diagnostic["process_tree_verification"] = self._process_tree_cleanup_outcome(after)
+        if timeout_reason is not None:
+            diagnostic["timeout_reason"] = timeout_reason
 
     def wait_for(self, predicate, timeout: float, description: str) -> list[str]:
         deadline = time.monotonic() + timeout
@@ -168,34 +399,108 @@ class ServerProcess:
         return self.snapshot()[start_index:]
 
     def graceful_stop(self, timeout: float = 60.0) -> bool:
-        if not self.is_alive():
-            return True
+        if self._forced:
+            diagnostic = self.lifecycle_diagnostic or self._begin_lifecycle("native-stop", "stop", timeout)
+            self._finish_lifecycle(diagnostic, outcome="forced", returncode=self.process.returncode if self.process else None)
+            diagnostic["cleanup_outcome"] = "forced"
+            return False
+        diagnostic = self._begin_lifecycle("native-stop", "stop", timeout)
+        if not diagnostic["alive_before"]:
+            if os.name == "nt" and diagnostic["wrapper_identity"].get("status") != "absent":
+                self._finish_lifecycle(diagnostic, outcome="verification-failed", returncode=self.process.returncode if self.process else None)
+                diagnostic["cleanup_outcome"] = "verification-failed"
+                return False
+            self._finish_lifecycle(diagnostic, outcome="already-exited", returncode=self.process.returncode if self.process else None)
+            return os.name != "nt" or diagnostic["process_tree_verification"] == "clean"
+        if os.name == "nt" and diagnostic["wrapper_identity"].get("status") != "verified":
+            self._finish_lifecycle(diagnostic, outcome="verification-failed", returncode=self.process.returncode if self.process else None)
+            diagnostic["cleanup_outcome"] = "verification-failed"
+            return False
         try:
             self.command("stop")
+            diagnostic["acknowledgement_evidence"]["command_sent"] = True
         except Exception:  # noqa: BLE001 - shutdown must report failure without hiding it
+            self._finish_lifecycle(diagnostic, outcome="command-failed", returncode=self.process.returncode if self.process else None)
             return False
         assert self.process is not None
         try:
             self.process.wait(timeout=timeout)
-            return self.process.returncode == 0
+            returncode = self.process.returncode
+            self._finish_lifecycle(diagnostic, outcome="exited" if returncode == 0 else "nonzero-exit", returncode=returncode)
+            if os.name == "nt" and diagnostic["process_tree_verification"] != "clean":
+                diagnostic["outcome"] = diagnostic["process_tree_verification"]
+                diagnostic["cleanup_outcome"] = diagnostic["process_tree_verification"]
+                return False
+            diagnostic["cleanup_outcome"] = "graceful-exit" if returncode == 0 else "nonzero-exit"
+            return returncode == 0
         except subprocess.TimeoutExpired:
+            self._finish_lifecycle(
+                diagnostic,
+                outcome="timeout",
+                returncode=self.process.returncode,
+                timeout_reason=f"process did not exit within {timeout:.1f}s",
+            )
             return False
 
     def force_kill_tree(self) -> None:
-        if self.process is None or self.process.poll() is not None:
-            return
-        pid = self.process.pid
-        if os.name == "nt":
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=30, check=False)
-        else:
-            try:
-                os.killpg(os.getpgid(pid), signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        try:
-            self.process.wait(timeout=15)
-        except subprocess.TimeoutExpired:
-            self.process.kill()
+        self._forced = True
+        diagnostic = self.lifecycle_diagnostic
+        if not diagnostic:
+            diagnostic = self._begin_lifecycle("force-kill-tree", "taskkill" if os.name == "nt" else "SIGKILL", 15.0)
+        before = self.process_tree_snapshot()
+        diagnostic["forced"] = True
+        diagnostic["process_tree_before_force"] = before
+        alive_records = [
+            record
+            for record in before
+            if record.get("alive") is True and record.get("identity_match") is True
+        ]
+        root_target_status = self._windows_root_target_status(before)
+        if root_target_status in ("verified", "absent"):
+            self._root_identity_status = root_target_status
+        if self.process is not None and self.process.poll() is None:
+            pid = self.process.pid
+            if os.name == "nt" and root_target_status == "verified":
+                subprocess.run(["taskkill", "/PID", str(pid), "/F"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=30, check=False)
+            else:
+                if os.name != "nt":
+                    try:
+                        os.killpg(os.getpgid(pid), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+            if os.name != "nt" or root_target_status == "verified":
+                try:
+                    self.process.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+                    try:
+                        self.process.wait(timeout=5)
+                    except subprocess.TimeoutExpired as exc:
+                        diagnostic["forced_wait_timeout"] = str(exc)
+        elif os.name == "nt" and root_target_status in ("verified", "absent"):
+            for record in alive_records:
+                if record["pid"] == self.pid:
+                    continue
+                subprocess.run(["taskkill", "/PID", str(record["pid"]), "/T", "/F"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=30, check=False)
+        after = self.process_tree_snapshot()
+        if os.name == "nt" and root_target_status in ("verified", "absent"):
+            residual_records = [
+                record
+                for record in after
+                if record.get("alive") is True
+                and record.get("identity_match") is True
+                and record.get("pid") != self.pid
+            ]
+            for record in residual_records:
+                subprocess.run(["taskkill", "/PID", str(record["pid"]), "/T", "/F"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=30, check=False)
+            if residual_records:
+                after = self.process_tree_snapshot()
+        diagnostic["process_tree_after_force"] = after
+        diagnostic["bds_child_liveness_after_force"] = self._bds_child_liveness(after)
+        diagnostic["cleanup_outcome"] = self._process_tree_cleanup_outcome(after)
+        diagnostic["outcome"] = "forced"
+        diagnostic["returncode"] = self.process.returncode if self.process is not None else None
+        diagnostic["return_code"] = diagnostic["returncode"]
 
     def close(self) -> None:
         if self._reader is not None:
@@ -239,6 +544,7 @@ class IntegrationTest:
             "execution_profile_viewer_url": None,
             "allocation_profile_viewer_url": None,
             "shutdown_status": "not_started",
+            "shutdown_lifecycle_events": [],
         }
         write_json(self.result_path, self.result)
 
@@ -249,6 +555,16 @@ class IntegrationTest:
         item.update(extra)
         self.result["checks"].append(item)
         write_json(self.result_path, self.result)
+
+    def record_server_lifecycle(self) -> None:
+        diagnostic = getattr(self.server, "lifecycle_diagnostic", None) if self.server is not None else None
+        if diagnostic:
+            snapshot = copy.deepcopy(diagnostic)
+            self.result["shutdown_lifecycle"] = snapshot
+            events = self.result.setdefault("shutdown_lifecycle_events", [])
+            if not events or events[-1] != snapshot:
+                events.append(snapshot)
+            write_json(self.result_path, self.result)
 
     def install_artifacts(self) -> None:
         self.metadata = resolve_artifacts(self.platform, self.downloads, self.metadata_path)
@@ -370,7 +686,9 @@ class IntegrationTest:
         assert self.server is not None
         if not self.server.graceful_stop(60):
             self.server.force_kill_tree()
+            self.record_server_lifecycle()
             raise RuntimeError("Server failed to stop gracefully before recovery probe")
+        self.record_server_lifecycle()
         self.server.close()
         self.result["shutdown_status"] = "graceful"
         write_json(self.result_path, self.result)
@@ -382,24 +700,26 @@ class IntegrationTest:
         if self.platform == "linux":
             result = subprocess.run(["pgrep", "-af", "bedrock_server"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False)
             return [line for line in result.stdout.splitlines() if str(self.server_dir) in line]
-        result = subprocess.run(["tasklist", "/FI", "IMAGENAME eq bedrock_server.exe", "/FO", "CSV", "/NH"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace", check=False)
-        return [line for line in result.stdout.splitlines() if "bedrock_server.exe" in line.lower()]
+        return self.server.managed_residual_processes() if self.server is not None else []
 
     def shutdown(self) -> None:
         if self.server is None:
             return
         graceful = self.server.graceful_stop(60)
+        self.record_server_lifecycle()
         if not graceful:
             self.server.force_kill_tree()
+            self.record_server_lifecycle()
             self.result["shutdown_status"] = "forced"
             write_json(self.result_path, self.result)
             raise RuntimeError("BDS did not shut down gracefully within timeout")
         self.server.close()
-        self.result["shutdown_status"] = "graceful"
-        write_json(self.result_path, self.result)
         leftovers = self.residual_processes()
         if leftovers:
+            self.record_server_lifecycle()
             raise RuntimeError("Residual BDS process detected after shutdown: " + " | ".join(leftovers[:5]))
+        self.result["shutdown_status"] = "graceful"
+        self.record_server_lifecycle()
         self.check("shutdown", "PASS", "graceful; no residual BDS process")
 
     def split_logs(self) -> None:
@@ -441,8 +761,9 @@ class IntegrationTest:
             self.result["error_summary"] = f"{type(exc).__name__}: {exc}"[:1200]
             diagnostic = traceback.format_exc()
             try:
-                if self.server is not None and self.server.is_alive():
+                if self.server is not None and (self.server.is_alive() or getattr(self.server, "was_forced", False)):
                     self.server.force_kill_tree()
+                    self.record_server_lifecycle()
                     self.result["shutdown_status"] = "forced_after_failure"
                     self.server.close()
             except Exception:  # noqa: BLE001 - cleanup failure is appended to diagnostics
