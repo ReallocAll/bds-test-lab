@@ -14,7 +14,7 @@ from typing import Any
 import psutil
 
 from controller.bot_validation import BotProcess, list_players, patch_server_properties
-from controller.run_test import IntegrationTest, now_iso, write_json
+from controller.run_test import IntegrationTest, child_process_env, now_iso, write_json
 
 PLAYER_COUNT_RE = re.compile(r"There are\s+(\d+)/(\d+)\s+players online", re.IGNORECASE)
 TPS_RE = re.compile(r"TPS \(5s/10s/1m/5m/15m\):\s*([0-9.]+)\s*/\s*([0-9.]+)\s*/\s*([0-9.]+)\s*/\s*([0-9.]+)\s*/\s*([0-9.]+)")
@@ -70,6 +70,7 @@ class FleetBotProcess(BotProcess):
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+            env=child_process_env(),
         )
         self._reader = threading.Thread(target=self._read_loop, name="fleet-bot-log-reader", daemon=True)
         self._reader.start()

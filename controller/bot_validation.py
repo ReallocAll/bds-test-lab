@@ -12,7 +12,14 @@ import time
 import traceback
 from typing import Any
 
-from controller.run_test import READY_HINTS, ServerProcess, locate_one, now_iso, run_checked
+from controller.run_test import (
+    READY_HINTS,
+    ServerProcess,
+    child_process_env,
+    locate_one,
+    now_iso,
+    run_checked,
+)
 from providers.artifact_provider import _download_artifact, discover
 
 RECOMMENDED_PROPERTIES = {
@@ -70,6 +77,7 @@ class BotProcess:
             errors="replace",
             bufsize=1,
             creationflags=creationflags,
+            env=child_process_env(),
         )
         self._reader = threading.Thread(target=self._read_loop, name="bot-log-reader", daemon=True)
         self._reader.start()
@@ -378,7 +386,7 @@ def main() -> int:
 
         result["status"] = "PASS"
         exit_code = 0
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - record every integration failure
         result["status"] = "FAIL"
         result["failed_stage"] = stage
         result["error"] = f"{type(exc).__name__}: {exc}"
@@ -392,7 +400,7 @@ def main() -> int:
         if server is not None:
             try:
                 stop_server(server)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - preserve the primary failure
                 print(f"cleanup: {exc}", file=sys.stderr, flush=True)
         result["completed_at"] = now_iso()
         result_path.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")

@@ -10,7 +10,7 @@ import sys
 import threading
 
 from controller.fleet_spark_validation import FleetBotProcess, FleetSparkValidation
-from controller.run_test import IntegrationTest, write_json
+from controller.run_test import IntegrationTest, child_process_env, write_json
 
 
 class CrossPlatformFleetBotProcess(FleetBotProcess):
@@ -59,6 +59,7 @@ class CrossPlatformFleetBotProcess(FleetBotProcess):
             errors="replace",
             bufsize=1,
             creationflags=creationflags,
+            env=child_process_env(),
         )
         self._reader = threading.Thread(target=self._read_loop, name="fleet-bot-log-reader", daemon=True)
         self._reader.start()
