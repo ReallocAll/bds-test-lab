@@ -13,6 +13,8 @@ ENDSTONE_SHA = "27cc2e04d843bd70f089b0814ddba3054d4c55ef"
 
 
 class RecoveryMultiSessionValidation(ExtendedIntegrationTest):
+    disable_bstats = True
+
     def __init__(self, platform_name: str) -> None:
         super().__init__(platform_name, 30)
         self.result["test_kind"] = "spark-recovery-multi-session"

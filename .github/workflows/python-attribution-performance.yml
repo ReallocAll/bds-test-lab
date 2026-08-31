@@ -152,6 +152,15 @@ jobs:
           --mode ${{ matrix.mode }}
           --duration-seconds ${{ env.DURATION_SECONDS }}
 
+      - name: Verify bStats evidence before upload
+        if: always()
+        id: verify-bstats
+        run: >-
+          python -m controller.verify_bstats_evidence
+          --result test-results.json
+          --result python-attribution-result.json
+          --result python-attribution-performance.json
+
       - name: Add benchmark summary
         if: always()
         shell: bash
@@ -177,7 +186,7 @@ jobs:
           fi
 
       - name: Upload benchmark evidence
-        if: always()
+        if: ${{ always() && steps.verify-bstats.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:
           name: python-attribution-performance-${{ matrix.mode }}-${{ github.run_id }}
@@ -189,6 +198,7 @@ jobs:
             test-results.json
             python-attribution-result.json
             python-attribution-performance.json
+            bstats-config.toml
             python-attribution-tick-metrics.json
             python-attribution-performance.sparkprofile
             python-attribution-bots-linux-5-chunk-walk.log

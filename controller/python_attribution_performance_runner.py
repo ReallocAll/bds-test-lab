@@ -17,6 +17,7 @@ _ORIGINAL_BOOTSTRAP_SERVER = PythonAttributionPerformance.bootstrap_server
 
 
 def _install_real_endstone_plugin(self: PythonAttributionPerformance) -> None:
+    self.disable_bstats = True
     # Install only Endstone + Spark through the base integration harness. Calling
     # PythonAttributionValidation.install_artifacts here would also pip-install
     # the hotspot package into the runner interpreter, then deploy the same wheel

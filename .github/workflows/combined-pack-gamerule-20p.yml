@@ -191,6 +191,14 @@ jobs:
           --bot dist/${{ matrix.bot_name }}
           --profile-seconds ${{ env.PROFILE_SECONDS }}
 
+      - name: Verify bStats evidence before upload
+        if: always()
+        id: verify-bstats
+        run: >-
+          python -m controller.verify_bstats_evidence
+          --result test-results.json
+          --result fleet-spark-result.json
+
       - name: Add combined evidence to summary
         if: always()
         shell: bash
@@ -228,7 +236,7 @@ jobs:
           fi >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload combined evidence
-        if: always()
+        if: ${{ always() && steps.verify-bstats.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:
           name: spark-combined-${{ matrix.platform }}-20p-${{ github.run_id }}
@@ -241,6 +249,7 @@ jobs:
             fleet-${{ matrix.platform }}-20-chunk-walk-public.log
             test-results.json
             fleet-spark-result.json
+            bstats-config.toml
             failure-diagnostics.txt
             combined-health-capture-${{ matrix.platform }}/
             work/${{ matrix.platform }}/bedrock_server/server.properties

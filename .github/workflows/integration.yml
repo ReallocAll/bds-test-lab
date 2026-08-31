@@ -57,9 +57,15 @@ jobs:
           python -m controller.extended_validation
           --platform ${{ matrix.platform }}
           --soak-minutes ${{ env.BDS_SOAK_MINUTES }}
+          --disable-bstats
+
+      - name: Verify bStats evidence before upload
+        if: always()
+        id: verify-bstats
+        run: python -m controller.verify_bstats_evidence --result test-results.json
 
       - name: Upload integration evidence
-        if: always()
+        if: ${{ always() && steps.verify-bstats.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:
           name: bds-test-${{ matrix.platform }}
@@ -69,6 +75,7 @@ jobs:
             endstone.log
             spark.log
             test-results.json
+            bstats-config.toml
             failure-diagnostics.txt
           if-no-files-found: warn
           retention-days: 14

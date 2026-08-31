@@ -21,6 +21,12 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from controller.bstats import (
+    B_STATS_CONFIG_RELATIVE_PATH,
+    BStatsConfigError,
+    copy_bstats_evidence,
+    write_disabled_bstats_config,
+)
 from providers.artifact_provider import resolve_artifacts
 
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -194,6 +200,8 @@ class ServerProcess:
 
 
 class IntegrationTest:
+    disable_bstats = False
+
     def __init__(self, platform_name: str):
         self.platform = platform_name
         self.root = pathlib.Path.cwd()
@@ -243,6 +251,7 @@ class IntegrationTest:
         self.server_dir.mkdir(parents=True, exist_ok=True)
         plugin_dir = self.server_dir / "plugins"
         plugin_dir.mkdir(parents=True, exist_ok=True)
+        self._prepare_bstats_before_start()
         target = plugin_dir / spark_binary.name
         shutil.copy2(spark_binary, target)
         self.check("spark-plugin-deployed", "PASS", str(target.relative_to(self.root)))
@@ -252,9 +261,31 @@ class IntegrationTest:
             shutil.copy2(allocation_shim, shim_target)
             self.check("spark-allocation-shim-deployed", "PASS", str(shim_target.relative_to(self.root)))
 
+    def _prepare_bstats_before_start(self) -> None:
+        if not getattr(self, "disable_bstats", False):
+            return
+        evidence = write_disabled_bstats_config(self.server_dir)
+        source = self.server_dir / pathlib.PurePosixPath(B_STATS_CONFIG_RELATIVE_PATH)
+        copied = copy_bstats_evidence(self.root, source)
+        if copied != evidence:
+            raise BStatsConfigError("copied bStats evidence does not match the server config")
+        self.bstats_config = evidence
+        self.result["bstats_config"] = evidence
+        self.check(
+            "bstats-disabled",
+            "PASS",
+            "canonical bStats config installed before BDS startup",
+            relative_path=evidence["relative_path"],
+            evidence_path=evidence["evidence_path"],
+            bytes=evidence["bytes"],
+            sha256=evidence["sha256"],
+            canonical_enabled=evidence["canonical_enabled"],
+        )
+
     def start_server(self) -> None:
         cmd = [sys.executable, "-m", "endstone", "--yes", "--server-folder", str(self.server_dir)]
         self.server = ServerProcess(cmd, self.root, self.log_path)
+        self._prepare_bstats_before_start()
         self.server.start()
         self.server.wait_for(lambda lines: any(any(hint in line.lower() for hint in READY_HINTS) for line in lines), 240, "BDS ready")
         self.check("bds-start", "PASS")

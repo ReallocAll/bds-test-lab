@@ -121,6 +121,8 @@ class CrossPlatformFleetBotProcess(FleetBotProcess):
 
 
 class CrossPlatformFleetSparkValidation(FleetSparkValidation):
+    disable_bstats = True
+
     def __init__(
         self,
         platform_name: str,
