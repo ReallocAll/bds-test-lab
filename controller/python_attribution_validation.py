@@ -182,16 +182,26 @@ class PythonAttributionValidation(IntegrationTest):
         self.check("python-hotspot-plugin-enabled", "PASS", f"mode={self.mode}")
 
     def bootstrap_server(self) -> None:
-        self.start_server()
-        self.wait_plugin()
-        assert self.server is not None
-        if not self.server.graceful_stop(60):
-            self.server.force_kill_tree()
+        hotspot_mode = os.environ.get("SPARK_PYTHON_HOTSPOT_MODE")
+        if self.platform == "windows":
+            os.environ["SPARK_PYTHON_HOTSPOT_MODE"] = "off"
+        try:
+            self.start_server()
+            self.wait_plugin()
+            assert self.server is not None
+            if not self.server.graceful_stop(60):
+                self.server.force_kill_tree()
+                self.record_server_lifecycle()
+                raise RuntimeError("BDS did not stop after initial server.properties bootstrap")
             self.record_server_lifecycle()
-            raise RuntimeError("BDS did not stop after initial server.properties bootstrap")
-        self.record_server_lifecycle()
-        self.server.close()
-        self.server = None
+            self.server.close()
+            self.server = None
+        finally:
+            if self.platform == "windows":
+                if hotspot_mode is None:
+                    os.environ.pop("SPARK_PYTHON_HOTSPOT_MODE", None)
+                else:
+                    os.environ["SPARK_PYTHON_HOTSPOT_MODE"] = hotspot_mode
         properties = self.server_dir / "server.properties"
         patch_server_properties(properties)
         set_server_property(properties, "max-players", "30")

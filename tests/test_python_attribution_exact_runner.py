@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import tempfile
 import unittest
@@ -159,6 +160,80 @@ class FrameworkShutdownTest(unittest.TestCase):
 
 
 class PythonAttributionExactRunnerTest(unittest.TestCase):
+    @staticmethod
+    def _bootstrap_fixture(root: Path, platform: str) -> tuple[PythonAttributionValidation, list[tuple[bool, str | None]]]:
+        validator = PythonAttributionValidation.__new__(PythonAttributionValidation)
+        validator.platform = platform
+        validator.server_dir = root / "bedrock_server"
+        validator.server_dir.mkdir()
+        (validator.server_dir / "server.properties").write_text("difficulty=easy\n", encoding="utf-8")
+        validator.server = None
+        validator.wait_plugin = mock.Mock()
+        validator.command_check = mock.Mock()
+        validator.record_server_lifecycle = mock.Mock()
+        launch_states: list[tuple[bool, str | None]] = []
+        servers = [mock.Mock(), mock.Mock()]
+        for server in servers:
+            server.graceful_stop.return_value = True
+
+        def start_server() -> None:
+            launch_states.append(
+                ("SPARK_PYTHON_HOTSPOT_MODE" in os.environ, os.environ.get("SPARK_PYTHON_HOTSPOT_MODE"))
+            )
+            validator.server = servers.pop(0)
+
+        validator.start_server = mock.Mock(side_effect=start_server)
+        return validator, launch_states
+
+    def test_windows_bootstrap_restores_hotspot_mode_before_real_start(self) -> None:
+        with tempfile.TemporaryDirectory() as temp, mock.patch.dict(
+            os.environ, {"SPARK_PYTHON_HOTSPOT_MODE": "dual"}, clear=False
+        ):
+            validator, launch_states = self._bootstrap_fixture(Path(temp), "windows")
+            validator.bootstrap_server()
+
+            self.assertEqual(launch_states, [(True, "off"), (True, "dual")])
+            self.assertEqual(os.environ["SPARK_PYTHON_HOTSPOT_MODE"], "dual")
+
+    def test_windows_bootstrap_restores_absent_hotspot_mode_before_real_start(self) -> None:
+        with tempfile.TemporaryDirectory() as temp, mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SPARK_PYTHON_HOTSPOT_MODE", None)
+            validator, launch_states = self._bootstrap_fixture(Path(temp), "windows")
+            validator.bootstrap_server()
+
+            self.assertEqual(launch_states, [(True, "off"), (False, None)])
+            self.assertNotIn("SPARK_PYTHON_HOTSPOT_MODE", os.environ)
+
+    def test_windows_bootstrap_restores_hotspot_mode_when_initial_start_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temp, mock.patch.dict(
+            os.environ, {"SPARK_PYTHON_HOTSPOT_MODE": "mixed"}, clear=False
+        ):
+            validator, launch_states = self._bootstrap_fixture(Path(temp), "windows")
+
+            def fail_start() -> None:
+                launch_states.append(
+                    ("SPARK_PYTHON_HOTSPOT_MODE" in os.environ, os.environ.get("SPARK_PYTHON_HOTSPOT_MODE"))
+                )
+                raise RuntimeError("bootstrap failed")
+
+            validator.start_server.side_effect = fail_start
+
+            with self.assertRaisesRegex(RuntimeError, "bootstrap failed"):
+                validator.bootstrap_server()
+
+            self.assertEqual(launch_states, [(True, "off")])
+            self.assertEqual(os.environ["SPARK_PYTHON_HOTSPOT_MODE"], "mixed")
+
+    def test_linux_bootstrap_keeps_requested_hotspot_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp, mock.patch.dict(
+            os.environ, {"SPARK_PYTHON_HOTSPOT_MODE": "worker"}, clear=False
+        ):
+            validator, launch_states = self._bootstrap_fixture(Path(temp), "linux")
+            validator.bootstrap_server()
+
+            self.assertEqual(launch_states, [(True, "worker"), (True, "worker")])
+            self.assertEqual(os.environ["SPARK_PYTHON_HOTSPOT_MODE"], "worker")
+
     def test_windows_start_uses_interactive_command_map_and_registration(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
