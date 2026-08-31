@@ -8,6 +8,7 @@ from typing import ClassVar
 from unittest import mock
 
 import controller.combined_pack_gamerule_fleet_exact_runner as combined_exact
+import controller.python_attribution_exact_runner as attribution_exact
 from controller.bstats import B_STATS_CONFIG_BYTES, B_STATS_EVIDENCE_PATH
 from controller.combined_pack_gamerule_fleet_validation import (
     CombinedPackGameruleFleetValidation,
@@ -39,6 +40,9 @@ class _LaunchProbe:
         if not predicate(lines):
             raise AssertionError("launch probe did not satisfy wait predicate")
         return lines
+
+    def snapshot(self) -> list[str]:
+        return ["Version: 1.26.44.3"]
 
 
 class UniversalBStatsTest(unittest.TestCase):
@@ -168,7 +172,7 @@ class UniversalBStatsTest(unittest.TestCase):
             config.write_text("enabled = true\n", encoding="utf-8")
             fixture.platform = "windows"
             _LaunchProbe.launches = []
-            with mock.patch("controller.python_attribution_validation.ServerProcess", _LaunchProbe):
+            with mock.patch.object(attribution_exact, "_FrameworkShutdownServerProcess", _LaunchProbe):
                 PythonAttributionValidation.start_server(fixture)  # type: ignore[arg-type]
             self.assertEqual(_LaunchProbe.launches, [B_STATS_CONFIG_BYTES])
 

@@ -187,7 +187,9 @@ class PythonAttributionValidation(IntegrationTest):
         assert self.server is not None
         if not self.server.graceful_stop(60):
             self.server.force_kill_tree()
+            self.record_server_lifecycle()
             raise RuntimeError("BDS did not stop after initial server.properties bootstrap")
+        self.record_server_lifecycle()
         self.server.close()
         self.server = None
         properties = self.server_dir / "server.properties"
