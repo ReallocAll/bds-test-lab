@@ -134,6 +134,8 @@ EXECUTION_DIAGNOSTICS = (
     "Execution data incomplete",
 )
 
+ONLY_TICKS_OVER_DIAGNOSTICS = ("Execution terminal in-flight tick samples discarded",)
+
 ALLOCATION_DIAGNOSTICS = (
     "Allocation backend",
     "Allocation coverage",
@@ -262,6 +264,8 @@ def _require_bool(value: str, key: str) -> bool:
 def _diagnostic_summary(profile: ProfilePayload, spec: ProfilerModeSpec) -> dict[str, Any]:
     diagnostics = profile.extra_metadata
     required = ALLOCATION_DIAGNOSTICS if spec.allocation else EXECUTION_DIAGNOSTICS
+    if spec.ticked:
+        required += ONLY_TICKS_OVER_DIAGNOSTICS
     missing = [key for key in required if key not in diagnostics]
     if missing:
         raise ProfileValidationError(f"missing required diagnostics: {missing}")

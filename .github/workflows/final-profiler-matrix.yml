@@ -11,6 +11,19 @@ on:
         description: "Exact ReallocAll/bds-test-bot commit SHA"
         required: true
         type: string
+      mode:
+        description: "Profiler mode to run, or all for the complete six-mode matrix"
+        required: false
+        default: all
+        type: choice
+        options:
+          - all
+          - default
+          - "1ms"
+          - all-thread
+          - only-ticks-over
+          - allocation
+          - alloc-live-only
 
 concurrency:
   group: final-spark-profiler-matrix-${{ github.ref }}
@@ -26,14 +39,43 @@ env:
   BOT_REF: ${{ inputs.bot_ref }}
 
 jobs:
+  resolve-mode:
+    name: Resolve profiler mode matrix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      modes: ${{ steps.resolve.outputs.modes }}
+    steps:
+      - name: Resolve requested mode
+        id: resolve
+        shell: bash
+        env:
+          REQUESTED_MODE: ${{ inputs.mode || 'all' }}
+        run: |
+          set -euo pipefail
+          case "$REQUESTED_MODE" in
+            all)
+              modes='["default","1ms","all-thread","only-ticks-over","allocation","alloc-live-only"]'
+              ;;
+            default|1ms|all-thread|only-ticks-over|allocation|alloc-live-only)
+              modes="[\"$REQUESTED_MODE\"]"
+              ;;
+            *)
+              echo "mode must be all or one of the six profiler modes" >&2
+              exit 1
+              ;;
+          esac
+          printf 'modes=%s\n' "$modes" >> "$GITHUB_OUTPUT"
+
   profiler-mode:
     name: Linux Spark profiler (${{ matrix.mode }})
+    needs: resolve-mode
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        mode: [default, "1ms", all-thread, only-ticks-over, allocation, alloc-live-only]
+        mode: ${{ fromJSON(needs.resolve-mode.outputs.modes) }}
 
     steps:
       - name: Checkout test lab
