@@ -1123,6 +1123,7 @@ class CandidateABlockedCase(PythonAttributionPerformance):
         return self._managed_root_process()
 
     def install_artifacts(self) -> None:
+        os.environ["EXPECTED_ENDSTONE_SHA"] = ENDSTONE_SHA
         super().install_artifacts()
         self.result["artifact_metadata"] = self.metadata
         components = self.metadata.get("components")
