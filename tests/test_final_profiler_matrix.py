@@ -16,6 +16,7 @@ from controller.final_profiler_matrix import (
     ALLOCATION_LIVE_DIAGNOSTICS,
     DEFAULT_ALLOCATION_INTERVAL_BYTES,
     EXECUTION_DIAGNOSTICS,
+    ONLY_TICKS_OVER_DIAGNOSTICS,
     ONLY_TICKS_OVER_MS,
     PROFILER_MODES,
     ProfileValidationError,
@@ -64,7 +65,9 @@ def map_entry(key: str, value: str) -> bytes:
     return field_message(14, field_string(1, key) + field_string(2, value))
 
 
-def diagnostic_values(*, allocation: bool, live_only: bool = False) -> dict[str, str]:
+def diagnostic_values(
+    *, allocation: bool, live_only: bool = False, only_ticks_over: bool = False
+) -> dict[str, str]:
     values: dict[str, str] = {}
     keys = ALLOCATION_DIAGNOSTICS if allocation else EXECUTION_DIAGNOSTICS
     for key in keys:
@@ -96,6 +99,8 @@ def diagnostic_values(*, allocation: bool, live_only: bool = False) -> dict[str,
             values[key] = "0"
         else:
             values[key] = "1"
+    if only_ticks_over:
+        values.update({key: "1" for key in ONLY_TICKS_OVER_DIAGNOSTICS})
     if live_only:
         values.update({key: "1.0" for key in ALLOCATION_LIVE_DIAGNOSTICS if "age" in key})
         values["Allocation analysis"] = '"retained sampled allocations"'
@@ -131,7 +136,9 @@ def profile_fixture(
     included_ticks = (number_of_ticks // 2 if spec.ticked else 0) if included_ticks is None else included_ticks
     live_only = spec.live_only if live_only is None else live_only
     if diagnostics is None:
-        diagnostics = diagnostic_values(allocation=spec.allocation, live_only=live_only)
+        diagnostics = diagnostic_values(
+            allocation=spec.allocation, live_only=live_only, only_ticks_over=spec.ticked
+        )
 
     dumper = field_varint(1, 0 if all_threads else 1)
     aggregator = field_varint(1, 1 if ticked else 0) + field_varint(2, 0)
@@ -246,6 +253,33 @@ class ProfilePayloadValidationTest(unittest.TestCase):
             ):
                 validate_profile_payload(payload, "only-ticks-over")
 
+    def test_only_ticks_over_requires_terminal_discard_count(self) -> None:
+        missing = diagnostic_values(allocation=False)
+        with self.assertRaisesRegex(
+            ProfileValidationError, "missing required diagnostics.*Execution terminal in-flight tick samples discarded"
+        ):
+            validate_profile_payload(profile_fixture("only-ticks-over", diagnostics=missing), "only-ticks-over")
+
+        for value in ("-1", "not-a-number"):
+            diagnostics = diagnostic_values(allocation=False, only_ticks_over=True)
+            diagnostics[ONLY_TICKS_OVER_DIAGNOSTICS[0]] = value
+            with self.subTest(value=value), self.assertRaisesRegex(
+                ProfileValidationError, "Execution terminal in-flight tick samples discarded.*non-negative integer"
+            ):
+                validate_profile_payload(profile_fixture("only-ticks-over", diagnostics=diagnostics), "only-ticks-over")
+
+        for value in ("0", "17"):
+            diagnostics = diagnostic_values(allocation=False, only_ticks_over=True)
+            diagnostics[ONLY_TICKS_OVER_DIAGNOSTICS[0]] = value
+            with self.subTest(value=value):
+                result = validate_profile_payload(profile_fixture("only-ticks-over", diagnostics=diagnostics), "only-ticks-over")
+                self.assertEqual(result["diagnostics"]["numeric"][ONLY_TICKS_OVER_DIAGNOSTICS[0]], int(value))
+
+    def test_terminal_discard_count_is_not_required_for_baseline_modes(self) -> None:
+        diagnostics = diagnostic_values(allocation=False)
+        result = validate_profile_payload(profile_fixture("default", diagnostics=diagnostics), "default")
+        self.assertNotIn(ONLY_TICKS_OVER_DIAGNOSTICS[0], result["diagnostics"]["numeric"])
+
     def test_live_only_mismatch_fails_closed(self) -> None:
         with self.assertRaisesRegex(ProfileValidationError, "allocation live-only mismatch"):
             validate_profile_payload(profile_fixture("alloc-live-only", live_only=False), "alloc-live-only")
@@ -299,6 +333,20 @@ class ProfilePayloadValidationTest(unittest.TestCase):
 
 class WorkflowSecurityContractTest(unittest.TestCase):
     workflow_path = Path(__file__).parents[1] / ".github" / "workflows" / "final-profiler-matrix.yml"
+
+    def test_dispatch_mode_resolves_all_or_one_fixed_matrix_entry(self) -> None:
+        workflow = self.workflow_path.read_text(encoding="utf-8")
+        self.assertIn("mode:\n", workflow)
+        self.assertIn("default: all", workflow)
+        self.assertIn("type: choice", workflow)
+        self.assertIn("needs: resolve-mode", workflow)
+        self.assertIn("mode: ${{ fromJSON(needs.resolve-mode.outputs.modes) }}", workflow)
+        self.assertIn(
+            "modes='[\"default\",\"1ms\",\"all-thread\",\"only-ticks-over\",\"allocation\",\"alloc-live-only\"]'",
+            workflow,
+        )
+        self.assertIn('modes="[\\"$REQUESTED_MODE\\"]"', workflow)
+        self.assertIn('echo "mode must be all or one of the six profiler modes" >&2', workflow)
 
     def test_bot_sha_github_env_line_contains_only_machine_assignment(self) -> None:
         workflow = self.workflow_path.read_text(encoding="utf-8")
