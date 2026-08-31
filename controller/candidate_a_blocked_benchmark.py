@@ -29,6 +29,13 @@ from typing import Any
 
 import psutil
 
+from controller.bstats import (
+    B_STATS_CONFIG_RELATIVE_PATH,
+    B_STATS_EVIDENCE_PATH,
+    BStatsConfigError,
+    copy_bstats_evidence,
+    write_disabled_bstats_config,
+)
 from controller.chunk_traversal_validation import configure_deterministic_world
 from controller.fleet_spark_validation import set_server_property
 from controller.python_attribution_performance import PythonAttributionPerformance
@@ -557,6 +564,7 @@ _BLOCK_LEVEL_EVIDENCE_FILES = frozenset(
 )
 _CASE_EVIDENCE_FILES = frozenset(
     {
+        B_STATS_EVIDENCE_PATH,
         "bds.log",
         "candidate-a-blocked-case.json",
         "candidate-a-blocked-result.json",
@@ -1026,6 +1034,7 @@ class CandidateABlockedCase(PythonAttributionPerformance):
         self._affinity_samples: list[dict[str, Any]] = []
         self._affinity_phase = "bootstrap"
         self._world: dict[str, Any] | None = None
+        self.bstats_config: dict[str, Any] | None = None
         self._warmup_start_ns = 0
         self._warmup_end_ns = 0
         self._write_results()
@@ -1492,6 +1501,7 @@ class CandidateABlockedCase(PythonAttributionPerformance):
             return 0
 
     def bootstrap_server(self) -> None:
+        self._disable_bstats()
         self.start_server()
         self.wait_plugin()
         first = self._measurement_process()
@@ -1515,6 +1525,7 @@ class CandidateABlockedCase(PythonAttributionPerformance):
             level_type="FLAT",
             snapshot_id=WORLD_SNAPSHOT_ID,
         )
+        self._disable_bstats()
         self.start_server()
         self.wait_plugin()
         self.command_check("world-difficulty", "difficulty normal")
@@ -1530,6 +1541,31 @@ class CandidateABlockedCase(PythonAttributionPerformance):
         self._world = _world_contract(self.server_dir)
         self.protocol["world"] = self._world
         self.result["world"] = self._world
+        self._write_results()
+
+    def _disable_bstats(self) -> None:
+        """Write, verify, and preserve bStats disablement before server startup."""
+
+        try:
+            evidence = write_disabled_bstats_config(self.server_dir)
+            source = self.server_dir / pathlib.PurePosixPath(B_STATS_CONFIG_RELATIVE_PATH)
+            copied = copy_bstats_evidence(self.root, source)
+        except (BStatsConfigError, OSError) as exc:
+            raise RuntimeError(f"unable to establish disabled bStats evidence: {exc}") from exc
+        if copied != {**evidence, "relative_path": B_STATS_CONFIG_RELATIVE_PATH}:
+            raise RuntimeError("copied bStats evidence does not match the server config")
+        self.bstats_config = evidence
+        self.protocol["bstats_config"] = evidence
+        self.result["bstats_config"] = evidence
+        self.check(
+            "bstats-disabled",
+            "PASS",
+            "Endstone bStats disabled before BDS startup",
+            relative_path=B_STATS_CONFIG_RELATIVE_PATH,
+            canonical_enabled=False,
+            bytes=evidence["bytes"],
+            sha256=evidence["sha256"],
+        )
         self._write_results()
 
     def start_bots(self) -> None:

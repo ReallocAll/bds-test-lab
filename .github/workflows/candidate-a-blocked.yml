@@ -278,6 +278,7 @@ jobs:
             evidence/**/python-attribution-result.json
             evidence/**/python-attribution.sparkprofile
             evidence/**/python-attribution-tick-metrics.json
+            evidence/**/bstats-config.toml
           if-no-files-found: error
           retention-days: 30
 
@@ -304,6 +305,7 @@ jobs:
             evidence/**/python-attribution-result.json
             evidence/**/python-attribution.sparkprofile
             evidence/**/python-attribution-tick-metrics.json
+            evidence/**/bstats-config.toml
           if-no-files-found: error
           retention-days: 30
 

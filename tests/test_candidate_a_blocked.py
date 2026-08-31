@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+from controller.bstats import (
+    B_STATS_CANONICAL_TOML,
+    B_STATS_CONFIG_BYTES,
+    B_STATS_CONFIG_RELATIVE_PATH,
+    B_STATS_EVIDENCE_PATH,
+    inspect_bstats_config,
+)
 from controller.candidate_a_blocked_analyzer import (
     REJECTED_ARTIFACT_PREFIX,
     EvidenceError,
@@ -138,6 +146,14 @@ def _case_result(block: int, position: int, treatment: str, cpu: float) -> dict[
         "affinity_model": "controlled-process CPU isolation; host and kernel work are not excluded",
         "measurement_process_scope": "managed Endstone/BDS root process (python -m endstone); descendants excluded",
         "managed_root_tid_scope": MANAGED_ROOT_TID_SCOPE,
+        "bstats_config": {
+            "relative_path": B_STATS_CONFIG_RELATIVE_PATH,
+            "evidence_path": B_STATS_EVIDENCE_PATH,
+            "canonical_toml": B_STATS_CANONICAL_TOML,
+            "canonical_enabled": False,
+            "bytes": len(B_STATS_CONFIG_BYTES),
+            "sha256": hashlib.sha256(B_STATS_CONFIG_BYTES).hexdigest(),
+        },
         "world": {
             "snapshot_id": WORLD_SNAPSHOT_ID,
             "level_type": "FLAT",
@@ -444,6 +460,7 @@ def _write_batch(
             result = _case_result(block, position, treatment, cpu)
             if treatment.startswith("full"):
                 (directory / "python-attribution-performance.sparkprofile").write_bytes(b"profile")
+            (directory / B_STATS_EVIDENCE_PATH).write_bytes(B_STATS_CONFIG_BYTES)
             (directory / "candidate-a-blocked-result.json").write_text(
                 json.dumps(result), encoding="utf-8"
             )
@@ -630,6 +647,91 @@ class CandidateABlockedBenchmarkTest(unittest.TestCase):
             for block in root.glob("block-*"):
                 manifest = json.loads((block / EVIDENCE_MANIFEST_NAME).read_text(encoding="utf-8"))
                 self.assertNotIn(".candidate-a-upload-ok", {entry["path"] for entry in manifest["files"]})
+
+    def test_bstats_config_is_written_before_startup_and_has_canonical_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            server_dir = root / "server"
+            server_dir.mkdir()
+            fixture = CandidateABlockedCase.__new__(CandidateABlockedCase)
+            fixture.root = root
+            fixture.server_dir = server_dir
+            fixture.protocol = {}
+            fixture.result = {"checks": []}
+            fixture.check = mock.Mock()
+            fixture._write_results = mock.Mock()
+            observed: list[bytes] = []
+
+            def mocked_start_server() -> None:
+                observed.append((server_dir / B_STATS_CONFIG_RELATIVE_PATH).read_bytes())
+
+            fixture.start_server = mocked_start_server
+            fixture._disable_bstats()
+            fixture.start_server()
+
+            self.assertEqual(observed, [B_STATS_CONFIG_BYTES])
+            self.assertEqual(fixture.protocol["bstats_config"]["canonical_enabled"], False)
+            self.assertEqual(
+                inspect_bstats_config(server_dir / B_STATS_CONFIG_RELATIVE_PATH),
+                fixture.protocol["bstats_config"],
+            )
+            self.assertEqual((root / B_STATS_EVIDENCE_PATH).read_bytes(), B_STATS_CONFIG_BYTES)
+
+    @unittest.skipUnless(os.name == "posix", "requires Linux symlink semantics")
+    def test_bstats_evidence_symlink_rejection_preserves_external_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            server_dir = root / "server"
+            server_dir.mkdir()
+            external = root / "external-config.toml"
+            external.write_bytes(b"external sentinel\n")
+            evidence_path = root / B_STATS_EVIDENCE_PATH
+            evidence_path.symlink_to(external)
+            fixture = CandidateABlockedCase.__new__(CandidateABlockedCase)
+            fixture.root = root
+            fixture.server_dir = server_dir
+            fixture.protocol = {}
+            fixture.result = {"checks": []}
+            fixture.check = mock.Mock()
+            fixture._write_results = mock.Mock()
+
+            with self.assertRaisesRegex(RuntimeError, "symlink"):
+                fixture._disable_bstats()
+
+            self.assertEqual(external.read_bytes(), b"external sentinel\n")
+            self.assertTrue(evidence_path.is_symlink())
+
+    def test_bstats_upload_and_analyzer_gates_fail_closed(self) -> None:
+        mutations = ("missing", "true", "malformed", "path-escape")
+        for mutation in mutations:
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                _write_batch(root)
+                result_path = root / "block-01" / block_schedule(1)[0] / "candidate-a-blocked-result.json"
+                config_path = result_path.parent / B_STATS_EVIDENCE_PATH
+                if mutation == "missing":
+                    config_path.unlink()
+                elif mutation == "true":
+                    config_path.write_text("enabled = true\n", encoding="utf-8")
+                elif mutation == "malformed":
+                    config_path.write_text("enabled = false\n[", encoding="utf-8")
+                else:
+                    result = json.loads(result_path.read_text(encoding="utf-8"))
+                    result["protocol"]["bstats_config"]["relative_path"] = "../plugins/bstats/config.toml"
+                    result_path.write_text(json.dumps(result), encoding="utf-8")
+                prepare_evidence_for_upload(root)
+                summary = analyze_evidence([root], start_block=1)
+                self.assertFalse(summary["valid"])
+                self.assertTrue(any("bStats" in error for error in summary["errors"]))
+
+    def test_bstats_unallowlisted_file_rejects_upload_preparation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _write_batch(root)
+            unexpected = root / "block-01" / "off-B" / "bstats-extra.toml"
+            unexpected.write_text("enabled = false\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "unexpected evidence file"):
+                prepare_evidence_for_upload(root)
 
     def test_sha_mismatch_and_counter_window_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -1193,6 +1295,7 @@ class CandidateABlockedBenchmarkTest(unittest.TestCase):
         )
         upload_paths = workflow.split("path: |", 1)[1].split("if-no-files-found", 1)[0]
         self.assertNotIn(".candidate-a-upload-ok", upload_paths)
+        self.assertIn("evidence/**/bstats-config.toml", upload_paths)
         self.assertIn("Upload rejected block diagnostics", workflow)
         self.assertIn(
             "if: ${{ always() && steps.prepare-evidence.outcome == 'success' && "

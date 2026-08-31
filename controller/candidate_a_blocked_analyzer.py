@@ -15,6 +15,13 @@ from collections import abc
 from itertools import pairwise
 from typing import Any
 
+from controller.bstats import (
+    B_STATS_CANONICAL_TOML,
+    B_STATS_CONFIG_RELATIVE_PATH,
+    B_STATS_EVIDENCE_PATH,
+    BStatsConfigError,
+    inspect_bstats_config,
+)
 from controller.candidate_a_blocked_benchmark import (
     AFFINITY_POLL_INTERVAL_SECONDS,
     BASELINE_SHA,
@@ -318,6 +325,43 @@ def _check_endstone_metadata(result: dict[str, Any], errors: list[str]) -> dict[
             if protocol_artifact.get(key) != stable.get(key):
                 errors.append(f"protocol Endstone artifact {key} does not match artifact metadata")
     return stable
+
+
+def _check_bstats_config(
+    result: dict[str, Any], case_path: pathlib.Path | None, errors: list[str], expected_id: str
+) -> dict[str, Any] | None:
+    protocol = result.get("protocol")
+    metadata = protocol.get("bstats_config") if isinstance(protocol, dict) else None
+    if not isinstance(metadata, dict):
+        errors.append(f"{expected_id}: bStats disablement evidence is missing")
+        return None
+    expected_metadata = {
+        "relative_path": B_STATS_CONFIG_RELATIVE_PATH,
+        "evidence_path": B_STATS_EVIDENCE_PATH,
+        "canonical_toml": B_STATS_CANONICAL_TOML,
+        "canonical_enabled": False,
+    }
+    for key, expected in expected_metadata.items():
+        if metadata.get(key) != expected:
+            errors.append(f"{expected_id}: bStats {key} mismatch: {metadata.get(key)!r} != {expected!r}")
+    if case_path is None:
+        errors.append(f"{expected_id}: bStats config evidence path is unavailable")
+        return None
+    case_root = case_path.parent
+    config_path = case_root / B_STATS_EVIDENCE_PATH
+    try:
+        if config_path.resolve().relative_to(case_root.resolve()) != pathlib.Path(B_STATS_EVIDENCE_PATH):
+            raise BStatsConfigError("bStats evidence path escapes case directory")
+        observed = inspect_bstats_config(config_path)
+    except (BStatsConfigError, OSError, RuntimeError) as exc:
+        errors.append(f"{expected_id}: bStats config evidence is invalid: {exc}")
+        return None
+    for key in ("bytes", "sha256"):
+        if metadata.get(key) != observed[key]:
+            errors.append(f"{expected_id}: bStats {key} mismatch: {metadata.get(key)!r} != {observed[key]!r}")
+    if metadata.get("bytes") != len(B_STATS_CANONICAL_TOML.encode("utf-8")) + 1:
+        errors.append(f"{expected_id}: bStats config byte count is not canonical")
+    return observed
 
 
 def _check_window(result: dict[str, Any], errors: list[str]) -> dict[str, Any] | None:
@@ -1112,6 +1156,7 @@ def validate_case(
     if observed_sha != expected_sha:
         errors.append(f"{expected_id}: Spark SHA mismatch: observed={observed_sha!r} expected={expected_sha!r}")
     endstone_metadata = _check_endstone_metadata(result, errors)
+    bstats_config = _check_bstats_config(result, case_path, errors, expected_id)
     scenario = protocol.get("scenario")
     if (
         not isinstance(scenario, dict)
@@ -1258,6 +1303,7 @@ def validate_case(
         "pep_diagnostics": pep_report,
         "pep_event_rate_per_second": pep_event_rate,
         "endstone_metadata": endstone_metadata,
+        "bstats_config": bstats_config,
     }
     return metrics, report
 
