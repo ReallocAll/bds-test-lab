@@ -303,10 +303,22 @@ def _diagnostic_summary(profile: ProfilePayload, spec: ProfilerModeSpec) -> dict
         else:
             numeric[key] = _require_nonnegative_int(value, key)
 
-    capacities = {key: int(value) for key, value in numeric.items() if "capacity" in key.lower()}
+    drops = {
+        key: int(value)
+        for key, value in numeric.items()
+        if "drop" in key.lower() or "dropped" in key.lower() or "overflow" in key.lower()
+    }
+    capacities = {
+        key: int(value)
+        for key, value in numeric.items()
+        if "capacity" in key.lower() and key not in drops
+    }
     for key, value in capacities.items():
         if value <= 0:
             raise ProfileValidationError(f"diagnostic capacity {key!r} must be positive: {value}")
+    for key, value in drops.items():
+        if value != 0:
+            raise ProfileValidationError(f"diagnostic drop {key!r} must be zero: {value}")
 
     if flags.get("Execution profile storage exhausted"):
         raise ProfileValidationError("Execution profile storage is exhausted")
@@ -324,11 +336,6 @@ def _diagnostic_summary(profile: ProfilePayload, spec: ProfilerModeSpec) -> dict
             f"allocation queue high-water mark exceeds capacity: {queue_high_water} > {queue_capacity}"
         )
 
-    drops = {
-        key: int(value)
-        for key, value in numeric.items()
-        if "drop" in key.lower() or "dropped" in key.lower() or "overflow" in key.lower()
-    }
     counters = {key: value for key, value in numeric.items() if key not in capacities and key not in drops}
     queue = {
         key: value

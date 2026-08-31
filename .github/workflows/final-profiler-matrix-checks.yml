@@ -1,0 +1,67 @@
+name: Final profiler matrix validator checks
+
+on:
+  pull_request:
+    paths:
+      - "controller/final_profiler_matrix.py"
+      - "controller/python_profile_payload.py"
+      - "controller/bot_validation.py"
+      - "controller/cross_platform_fleet_validation.py"
+      - "controller/fleet_spark_validation.py"
+      - "controller/scenario_validation.py"
+      - "controller/run_test.py"
+      - "controller/bstats.py"
+      - "providers/artifact_provider.py"
+      - "tests/test_final_profiler_matrix.py"
+      - ".github/workflows/final-profiler-matrix-checks.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install validation dependencies
+        run: python -m pip install --disable-pip-version-check psutil ruff
+
+      - name: Compile validator modules and tests
+        run: >-
+          python -m py_compile
+          controller/final_profiler_matrix.py
+          controller/python_profile_payload.py
+          controller/bot_validation.py
+          controller/cross_platform_fleet_validation.py
+          controller/fleet_spark_validation.py
+          controller/scenario_validation.py
+          controller/run_test.py
+          controller/bstats.py
+          providers/artifact_provider.py
+          tests/test_final_profiler_matrix.py
+
+      - name: Run final profiler matrix tests
+        run: python -m unittest tests.test_final_profiler_matrix
+
+      - name: Ruff validator modules and tests
+        run: >-
+          ruff check
+          --ignore EXE001
+          controller/final_profiler_matrix.py
+          controller/python_profile_payload.py
+          controller/bot_validation.py
+          controller/run_test.py
+          controller/bstats.py
+          providers/artifact_provider.py
+          tests/test_final_profiler_matrix.py
