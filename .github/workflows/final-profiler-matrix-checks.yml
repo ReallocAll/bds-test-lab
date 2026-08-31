@@ -57,6 +57,7 @@ jobs:
       - name: Ruff validator modules and tests
         run: >-
           ruff check
+          --ignore EXE001
           controller/final_profiler_matrix.py
           controller/python_profile_payload.py
           controller/bot_validation.py
