@@ -489,6 +489,56 @@ class ProfilePayloadValidationTest(unittest.TestCase):
                 )
 
 
+class FinalProfilerInstallationTest(unittest.TestCase):
+    def test_retained_helper_source_can_be_recorded_outside_case_evidence_root(self) -> None:
+        repository_root = Path(__file__).parents[1]
+        helper_source = repository_root / "fixtures" / "spark-allocation-live-test" / "native" / "retained_alloc.c"
+
+        def fake_run(command: list[str], timeout: int = 300, cwd: Path | None = None) -> None:
+            del timeout, cwd
+            if "-m" in command and "wheel" in command:
+                wheel_dir = Path(command[command.index("--wheel-dir") + 1])
+                (wheel_dir / "spark_allocation_live_test-0.1.0-py3-none-any.whl").write_bytes(b"wheel")
+            elif "-shared" in command:
+                output = Path(command[command.index("-o") + 1])
+                output.write_bytes(b"helper")
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            bot = root / "bds-test-bot"
+            bot.write_bytes(b"bot")
+            with mock.patch.object(Path, "cwd", return_value=root):
+                case = FinalProfilerMatrixCase(
+                    "alloc-live-only",
+                    bot,
+                    "a" * 40,
+                    bot_ref="b" * 40,
+                )
+            case.metadata = {
+                "components": {
+                    "spark": {"sha": "a" * 40, "run_id": 1, "artifact": {"id": 2, "name": "spark"}},
+                    "endstone": {
+                        "sha": "b" * 40,
+                        "run_id": 3,
+                        "artifact": {"id": 4, "name": "endstone"},
+                    },
+                }
+            }
+            (case.server_dir / "plugins").mkdir(parents=True)
+            with (
+                mock.patch("controller.final_profiler_matrix.IntegrationTest.install_artifacts"),
+                mock.patch("controller.final_profiler_matrix.importlib.metadata.version", return_value="0.11.10"),
+                mock.patch("controller.final_profiler_matrix.run_checked", side_effect=fake_run),
+                mock.patch.dict(os.environ, {"CC": "cc"}, clear=False),
+            ):
+                case.install_artifacts()
+
+        self.assertEqual(
+            case.result["workload"]["retained_allocation"]["helper_source"],
+            str(helper_source.relative_to(repository_root)),
+        )
+
+
 class WorkflowSecurityContractTest(unittest.TestCase):
     workflow_path = Path(__file__).parents[1] / ".github" / "workflows" / "final-profiler-matrix.yml"
 

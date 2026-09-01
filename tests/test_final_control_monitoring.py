@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import tomllib
+
 from controller.final_control_monitoring import (
     DEFAULT_MEASUREMENT_SECONDS,
     WORKLOAD_ITERATIONS,
@@ -166,6 +168,15 @@ class FinalControlMonitoringContractTest(unittest.TestCase):
 
     def test_comparison_controller_requires_canonical_disabled_bstats(self) -> None:
         self.assertTrue(FinalControlMonitoringCase.disable_bstats)
+
+    def test_comparable_workload_declares_a_valid_endstone_entry_point(self) -> None:
+        fixture = Path(__file__).parents[1] / "fixtures" / "endstone-final-comparable-workload" / "pyproject.toml"
+        metadata = tomllib.loads(fixture.read_text(encoding="utf-8"))
+        entry_points = metadata["project"]["entry-points"]["endstone"]
+        self.assertEqual(
+            entry_points,
+            {"final-comparable-workload": "endstone_final_comparable_workload:ComparableWorkloadPlugin"},
+        )
 
     def test_paired_comparison_records_monitoring_minus_control_deltas(self) -> None:
         results = {

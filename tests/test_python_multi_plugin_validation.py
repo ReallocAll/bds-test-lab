@@ -87,6 +87,16 @@ class PythonMultiPluginValidationTest(unittest.TestCase):
         ):
             PythonMultiPluginValidation("not-an-exact-sha")
 
+    def test_controller_initializes_versions_before_runtime_updates(self) -> None:
+        with tempfile.TemporaryDirectory() as temp, patch.object(Path, "cwd", return_value=Path(temp)):
+            case = PythonMultiPluginValidation("a" * 40, bds_version="1.26.44.3")
+
+        self.assertEqual(case.result["versions"], {"bds": None, "endstone": None, "spark": None})
+        case.result["versions"]["endstone"] = "0.11.10.dev387"
+        case.result["versions"]["bds"] = "26.44"
+        case.result["versions"]["spark"] = "1.0.0"
+        self.assertEqual(case.result["versions"]["bds"], "26.44")
+
     def test_multi_plugin_controller_requires_exact_bds_version(self) -> None:
         self.assertEqual(_required_bds_version("1.26.44.3"), ("1.26.44.3", "26.44"))
         with self.assertRaisesRegex(ValueError, "EXPECTED_BDS_VERSION"):
