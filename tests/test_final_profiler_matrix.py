@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import os
 import sys
 import tempfile
@@ -19,6 +20,10 @@ from controller.final_profiler_matrix import (
     ONLY_TICKS_OVER_DIAGNOSTICS,
     ONLY_TICKS_OVER_MS,
     PROFILER_MODES,
+    RETAINED_ALLOCATION_HELPER_NAME,
+    RETAINED_ALLOCATION_HELPER_SYMBOL,
+    RETAINED_ALLOCATION_POSITIVE_DIAGNOSTICS,
+    FinalProfilerMatrixCase,
     ProfileValidationError,
     build_profiler_command,
     read_verified_profile_payload,
@@ -126,6 +131,9 @@ def profile_fixture(
     start_ms: int = 1000,
     end_ms: int = 16000,
     number_of_ticks: int = 300,
+    include_helper: bool = True,
+    helper_class_name: str = RETAINED_ALLOCATION_HELPER_NAME,
+    helper_method_name: str = RETAINED_ALLOCATION_HELPER_SYMBOL,
 ) -> bytes:
     spec = next(item for item in PROFILER_MODES if item.name == mode)
     sampler_mode = spec.sampler_mode if sampler_mode is None else sampler_mode
@@ -163,7 +171,14 @@ def profile_fixture(
         node_times = [1.0]
     if thread_times is None:
         thread_times = [1.0]
-    node = field_string(3, "native") + field_string(4, "tick") + packed_doubles(8, node_times)
+    if live_only and include_helper:
+        node = (
+            field_string(3, helper_class_name)
+            + field_string(4, helper_method_name)
+            + packed_doubles(8, node_times)
+        )
+    else:
+        node = field_string(3, "native") + field_string(4, "tick") + packed_doubles(8, node_times)
     thread = field_string(1, "Server thread") + field_message(3, node)
     thread += packed_doubles(4, thread_times)
     if include_path:
@@ -284,6 +299,149 @@ class ProfilePayloadValidationTest(unittest.TestCase):
         with self.assertRaisesRegex(ProfileValidationError, "allocation live-only mismatch"):
             validate_profile_payload(profile_fixture("alloc-live-only", live_only=False), "alloc-live-only")
 
+    def test_live_only_requires_positive_retained_allocation_evidence(self) -> None:
+        for key in RETAINED_ALLOCATION_POSITIVE_DIAGNOSTICS:
+            diagnostics = diagnostic_values(allocation=True, live_only=True)
+            diagnostics[key] = "0"
+            with (
+                self.subTest(key=key),
+                self.assertRaisesRegex(ProfileValidationError, "retained allocation diagnostic"),
+            ):
+                validate_profile_payload(
+                    profile_fixture("alloc-live-only", diagnostics=diagnostics),
+                    "alloc-live-only",
+                )
+
+        for key in ("Allocation retained average age ms", "Allocation retained maximum age ms"):
+            diagnostics = diagnostic_values(allocation=True, live_only=True)
+            diagnostics[key] = "0"
+            with (
+                self.subTest(key=key),
+                self.assertRaisesRegex(ProfileValidationError, "retained allocation age"),
+            ):
+                validate_profile_payload(
+                    profile_fixture("alloc-live-only", diagnostics=diagnostics),
+                    "alloc-live-only",
+                )
+
+    def test_live_only_requires_the_retained_helper_symbol_chain(self) -> None:
+        with self.assertRaisesRegex(ProfileValidationError, "helper symbol/chain"):
+            validate_profile_payload(
+                profile_fixture("alloc-live-only", include_helper=False),
+                "alloc-live-only",
+            )
+        with self.assertRaisesRegex(ProfileValidationError, "helper symbol/chain"):
+            validate_profile_payload(
+                profile_fixture(
+                    "alloc-live-only",
+                    helper_class_name="wrong-helper.so",
+                ),
+                "alloc-live-only",
+            )
+        with self.assertRaisesRegex(ProfileValidationError, "helper symbol/chain"):
+            validate_profile_payload(
+                profile_fixture(
+                    "alloc-live-only",
+                    helper_method_name="malloc",
+                ),
+                "alloc-live-only",
+            )
+        result = validate_profile_payload(profile_fixture("alloc-live-only"), "alloc-live-only")
+        self.assertTrue(result["assertions"]["retained_helper_chain"])
+        self.assertEqual(result["retained_helper"]["module"], RETAINED_ALLOCATION_HELPER_NAME)
+        self.assertEqual(result["retained_helper"]["symbol"], RETAINED_ALLOCATION_HELPER_SYMBOL)
+
+    def test_live_only_workload_state_requires_activation_retention_and_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            root.mkdir(parents=True, exist_ok=True)
+            bot = root / "bds-test-bot"
+            bot.write_bytes(b"bot")
+            with mock.patch.object(Path, "cwd", return_value=root):
+                case = FinalProfilerMatrixCase(
+                    "alloc-live-only",
+                    bot,
+                    "a" * 40,
+                    bot_ref="b" * 40,
+                )
+
+            case.allocation_live_state_path.write_text(
+                json.dumps(
+                    {
+                        "status": "running",
+                        "started": True,
+                        "allocation_failed": False,
+                        "retained_blocks": 24,
+                        "retained_bytes": 24 * (1 << 20),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            case.validate_retained_allocation_state(cleaned=False)
+            self.assertEqual(case.result["workload"]["retained_allocation"]["retained_blocks"], 24)
+
+            case.allocation_live_state_path.write_text(
+                json.dumps(
+                    {
+                        "status": "cleaned",
+                        "started": True,
+                        "allocation_failed": False,
+                        "retained_blocks": 0,
+                        "retained_bytes": 0,
+                        "retained_blocks_before_cleanup": 24,
+                        "retained_bytes_before_cleanup": 24 * (1 << 20),
+                        "cleaned_up": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            case.validate_retained_allocation_state(cleaned=True)
+            self.assertTrue(case.result["workload"]["retained_allocation"]["cleaned_up"])
+
+    def test_live_only_workload_state_rejects_empty_and_zero_live_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            bot = root / "bds-test-bot"
+            bot.write_bytes(b"bot")
+            with mock.patch.object(Path, "cwd", return_value=root):
+                case = FinalProfilerMatrixCase(
+                    "alloc-live-only",
+                    bot,
+                    "a" * 40,
+                    bot_ref="b" * 40,
+                )
+            case.allocation_live_state_path.write_text(
+                json.dumps(
+                    {
+                        "status": "running",
+                        "started": True,
+                        "allocation_failed": False,
+                        "retained_blocks": 0,
+                        "retained_bytes": 0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(RuntimeError, "no live blocks"):
+                case.validate_retained_allocation_state(cleaned=False)
+
+            case.allocation_live_state_path.write_text(
+                json.dumps(
+                    {
+                        "status": "cleaned",
+                        "started": True,
+                        "retained_blocks": 0,
+                        "retained_bytes": 0,
+                        "retained_blocks_before_cleanup": 0,
+                        "retained_bytes_before_cleanup": 0,
+                        "cleaned_up": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(RuntimeError, "no retained blocks"):
+                case.validate_retained_allocation_state(cleaned=True)
+
     def test_missing_diagnostics_and_incomplete_flag_fail_closed(self) -> None:
         missing = diagnostic_values(allocation=False)
         missing.pop("Execution sample queue capacity")
@@ -359,6 +517,25 @@ class WorkflowSecurityContractTest(unittest.TestCase):
         self.assertNotIn("\nenv:\n  GH_TOKEN: ${{ secrets.REPO_PAT }}", workflow)
         self.assertEqual(workflow.count("GH_TOKEN: ${{ secrets.REPO_PAT }}"), 2)
         self.assertNotIn("\n  REPO_PAT:", workflow)
+
+    def test_live_only_case_wires_retained_fixture_and_state_evidence(self) -> None:
+        workflow = self.workflow_path.read_text(encoding="utf-8")
+        source = Path(__file__).parents[1] / "fixtures" / "spark-allocation-live-test"
+        fixture_text = (source / "pyproject.toml").read_text(encoding="utf-8")
+        controller = Path(__file__).parents[1] / "controller" / "final_profiler_matrix.py"
+        controller_text = controller.read_text(encoding="utf-8")
+        self.assertIn("hatchling", workflow)
+        self.assertIn("spark-allocation-live-test", controller_text)
+        self.assertIn("-fPIC", controller_text)
+        self.assertIn("-Wl,-z,lazy", controller_text)
+        self.assertIn(RETAINED_ALLOCATION_HELPER_SYMBOL, controller_text)
+        self.assertIn("allocation-live-state.json", workflow)
+        self.assertIn("spark-allocation-live-test", fixture_text)
+
+        native = (source / "native" / "retained_alloc.c").read_text(encoding="utf-8")
+        self.assertIn("extern void *malloc(size_t);", native)
+        self.assertIn("extern void free(void *);", native)
+        self.assertIn(f"int {RETAINED_ALLOCATION_HELPER_SYMBOL}", native)
 
 
 class ChildEnvironmentSecurityTest(unittest.TestCase):

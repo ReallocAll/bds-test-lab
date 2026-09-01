@@ -25,10 +25,13 @@ files alongside the result's artifact and payload provenance.
 
 The validator requires non-empty roots and samples, positive capacities,
 non-negative counters, and clear exported incomplete/storage flags. Drop
-counters are reported as evidence and are not required to be zero. A missing,
-empty, escaped, or hash-mismatched payload fails closed. The workflow uploads
-prepared logs, manifests, raw profiles, and result JSON for every case even
-when validation fails; no runtime payload is committed to the repository.
+counters are reported as evidence and are not required to be zero. The
+`alloc-live-only` case also requires positive accepted samples, sampled bytes,
+tracked live allocations/bytes, retained ages, and a fixture state proving that
+the allocations were retained through export and cleaned up on shutdown. A
+missing, empty, escaped, or hash-mismatched payload fails closed. The workflow
+uploads prepared logs, manifests, raw profiles, and result JSON for every case
+even when validation fails; no runtime payload is committed to the repository.
 
 For `only-ticks-over`, the exported threshold and ticked aggregator are always
 required, while an included-tick field may be omitted or explicitly zero. A

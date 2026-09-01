@@ -4,7 +4,10 @@ on:
   pull_request:
     paths:
       - "controller/final_profiler_matrix.py"
+      - "controller/final_control_monitoring.py"
+      - "controller/python_multi_plugin_validation.py"
       - "controller/python_profile_payload.py"
+      - "controller/python_evidence_provenance.py"
       - "controller/bot_validation.py"
       - "controller/cross_platform_fleet_validation.py"
       - "controller/fleet_spark_validation.py"
@@ -13,8 +16,16 @@ on:
       - "controller/bstats.py"
       - "providers/artifact_provider.py"
       - "tests/test_final_profiler_matrix.py"
+      - "tests/test_final_control_monitoring.py"
+      - "tests/test_python_multi_plugin_validation.py"
       - ".github/workflows/final-profiler-matrix-checks.yml"
       - ".github/workflows/final-profiler-matrix.yml"
+      - ".github/workflows/final-control-monitoring.yml"
+      - ".github/workflows/python-attribution-multi-plugin.yml"
+      - "fixtures/endstone-final-comparable-workload/**"
+      - "fixtures/spark-allocation-live-test/**"
+      - "fixtures/spark-python-attribution-plugin-a/**"
+      - "fixtures/spark-python-attribution-plugin-b/**"
   workflow_dispatch:
 
 permissions:
@@ -42,7 +53,10 @@ jobs:
         run: >-
           python -m py_compile
           controller/final_profiler_matrix.py
+          controller/final_control_monitoring.py
+          controller/python_multi_plugin_validation.py
           controller/python_profile_payload.py
+          controller/python_evidence_provenance.py
           controller/bot_validation.py
           controller/cross_platform_fleet_validation.py
           controller/fleet_spark_validation.py
@@ -51,18 +65,37 @@ jobs:
           controller/bstats.py
           providers/artifact_provider.py
           tests/test_final_profiler_matrix.py
+          tests/test_final_control_monitoring.py
+          tests/test_python_multi_plugin_validation.py
+          fixtures/endstone-final-comparable-workload/src/endstone_final_comparable_workload/__init__.py
+          fixtures/spark-allocation-live-test/src/spark_allocation_live_test/__init__.py
+          fixtures/spark-python-attribution-plugin-a/src/endstone_spark_python_attribution_a/__init__.py
+          fixtures/spark-python-attribution-plugin-b/src/endstone_spark_python_attribution_b/__init__.py
 
       - name: Run final profiler matrix tests
-        run: python -m unittest tests.test_final_profiler_matrix
+        run: >-
+          python -m unittest
+          tests.test_final_profiler_matrix
+          tests.test_final_control_monitoring
+          tests.test_python_multi_plugin_validation
 
       - name: Ruff validator modules and tests
         run: >-
           ruff check
           --ignore EXE001
           controller/final_profiler_matrix.py
+          controller/final_control_monitoring.py
+          controller/python_multi_plugin_validation.py
           controller/python_profile_payload.py
+          controller/python_evidence_provenance.py
           controller/bot_validation.py
           controller/run_test.py
           controller/bstats.py
           providers/artifact_provider.py
           tests/test_final_profiler_matrix.py
+          tests/test_final_control_monitoring.py
+          tests/test_python_multi_plugin_validation.py
+          fixtures/endstone-final-comparable-workload/src/endstone_final_comparable_workload/__init__.py
+          fixtures/spark-allocation-live-test/src/spark_allocation_live_test/__init__.py
+          fixtures/spark-python-attribution-plugin-a/src/endstone_spark_python_attribution_a/__init__.py
+          fixtures/spark-python-attribution-plugin-b/src/endstone_spark_python_attribution_b/__init__.py
