@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import pathlib
@@ -104,6 +105,7 @@ class CombinedPackGameruleFleetValidation(CrossPlatformFleetSparkValidation):
         self.capture = BytebinCapture(self.root / f"combined-health-capture-{platform_name}")
         self.local_bot_log = self.root / f"fleet-{platform_name}-{BOT_COUNT}-{BOT_SCENARIO}-local.log"
         self.public_bot_log = self.root / f"fleet-{platform_name}-{BOT_COUNT}-{BOT_SCENARIO}-public.log"
+        self._shutdown_phase_ordinal = 0
         self.result.update(
             {
                 "test_kind": "spark-combined-real-packs-gamerules-20-player",
@@ -119,20 +121,71 @@ class CombinedPackGameruleFleetValidation(CrossPlatformFleetSparkValidation):
         )
         self._write_results()
 
-    def stop_server_for_phase_change(self) -> None:
+    def _set_phase_shutdown_context(self, phase_name: str, phase_ordinal: int | None = None) -> None:
         if self.server is None:
             return
-        if not self.server.graceful_stop(60):
+        if phase_ordinal is None:
+            self._shutdown_phase_ordinal += 1
+        else:
+            self._shutdown_phase_ordinal = phase_ordinal
+        self.server.lifecycle_phase = {
+            "ordinal": self._shutdown_phase_ordinal,
+            "name": phase_name,
+        }
+
+    def _record_phase_lifecycle(self) -> None:
+        diagnostic = getattr(self.server, "lifecycle_diagnostic", None) if self.server is not None else None
+        if isinstance(diagnostic, dict):
+            after_force = diagnostic.get("process_tree_after_force")
+            verify_tree = getattr(type(self.server), "_process_tree_cleanup_outcome", None)
+            if isinstance(after_force, list) and callable(verify_tree):
+                diagnostic["process_tree_verification"] = verify_tree(self.server, after_force)
+        self.record_server_lifecycle()
+        if not isinstance(diagnostic, dict):
+            return
+        identity = (diagnostic.get("phase_ordinal"), diagnostic.get("phase_name"))
+        if identity[0] is None or identity[1] is None:
+            return
+        events = self.result.setdefault("shutdown_lifecycle_events", [])
+        matches = [index for index, event in enumerate(events) if (event.get("phase_ordinal"), event.get("phase_name")) == identity]
+        if not matches:
+            return
+        events[matches[0]] = copy.deepcopy(diagnostic)
+        for index in reversed(matches[1:]):
+            del events[index]
+        self.result["shutdown_lifecycle"] = copy.deepcopy(diagnostic)
+        self._write_results()
+
+    def stop_server_for_phase_change(self, phase_name: str = "phase-change") -> None:
+        if self.server is None:
+            return
+        self._set_phase_shutdown_context(phase_name)
+        try:
+            graceful = self.server.graceful_stop(60)
+        except Exception:
+            self._record_phase_lifecycle()
+            try:
+                self.server.force_kill_tree()
+            finally:
+                self._record_phase_lifecycle()
+            raise
+        if graceful:
+            self._record_phase_lifecycle()
+            self.server.close()
+            self.server = None
+            return
+        self._record_phase_lifecycle()
+        try:
             self.server.force_kill_tree()
-            raise RuntimeError("BDS did not stop gracefully during combined-test phase change")
-        self.server.close()
-        self.server = None
+        finally:
+            self._record_phase_lifecycle()
+        raise RuntimeError("BDS did not stop gracefully during combined-test phase change")
 
     def bootstrap_scenario_world(self) -> None:
         # First boot lets Endstone provision BDS and server.properties.
         self.start_server()
         self.wait_post_start_initialization()
-        self.stop_server_for_phase_change()
+        self.stop_server_for_phase_change("bootstrap-provisioning")
 
         properties = self.server_dir / "server.properties"
         patch_server_properties(properties)
@@ -148,7 +201,7 @@ class CombinedPackGameruleFleetValidation(CrossPlatformFleetSparkValidation):
         # Create a valid fresh world before installing its behavior-pack stack.
         self.start_server()
         self.wait_post_start_initialization()
-        self.stop_server_for_phase_change()
+        self.stop_server_for_phase_change("bootstrap-world")
         if not world_dir.exists():
             raise RuntimeError(f"BDS did not create expected world directory: {world_dir}")
         self.install_behavior_packs(world_dir)
@@ -368,7 +421,7 @@ class CombinedPackGameruleFleetValidation(CrossPlatformFleetSparkValidation):
             self.assert_20_players("local-metadata")
             self.validate_local_metadata_with_20_players()
             self.stop_fleet()
-            self.stop_server_for_phase_change()
+            self.stop_server_for_phase_change("local-metadata")
         finally:
             self.capture.stop()
             if previous_bytebin is None:
@@ -416,6 +469,7 @@ class CombinedPackGameruleFleetValidation(CrossPlatformFleetSparkValidation):
         )
 
         self.stop_fleet()
+        self._set_phase_shutdown_context("public-profile-final", phase_ordinal=3)
         self.shutdown()
         self.server = None
 
@@ -459,12 +513,17 @@ class CombinedPackGameruleFleetValidation(CrossPlatformFleetSparkValidation):
                     if self.server.is_alive():
                         self.server.force_kill_tree()
                         self.result["shutdown_status"] = "forced_after_failure"
+                    self._record_phase_lifecycle()
                     self.server.close()
             except Exception:  # noqa: BLE001
                 diagnostic += "\n\nServer cleanup failure:\n" + traceback.format_exc()
             last_lines = self.server.snapshot()[-400:] if self.server is not None else []
             self.diagnostics.write_text(
-                diagnostic + "\n\nLast BDS log lines:\n" + "\n".join(last_lines),
+                diagnostic
+                + "\n\nLast BDS log lines:\n"
+                + "\n".join(last_lines)
+                + "\n\nShutdown lifecycle evidence:\n"
+                + json.dumps(self.result.get("shutdown_lifecycle_events", []), indent=2, sort_keys=True),
                 encoding="utf-8",
             )
             self._write_results()
