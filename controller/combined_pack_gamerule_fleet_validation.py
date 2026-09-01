@@ -21,8 +21,11 @@ from controller.block_actor_validation import (
 from controller.bot_validation import patch_server_properties
 from controller.cross_platform_fleet_validation import CrossPlatformFleetSparkValidation
 from controller.fleet_spark_validation import set_server_property
-from controller.gamerule_fallback_validation import _optional_text_field, decode_gamerules
-from controller.run_test import now_iso, write_json
+from controller.gamerule_fallback_validation import (
+    _optional_text_field,
+    decode_gamerules,
+)
+from controller.run_test import now_iso
 
 WORLD_NAME = "SparkCombinedValidation"
 BOT_COUNT = 20
@@ -217,7 +220,7 @@ class CombinedPackGameruleFleetValidation(CrossPlatformFleetSparkValidation):
         for pack in BEHAVIOR_PACKS:
             output = self.command_check(
                 f"behavior-pack-function-{pack['function']}",
-                f"function {pack['function']}",
+                f"execute run function {pack['function']}",
             )
             joined = "\n".join(output).casefold()
             rejected = ("unknown function", "function not found", "failed to execute", "syntax error")
@@ -437,7 +440,7 @@ class CombinedPackGameruleFleetValidation(CrossPlatformFleetSparkValidation):
             self.result["completed_at"] = now_iso()
             self._write_results()
             return 0
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.result["status"] = "FAIL"
             self.result["state"] = "failed"
             self.result["failed_stage"] = stage
@@ -449,7 +452,7 @@ class CombinedPackGameruleFleetValidation(CrossPlatformFleetSparkValidation):
             try:
                 if self.bot is not None and self.bot.is_alive():
                     self.bot.force_close()
-            except Exception:
+            except Exception:  # noqa: BLE001
                 diagnostic += "\n\nBot cleanup failure:\n" + traceback.format_exc()
             try:
                 if self.server is not None:
@@ -457,7 +460,7 @@ class CombinedPackGameruleFleetValidation(CrossPlatformFleetSparkValidation):
                         self.server.force_kill_tree()
                         self.result["shutdown_status"] = "forced_after_failure"
                     self.server.close()
-            except Exception:
+            except Exception:  # noqa: BLE001
                 diagnostic += "\n\nServer cleanup failure:\n" + traceback.format_exc()
             last_lines = self.server.snapshot()[-400:] if self.server is not None else []
             self.diagnostics.write_text(

@@ -15,6 +15,7 @@ class HotspotPlugin(Plugin):
     """Deterministic real-Endstone workloads for Spark Python attribution tests."""
 
     api_version = "0.11"
+    _DUAL_SPLITS = ((60, 40), (65, 35), (70, 30), (75, 25), (80, 20))
 
     def on_enable(self) -> None:
         self.mode = os.environ.get("SPARK_PYTHON_HOTSPOT_MODE", "single").strip().lower()
@@ -24,6 +25,8 @@ class HotspotPlugin(Plugin):
         self._generator = self._generator_sequence()
         self._event_counter = 0
         self._dual_flip = False
+        self._dual_split_index = 0
+        self._dual_a_iterations = self._build_dual_a_iterations(self.iterations)
         self._tick_metrics: list[tuple[int, float, float]] = []
         metrics_path = os.environ.get("SPARK_PYTHON_TICK_METRICS", "").strip()
         self._metrics_path = Path(metrics_path) if metrics_path else None
@@ -132,13 +135,26 @@ class HotspotPlugin(Plugin):
             total = (total * 33 + (index ^ (total >> 7))) & 0xFFFFFFFFFFFFFFFF
         return total
 
+    @classmethod
+    def _build_dual_a_iterations(cls, iterations: int) -> tuple[int, ...]:
+        floors = [(iterations * a_percent) // 100 for a_percent, _ in cls._DUAL_SPLITS]
+        remainders = [(iterations * a_percent) % 100 for a_percent, _ in cls._DUAL_SPLITS]
+        target_total = (iterations * 7 + 1) // 2
+        increments = target_total - sum(floors)
+        for index in sorted(range(len(remainders)), key=lambda item: (-remainders[item], item))[:increments]:
+            floors[index] += 1
+        return tuple(floors)
+
     def dual_hotspot(self) -> tuple[int, int]:
-        # Keep the total workload at a deterministic 70/30 split, but alternate
-        # execution order each tick. A fixed A->B order can phase-lock with the
-        # 4 ms statistical sampler on Windows and systematically miss the shorter
-        # B interval even over a 60 s profile.
-        a_iterations = (self.iterations * 7) // 10
-        b_iterations = (self.iterations * 3) // 10
+        # Rotate five deterministic splits while keeping total work constant.
+        split_index = getattr(self, "_dual_split_index", 0)
+        a_iterations_by_split = getattr(self, "_dual_a_iterations", None)
+        if a_iterations_by_split is None:
+            a_iterations_by_split = self._build_dual_a_iterations(self.iterations)
+            self._dual_a_iterations = a_iterations_by_split
+        self._dual_split_index = (split_index + 1) % len(self._DUAL_SPLITS)
+        a_iterations = a_iterations_by_split[split_index]
+        b_iterations = self.iterations - a_iterations
         self._dual_flip = not self._dual_flip
         if self._dual_flip:
             a_result = self.hotspot_a(a_iterations)
@@ -184,9 +200,8 @@ class HotspotPlugin(Plugin):
         for index in range(rounds):
             value ^= self.integer_hash_loop(80 + index)
             await asyncio.sleep(0)
-        # Preserve genuine coroutine yield/resume activity above, then retain this
-        # leaf on-stack long enough for a 4 ms statistical sample on Windows.
-        value ^= self.integer_hash_loop(max(3000, self.iterations // 8))
+        # Preserve coroutine yield/resume activity, then retain this leaf for sampling.
+        value ^= self.integer_hash_loop(max(3000, self.iterations // 4))
         return value
 
     def async_hotspot(self, rounds: int) -> int:

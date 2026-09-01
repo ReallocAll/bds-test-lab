@@ -6,7 +6,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import yaml
+
 import controller.combined_pack_gamerule_fleet_exact_runner as exact
+from controller.combined_pack_gamerule_fleet_validation import BEHAVIOR_PACKS
+from controller.windows_evidence_matrix import COMBINED_MATRIX, resolve_matrix
 
 
 class _Server:
@@ -79,6 +83,91 @@ class _WaitProcess:
 
 
 class CombinedPackExactRunnerTest(unittest.TestCase):
+    def test_combined_dispatch_selector_keeps_default_matrix_and_targets_windows(self) -> None:
+        workflow = Path(__file__).parents[1] / ".github" / "workflows" / "combined-pack-gamerule-20p.yml"
+        data = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+        dispatch = data[True]["workflow_dispatch"]["inputs"]["target"]
+        jobs = data["jobs"]
+        combined = jobs["combined-e2e"]
+
+        self.assertEqual(dispatch["type"], "choice")
+        self.assertEqual(dispatch["options"], ["all", "windows"])
+        self.assertNotIn("if", combined)
+        self.assertEqual(combined["strategy"]["matrix"], "${{ fromJSON(needs.resolve-target.outputs.matrix) }}")
+        self.assertEqual(
+            resolve_matrix("combined", "push", None),
+            {"include": list(COMBINED_MATRIX)},
+        )
+        self.assertEqual(
+            resolve_matrix("combined", "workflow_dispatch", "windows"),
+            {"include": [COMBINED_MATRIX[1]]},
+        )
+        resolver_run = jobs["resolve-target"]["steps"][1]["run"]
+        self.assertIn("controller.windows_evidence_matrix", resolver_run)
+        for invalid in ("linux", "bogus"):
+            with self.subTest(target=invalid), self.assertRaisesRegex(ValueError, "target"):
+                resolve_matrix("combined", "workflow_dispatch", invalid)
+        with self.assertRaisesRegex(ValueError, "complete matrix"):
+            resolve_matrix("combined", "push", "windows")
+
+    def test_behavior_pack_functions_use_execute_wrapper_and_distinct_markers(self) -> None:
+        validator = mock.Mock()
+        outputs = {
+            f"execute run function {pack['function']}": [pack["marker"]]
+            for pack in BEHAVIOR_PACKS
+        }
+        validator.command_check.side_effect = lambda _name, command: outputs[command]
+
+        exact.CombinedPackGameruleFleetValidation.verify_behavior_pack_functions(validator)
+
+        self.assertEqual(
+            [item.args[1] for item in validator.command_check.call_args_list],
+            list(outputs),
+        )
+        validator.check.assert_called_once_with(
+            "behavior-packs-real-load",
+            "PASS",
+            "all three behavior-pack functions executed inside real BDS",
+            count=len(BEHAVIOR_PACKS),
+        )
+
+    def test_behavior_pack_function_rejections_remain_fail_closed(self) -> None:
+        for index, pack in enumerate(BEHAVIOR_PACKS):
+            with self.subTest(function=pack["function"]):
+                validator = mock.Mock()
+                target = f"execute run function {pack['function']}"
+
+                def command_check(
+                    _name: str,
+                    command: str,
+                    *,
+                    target: str = target,
+                    previous_packs: tuple[dict[str, str], ...] = BEHAVIOR_PACKS[:index],
+                ) -> list[str]:
+                    if command == target:
+                        return ["Syntax error: unknown function"]
+                    for previous in previous_packs:
+                        if command == f"execute run function {previous['function']}":
+                            return [previous["marker"]]
+                    raise AssertionError(f"unexpected command: {command}")
+
+                validator.command_check.side_effect = command_check
+
+                with self.assertRaisesRegex(RuntimeError, "rejected behavior-pack function"):
+                    exact.CombinedPackGameruleFleetValidation.verify_behavior_pack_functions(validator)
+
+                self.assertEqual(validator.command_check.call_args_list[-1].args, (
+                    f"behavior-pack-function-{pack['function']}",
+                    f"execute run function {pack['function']}",
+                ))
+
+    def test_behavior_pack_function_missing_marker_remains_fail_closed(self) -> None:
+        validator = mock.Mock()
+        validator.command_check.return_value = ["unrelated output"]
+
+        with self.assertRaisesRegex(RuntimeError, "executed without expected marker"):
+            exact.CombinedPackGameruleFleetValidation.verify_behavior_pack_functions(validator)
+
     def test_install_artifacts_requires_exact_component_identity(self) -> None:
         validator = _Validator()
         env = {
