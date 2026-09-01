@@ -991,7 +991,7 @@ class FinalProfilerMatrixCase(IntegrationTest):
             self.result["workload"]["retained_allocation"].update(
                 {
                     "fixture": str(target.relative_to(self.root)),
-                    "helper_source": str(helper_source.relative_to(self.root)),
+                    "helper_source": str(helper_source.relative_to(fixture_source.parents[1])),
                     "helper": str(helper_target.relative_to(self.root)),
                     "helper_symbol": RETAINED_ALLOCATION_HELPER_SYMBOL,
                     "block_bytes": RETAINED_ALLOCATION_BLOCK_BYTES,

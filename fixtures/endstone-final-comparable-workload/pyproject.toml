@@ -9,7 +9,7 @@ description = "Deterministic Endstone workload and per-tick metrics for Spark co
 requires-python = ">=3.11"
 
 [project.entry-points."endstone"]
-endstone-final-comparable-workload = "endstone_final_comparable_workload:ComparableWorkloadPlugin"
+final-comparable-workload = "endstone_final_comparable_workload:ComparableWorkloadPlugin"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/endstone_final_comparable_workload"]

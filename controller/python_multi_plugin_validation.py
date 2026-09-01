@@ -344,6 +344,7 @@ class PythonMultiPluginValidation(PythonAttributionValidation):
                 "endstone_artifact_id": None,
                 "endstone_artifact_name": None,
                 "artifact_metadata": None,
+                "versions": {"bds": None, "endstone": None, "spark": None},
                 "plugin_fixtures": [
                     {
                         "name": spec.name,
