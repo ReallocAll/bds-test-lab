@@ -25,6 +25,15 @@ on:
         description: "Seconds per Spark execution profile"
         required: false
         default: "60"
+      target:
+        description: "Matrix target for this dispatch"
+        required: false
+        default: all
+        type: choice
+        options:
+          - all
+          - windows-dual
+          - windows-fleet
 
 concurrency:
   group: spark-python-attribution-bds-${{ github.ref }}
@@ -46,123 +55,36 @@ env:
   PROFILE_SECONDS: ${{ github.event.inputs.profile_seconds || '60' }}
 
 jobs:
+  resolve-target:
+    name: Resolve matrix target
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.resolve.outputs.matrix }}
+    steps:
+      - name: Checkout test lab
+        uses: actions/checkout@v7
+
+      - name: Resolve and validate dispatch target
+        id: resolve
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          MATRIX_TARGET: ${{ github.event.inputs.target || 'all' }}
+        run: |
+          set -euo pipefail
+          python -m controller.windows_evidence_matrix \
+            --workflow python \
+            --event-name "$EVENT_NAME" \
+            --target "$MATRIX_TARGET"
+
   profile:
+    needs: resolve-target
     name: ${{ matrix.platform }} / ${{ matrix.mode }} / ${{ matrix.scenario_label }} / ${{ matrix.count }} bot(s)
     timeout-minutes: 45
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - platform: linux
-            os: ubuntu-24.04
-            bot_name: bds-test-bot
-            endstone_artifact_id: "9616075557"
-            mode: off
-            scenario: chunk-walk
-            scenario_label: mixed-actions
-            scenario_file: bot-src/scenarios/mixed-actions.json
-            iterations: "12000"
-            count: 1
-          - platform: linux
-            os: ubuntu-24.04
-            bot_name: bds-test-bot
-            endstone_artifact_id: "9616075557"
-            mode: single
-            scenario: chunk-walk
-            scenario_label: mixed-actions
-            scenario_file: bot-src/scenarios/mixed-actions.json
-            iterations: "12000"
-            count: 1
-          - platform: linux
-            os: ubuntu-24.04
-            bot_name: bds-test-bot
-            endstone_artifact_id: "9616075557"
-            mode: nested
-            scenario: chunk-walk
-            scenario_label: mixed-actions
-            scenario_file: bot-src/scenarios/mixed-actions.json
-            iterations: "12000"
-            count: 1
-          - platform: linux
-            os: ubuntu-24.04
-            bot_name: bds-test-bot
-            endstone_artifact_id: "9616075557"
-            mode: dual
-            scenario: chunk-walk
-            scenario_label: mixed-actions
-            scenario_file: bot-src/scenarios/mixed-actions.json
-            iterations: "12000"
-            count: 1
-          - platform: linux
-            os: ubuntu-24.04
-            bot_name: bds-test-bot
-            endstone_artifact_id: "9616075557"
-            mode: mixed
-            scenario: chunk-walk
-            scenario_label: mixed-actions
-            scenario_file: bot-src/scenarios/mixed-actions.json
-            iterations: "12000"
-            count: 1
-          - platform: linux
-            os: ubuntu-24.04
-            bot_name: bds-test-bot
-            endstone_artifact_id: "9616075557"
-            mode: fleet
-            scenario: chunk-walk
-            scenario_label: mixed-actions
-            scenario_file: bot-src/scenarios/mixed-actions.json
-            iterations: "12000"
-            count: 5
-          - platform: linux
-            os: ubuntu-24.04
-            bot_name: bds-test-bot
-            endstone_artifact_id: "9616075557"
-            mode: single
-            scenario: chunk-walk
-            scenario_label: chunk-walk
-            scenario_file: ""
-            iterations: "12000"
-            count: 1
-          - platform: linux
-            os: ubuntu-24.04
-            bot_name: bds-test-bot
-            endstone_artifact_id: "9616075557"
-            mode: nested
-            scenario: chunk-fly
-            scenario_label: chunk-fly
-            scenario_file: ""
-            iterations: "12000"
-            count: 1
-          - platform: windows
-            os: windows-2022
-            bot_name: bds-test-bot.exe
-            endstone_artifact_id: "9616071559"
-            mode: single
-            scenario: chunk-walk
-            scenario_label: mixed-actions
-            scenario_file: bot-src/scenarios/mixed-actions.json
-            iterations: "48000"
-            count: 1
-          - platform: windows
-            os: windows-2022
-            bot_name: bds-test-bot.exe
-            endstone_artifact_id: "9616071559"
-            mode: dual
-            scenario: chunk-walk
-            scenario_label: mixed-actions
-            scenario_file: bot-src/scenarios/mixed-actions.json
-            iterations: "48000"
-            count: 1
-          - platform: windows
-            os: windows-2022
-            bot_name: bds-test-bot.exe
-            endstone_artifact_id: "9616071559"
-            mode: fleet
-            scenario: chunk-walk
-            scenario_label: mixed-actions
-            scenario_file: bot-src/scenarios/mixed-actions.json
-            iterations: "48000"
-            count: 5
+      matrix: ${{ fromJSON(needs.resolve-target.outputs.matrix) }}
 
     runs-on: ${{ matrix.os }}
     env:

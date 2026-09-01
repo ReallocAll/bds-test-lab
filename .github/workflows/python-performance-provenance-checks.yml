@@ -9,6 +9,8 @@ on:
       - "controller/python_dependency_exact_runner.py"
       - "controller/python_attribution_performance_runner.py"
       - "controller/python_performance_trigger.py"
+      - "controller/windows_evidence_matrix.py"
+      - "fixtures/spark-python-hotspot-test/**"
       - "tests/test_artifact_provider.py"
       - "tests/test_python_evidence_provenance.py"
       - "tests/test_python_attribution_performance_runner.py"
@@ -53,6 +55,9 @@ jobs:
           controller/python_dependency_exact_runner.py
           controller/python_attribution_performance_runner.py
           controller/python_performance_trigger.py
+          controller/windows_evidence_matrix.py
+          fixtures/spark-python-hotspot-test/src/endstone_spark_python_hotspot_test/__init__.py
+          tests/test_python_attribution_performance_runner.py
 
       - name: Ruff focused files
         run: >-
@@ -63,6 +68,8 @@ jobs:
           controller/python_dependency_exact_runner.py
           controller/python_attribution_performance_runner.py
           controller/python_performance_trigger.py
+          controller/windows_evidence_matrix.py
+          fixtures/spark-python-hotspot-test/src/endstone_spark_python_hotspot_test/__init__.py
           tests/test_artifact_provider.py
           tests/test_python_evidence_provenance.py
           tests/test_python_attribution_performance_runner.py

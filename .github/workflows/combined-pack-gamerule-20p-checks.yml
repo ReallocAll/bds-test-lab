@@ -7,6 +7,7 @@ on:
       - ".github/workflows/combined-pack-gamerule-20p-checks.yml"
       - "controller/combined_pack_gamerule_fleet_validation.py"
       - "controller/combined_pack_gamerule_fleet_exact_runner.py"
+      - "controller/windows_evidence_matrix.py"
       - "controller/python_evidence_provenance.py"
       - "controller/cross_platform_fleet_validation.py"
       - "controller/fleet_spark_validation.py"
@@ -45,6 +46,7 @@ jobs:
           python -m py_compile
           controller/combined_pack_gamerule_fleet_validation.py
           controller/combined_pack_gamerule_fleet_exact_runner.py
+          controller/windows_evidence_matrix.py
           controller/python_evidence_provenance.py
           controller/cross_platform_fleet_validation.py
           controller/fleet_spark_validation.py
@@ -55,6 +57,7 @@ jobs:
         run: >-
           ruff check
           controller/combined_pack_gamerule_fleet_exact_runner.py
+          controller/windows_evidence_matrix.py
           fixtures/endstone-ci-lifecycle-control/src/endstone_ci_lifecycle_control/__init__.py
           tests/test_combined_pack_exact_runner.py
 
