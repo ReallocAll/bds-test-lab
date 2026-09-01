@@ -37,6 +37,7 @@ permissions:
 
 env:
   PYTHONUNBUFFERED: "1"
+  SPARK_BACKGROUNDPROFILER: "false"
   SPARK_SHA: ${{ inputs.spark_sha }}
   EXPECTED_BDS_VERSION: ${{ inputs.bds_version }}
   EXPECTED_ENDSTONE_SHA: ${{ inputs.endstone_sha }}

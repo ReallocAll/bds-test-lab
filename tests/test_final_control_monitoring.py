@@ -199,6 +199,7 @@ class FinalControlMonitoringWorkflowTest(unittest.TestCase):
         self.assertIn("--bds-version \"$EXPECTED_BDS_VERSION\"", text)
         self.assertIn("EXPECTED_BDS_VERSION", text)
         self.assertIn("EXPECTED_BDS_PROTOCOL_VERSION", text)
+        self.assertIn('SPARK_BACKGROUNDPROFILER: "false"', text)
         self.assertIn("--result evidence/control/test-results.json", text)
         self.assertIn("--result evidence/monitoring/test-results.json", text)
         self.assertIn("if: always()", text)

@@ -498,7 +498,7 @@ class FinalProfilerInstallationTest(unittest.TestCase):
             del timeout, cwd
             if "-m" in command and "wheel" in command:
                 wheel_dir = Path(command[command.index("--wheel-dir") + 1])
-                (wheel_dir / "spark_allocation_live_test-0.1.0-py3-none-any.whl").write_bytes(b"wheel")
+                (wheel_dir / "endstone_spark_allocation_live_test-0.1.0-py3-none-any.whl").write_bytes(b"wheel")
             elif "-shared" in command:
                 output = Path(command[command.index("-o") + 1])
                 output.write_bytes(b"helper")
@@ -580,6 +580,8 @@ class WorkflowSecurityContractTest(unittest.TestCase):
         self.assertIn("-Wl,-z,lazy", controller_text)
         self.assertIn(RETAINED_ALLOCATION_HELPER_SYMBOL, controller_text)
         self.assertIn("allocation-live-state.json", workflow)
+        self.assertIn('name = "endstone-spark-allocation-live-test"', fixture_text)
+        self.assertIn("endstone_spark_allocation_live_test-*.whl", controller_text)
         self.assertIn("spark-allocation-live-test", fixture_text)
 
         native = (source / "native" / "retained_alloc.c").read_text(encoding="utf-8")

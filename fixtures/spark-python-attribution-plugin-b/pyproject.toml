@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "spark-python-attribution-plugin-b"
+name = "endstone-spark-python-attribution-plugin-b"
 version = "0.1.0"
 description = "Second distinct Python plugin for Spark attribution coverage"
 requires-python = ">=3.12"
