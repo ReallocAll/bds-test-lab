@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "spark-allocation-live-test"
+version = "0.1.0"
+description = "Bounded retained native-allocation workload for Spark live-only profiling"
+requires-python = ">=3.11"
+
+[project.entry-points."endstone"]
+spark-allocation-live-test = "spark_allocation_live_test:AllocationLivePlugin"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/spark_allocation_live_test"]

@@ -1,0 +1,150 @@
+name: Spark Python Multi-Plugin Attribution
+
+on:
+  workflow_dispatch:
+    inputs:
+      spark_sha:
+        description: "Exact ReallocAll/spark commit SHA to validate"
+        required: true
+        type: string
+      bds_version:
+        description: "Exact full BDS version selected by the Endstone runtime (1.<major>.<minor>.<revision>)"
+        required: true
+        type: string
+      endstone_sha:
+        description: "Optional exact Endstone commit SHA"
+        required: false
+        default: ""
+        type: string
+      profile_seconds:
+        description: "Real execution profile duration"
+        required: false
+        default: "60"
+        type: string
+
+concurrency:
+  group: spark-python-multi-plugin-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  EXPECTED_SPARK_SHA: ${{ inputs.spark_sha }}
+  EXPECTED_BDS_VERSION: ${{ inputs.bds_version }}
+  EXPECTED_ENDSTONE_SHA: ${{ inputs.endstone_sha }}
+  PROFILE_SECONDS: ${{ inputs.profile_seconds || '60' }}
+
+jobs:
+  linux-multi-plugin:
+    name: Linux / two Python plugins
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout test lab
+        uses: actions/checkout@v7
+
+      - name: Validate exact dispatch inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SPARK_SHA" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "spark_sha must be a full 40-character commit SHA" >&2; exit 1; }
+          [[ "$EXPECTED_BDS_VERSION" =~ ^1\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "bds_version must be an exact full version 1.<major>.<minor>.<revision>" >&2
+            exit 1
+          }
+          bds_protocol="${EXPECTED_BDS_VERSION#1.}"
+          bds_protocol="${bds_protocol%.*}"
+          if [[ -n "$EXPECTED_ENDSTONE_SHA" && ! "$EXPECTED_ENDSTONE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "endstone_sha must be empty or a full 40-character commit SHA" >&2
+            exit 1
+          fi
+          [[ "$PROFILE_SECONDS" =~ ^[0-9]+$ ]] && (( PROFILE_SECONDS >= 60 && PROFILE_SECONDS <= 300 )) || {
+            echo "profile_seconds must be an integer in 60..300" >&2
+            exit 1
+          }
+          {
+            echo "EXPECTED_SPARK_SHA=${EXPECTED_SPARK_SHA,,}"
+            echo "EXPECTED_BDS_VERSION=$EXPECTED_BDS_VERSION"
+            echo "EXPECTED_BDS_PROTOCOL_VERSION=$bds_protocol"
+            echo "EXPECTED_ENDSTONE_SHA=${EXPECTED_ENDSTONE_SHA,,}"
+          } >> "$GITHUB_ENV"
+
+      - name: Require exact Spark artifact
+        env:
+          GH_TOKEN: ${{ secrets.REPO_PAT }}
+        run: >-
+          python -m controller.assert_spark_artifact
+          --platform linux
+          --expected-sha "$EXPECTED_SPARK_SHA"
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install validation dependencies
+        run: python -m pip install --disable-pip-version-check psutil packaging hatchling
+
+      - name: Run two-plugin real-BDS profile
+        env:
+          GH_TOKEN: ${{ secrets.REPO_PAT }}
+        run: >-
+          python -m controller.python_multi_plugin_validation
+          --spark-sha "$EXPECTED_SPARK_SHA"
+          --bds-version "$EXPECTED_BDS_VERSION"
+          --profile-seconds "$PROFILE_SECONDS"
+
+      - name: Verify canonical bStats evidence
+        if: always()
+        run: >-
+          python -m controller.verify_bstats_evidence
+          --result test-results.json
+          --result python-attribution-result.json
+
+      - name: Add attribution summary
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+
+          path = Path("test-results.json")
+          print("## Linux Spark Python multi-plugin attribution")
+          print()
+          if not path.is_file():
+              print("Result: **missing**")
+          else:
+              data = json.loads(path.read_text(encoding="utf-8"))
+              print(f"Result: **{data.get('status')}**")
+              print(f"Spark SHA: `{data.get('spark_sha')}`")
+              endstone = (data.get('provenance') or {}).get('endstone') or {}
+              print(f"Endstone SHA: `{endstone.get('sha')}`")
+              print(f"BDS: `{(data.get('provenance') or {}).get('bds_version')}`")
+              print(f"Profile: `{data.get('spark_profile_viewer_url')}`")
+              print(f"Validation: `{(data.get('multi_plugin_validation') or {}).get('assertions')}`")
+          PY
+
+      - name: Upload multi-plugin evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: spark-python-multi-plugin-${{ github.run_id }}
+          path: |
+            metadata.json
+            bds.log
+            endstone.log
+            spark.log
+            test-results.json
+            python-attribution-result.json
+            bstats-config.toml
+            python-multi-plugin.sparkprofile
+            python-multi-plugin-profile-summary.json
+            failure-diagnostics.txt
+            work/linux/bedrock_server/server.properties
+            work/linux/bedrock_server/version.txt
+          if-no-files-found: warn
+          retention-days: 30

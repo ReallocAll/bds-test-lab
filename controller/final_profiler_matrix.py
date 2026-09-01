@@ -16,6 +16,8 @@ import math
 import os
 import pathlib
 import re
+import shutil
+import sys
 import time
 import traceback
 from dataclasses import dataclass
@@ -34,7 +36,13 @@ from controller.python_profile_payload import (
     parse_sampler_data,
     profile_summary,
 )
-from controller.run_test import VIEWER_RE, IntegrationTest, now_iso, write_json
+from controller.run_test import (
+    VIEWER_RE,
+    IntegrationTest,
+    now_iso,
+    run_checked,
+    write_json,
+)
 
 DEFAULT_PROFILE_SECONDS = 15
 DEFAULT_WARMUP_SECONDS = 10
@@ -43,6 +51,10 @@ MAX_PROFILE_SECONDS = 300
 MAX_WARMUP_SECONDS = 300
 ONLY_TICKS_OVER_MS = 10
 DEFAULT_ALLOCATION_INTERVAL_BYTES = 524287
+RETAINED_ALLOCATION_BLOCK_BYTES = 1 << 20
+RETAINED_ALLOCATION_BLOCKS = 24
+RETAINED_ALLOCATION_HELPER_NAME = "spark_allocation_live_helper.so"
+RETAINED_ALLOCATION_HELPER_SYMBOL = "spark_allocation_live_retain"
 SHA256_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 SPARK_VERSION_RE = re.compile(r"(?:endstone-spark|spark)\s+v?([0-9][0-9A-Za-z.+_-]*)", re.IGNORECASE)
 
@@ -206,6 +218,14 @@ ALLOCATION_LIVE_DIAGNOSTICS = (
     "Allocation retained maximum age ms",
 )
 
+RETAINED_ALLOCATION_POSITIVE_DIAGNOSTICS = (
+    "Allocation profile samples accepted",
+    "Allocation profile sampled bytes",
+    "Allocation tracked live allocations (process-wide)",
+    "Allocation tracked live bytes (process-wide)",
+    "Allocation tracked live peak (process-wide)",
+)
+
 
 class ProfileValidationError(ValueError):
     """Raised when raw profile bytes do not satisfy the mode contract."""
@@ -324,6 +344,16 @@ def _diagnostic_summary(profile: ProfilePayload, spec: ProfilerModeSpec) -> dict
         if value != 0:
             raise ProfileValidationError(f"diagnostic drop {key!r} must be zero: {value}")
 
+    if spec.live_only:
+        for key in RETAINED_ALLOCATION_POSITIVE_DIAGNOSTICS:
+            value = numeric.get(key)
+            if value is None or value <= 0:
+                raise ProfileValidationError(f"retained allocation diagnostic {key!r} must be positive: {value}")
+        for key in ("Allocation retained average age ms", "Allocation retained maximum age ms"):
+            value = numeric.get(key)
+            if value is None or value <= 0:
+                raise ProfileValidationError(f"retained allocation age {key!r} must be positive: {value}")
+
     if flags.get("Execution profile storage exhausted"):
         raise ProfileValidationError("Execution profile storage is exhausted")
     if flags.get("Execution data incomplete"):
@@ -431,6 +461,31 @@ def _profile_shape(profile: ProfilePayload, spec: ProfilerModeSpec) -> dict[str,
     }
 
 
+def _retained_helper_observation(profile: ProfilePayload) -> dict[str, Any] | None:
+    """Find the helper's positive-weight frame on a reachable profile path."""
+
+    for thread_name, path in iter_leaf_paths(profile):
+        for node in path:
+            module_name = node.class_name.replace("\\", "/").rsplit("/", 1)[-1]
+            method_name = node.method_name.strip()
+            if (
+                module_name == RETAINED_ALLOCATION_HELPER_NAME
+                and (
+                    method_name == RETAINED_ALLOCATION_HELPER_SYMBOL
+                    or method_name.startswith(f"{RETAINED_ALLOCATION_HELPER_SYMBOL}(")
+                )
+                and node.weight > 0
+            ):
+                return {
+                    "thread": thread_name,
+                    "module": module_name,
+                    "symbol": method_name,
+                    "weight": node.weight,
+                    "path": [f"{item.class_name}:{item.method_name}" for item in path],
+                }
+    return None
+
+
 def validate_profile_payload(
     payload: bytes | ProfilePayload,
     mode: str,
@@ -527,9 +582,16 @@ def validate_profile_payload(
 
     diagnostics: dict[str, Any] | None = None
     shape: dict[str, Any] | None = None
+    retained_helper: dict[str, Any] | None = None
     try:
         diagnostics = _diagnostic_summary(profile, spec)
         shape = _profile_shape(profile, spec)
+        if spec.live_only:
+            retained_helper = _retained_helper_observation(profile)
+            if retained_helper is None:
+                raise ProfileValidationError(
+                    "retained allocation helper symbol/chain was not observed on a positive live sample path"
+                )
     except ProfileValidationError as exc:
         failures.append(str(exc))
 
@@ -578,6 +640,7 @@ def validate_profile_payload(
         "diagnostics_complete": True,
         "incomplete_flags_clear": not any(diagnostics["incomplete_flags"].values()),
         "duration": duration_ok,
+        "retained_helper_chain": not spec.live_only or retained_helper is not None,
     }
     if not all(assertions.values()):
         raise ProfileValidationError(f"semantic assertions are not all true: {assertions}")
@@ -595,6 +658,7 @@ def validate_profile_payload(
         "observed": observed,
         "assertions": assertions,
         "shape": shape,
+        "retained_helper": retained_helper,
         "diagnostics": diagnostics,
         "profile_summary": profile_summary(profile),
     }
@@ -698,6 +762,8 @@ class FinalProfilerMatrixCase(IntegrationTest):
         super().__init__("linux")
         self.mode_result_path = self.root / "profiler-mode-result.json"
         self.bot: BotProcess | None = None
+        self.allocation_live_state_path = self.root / "allocation-live-state.json"
+        self.allocation_live_fixture: pathlib.Path | None = None
         self.result.update(
             {
                 "test_kind": "spark-profiler-mode-matrix",
@@ -739,7 +805,20 @@ class FinalProfilerMatrixCase(IntegrationTest):
                         "options": list(BOT_COMMAND_OPTIONS),
                         "online_event": None,
                         "shutdown_event": None,
-                    }
+                    },
+                    "retained_allocation": {
+                        "enabled": self.spec.live_only,
+                        "state_path": str(self.allocation_live_state_path.relative_to(self.root))
+                        if self.spec.live_only
+                        else None,
+                        "start_command": "allocation-live start" if self.spec.live_only else None,
+                        "started": False,
+                        "retained_blocks": None,
+                        "retained_bytes": None,
+                        "retained_blocks_before_cleanup": None,
+                        "retained_bytes_before_cleanup": None,
+                        "cleaned_up": False,
+                    },
                 },
                 "warmup": {
                     "requested_seconds": self.warmup_seconds,
@@ -847,9 +926,98 @@ class FinalProfilerMatrixCase(IntegrationTest):
             raise RuntimeError("installed Endstone package has no discoverable version") from exc
         self._write_results()
 
+        if self.spec.live_only:
+            fixture_source = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "spark-allocation-live-test"
+            helper_source = fixture_source / "native" / "retained_alloc.c"
+            if helper_source.is_symlink() or not helper_source.is_file():
+                raise RuntimeError(f"retained allocation helper source is missing or symlinked: {helper_source}")
+            wheel_dir = self.root / "allocation-live-wheel"
+            if wheel_dir.exists() or wheel_dir.is_symlink():
+                raise RuntimeError(f"allocation fixture wheel directory is not fresh: {wheel_dir}")
+            wheel_dir.mkdir()
+            run_checked(
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "wheel",
+                    "--disable-pip-version-check",
+                    "--no-deps",
+                    "--wheel-dir",
+                    str(wheel_dir),
+                    str(fixture_source),
+                ],
+                timeout=180,
+            )
+            wheels = sorted(wheel_dir.glob("spark_allocation_live_test-*.whl"))
+            if len(wheels) != 1:
+                raise RuntimeError(f"Expected one retained allocation fixture wheel, got: {wheels}")
+            plugin_dir = self.server_dir / "plugins"
+            target = plugin_dir / wheels[0].name
+            if target.exists() or target.is_symlink():
+                raise RuntimeError(f"retained allocation fixture target is not fresh: {target}")
+            shutil.copy2(wheels[0], target)
+            self.allocation_live_fixture = target
+            helper_target = plugin_dir / RETAINED_ALLOCATION_HELPER_NAME
+            if helper_target.exists() or helper_target.is_symlink():
+                raise RuntimeError(f"retained allocation helper target is not fresh: {helper_target}")
+            compiler = os.environ.get("CC", "").strip() or "cc"
+            compiler_path = shutil.which(compiler) or compiler
+            run_checked(
+                [
+                    compiler_path,
+                    "-shared",
+                    "-fPIC",
+                    "-O0",
+                    "-g",
+                    "-fno-omit-frame-pointer",
+                    "-fno-inline",
+                    "-fvisibility=hidden",
+                    "-fno-builtin-malloc",
+                    "-fno-builtin-free",
+                    "-Wl,-z,lazy",
+                    "-o",
+                    str(helper_target),
+                    str(helper_source),
+                ],
+                timeout=180,
+            )
+            if helper_target.is_symlink() or not helper_target.is_file() or helper_target.stat().st_size <= 0:
+                raise RuntimeError(f"retained allocation helper build is missing or empty: {helper_target}")
+            os.environ["SPARK_ALLOCATION_LIVE_HELPER"] = str(helper_target)
+            os.environ["SPARK_ALLOCATION_LIVE_BLOCK_BYTES"] = str(RETAINED_ALLOCATION_BLOCK_BYTES)
+            os.environ["SPARK_ALLOCATION_LIVE_BLOCKS"] = str(RETAINED_ALLOCATION_BLOCKS)
+            os.environ["SPARK_ALLOCATION_LIVE_STATE"] = str(self.allocation_live_state_path)
+            self.result["workload"]["retained_allocation"].update(
+                {
+                    "fixture": str(target.relative_to(self.root)),
+                    "helper_source": str(helper_source.relative_to(self.root)),
+                    "helper": str(helper_target.relative_to(self.root)),
+                    "helper_symbol": RETAINED_ALLOCATION_HELPER_SYMBOL,
+                    "block_bytes": RETAINED_ALLOCATION_BLOCK_BYTES,
+                    "target_blocks": RETAINED_ALLOCATION_BLOCKS,
+                    "target_bytes": RETAINED_ALLOCATION_BLOCK_BYTES * RETAINED_ALLOCATION_BLOCKS,
+                }
+            )
+            self.check(
+                "retained-allocation-plugin-installed",
+                "PASS",
+                str(target.relative_to(self.root)),
+                block_bytes=RETAINED_ALLOCATION_BLOCK_BYTES,
+                target_blocks=RETAINED_ALLOCATION_BLOCKS,
+            )
+            self._write_results()
+
     def start_server(self) -> None:
         super().start_server()
         assert self.server is not None
+        if self.spec.live_only:
+            self.server.wait_for(
+                lambda lines: any("spark retained allocation test enabled" in line.lower() for line in lines),
+                30,
+                "retained allocation fixture enable",
+            )
+            self.check("retained-allocation-plugin-enabled", "PASS")
         launch = {
             "started_at": now_iso(),
             "pid": self.server.pid,
@@ -867,6 +1035,97 @@ class FinalProfilerMatrixCase(IntegrationTest):
         self.result["versions"]["bds"] = self.result.get("bds_version")
         self.result["versions"]["spark"] = self.result["provenance"]["spark_version"]
         self._write_results()
+
+    def _read_allocation_state(self) -> dict[str, Any]:
+        path = self.allocation_live_state_path
+        if path.is_symlink() or not path.is_file():
+            raise RuntimeError(f"retained allocation state is missing or symlinked: {path}")
+        try:
+            state = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"retained allocation state is unreadable: {path}") from exc
+        if not isinstance(state, dict):
+            raise TypeError("retained allocation state is not an object")
+        return state
+
+    def start_retained_allocation_workload(self) -> None:
+        if not self.spec.live_only:
+            return
+        assert self.server is not None
+        start = self.server.command("allocation-live start")
+        output = self.server.wait_command_output(start, 8)
+        if not any("retained allocation workload started" in line.lower() for line in output):
+            raise RuntimeError("retained allocation fixture did not acknowledge start")
+        self.result["workload"]["retained_allocation"]["started"] = True
+        self.result["workload"]["retained_allocation"]["start_acknowledgement"] = output[-20:]
+        self.check("retained-allocation-started", "PASS", command="allocation-live start")
+
+    def validate_retained_allocation_state(self, *, cleaned: bool) -> None:
+        if not self.spec.live_only:
+            return
+        state = self._read_allocation_state()
+        workload = self.result["workload"]["retained_allocation"]
+        if cleaned:
+            if state.get("cleaned_up") is not True or state.get("status") != "cleaned":
+                raise RuntimeError(f"retained allocation cleanup was not proven: {state}")
+            if state.get("retained_blocks") != 0 or state.get("retained_bytes") != 0:
+                raise RuntimeError(f"retained allocation cleanup left live blocks: {state}")
+            before_blocks = state.get("retained_blocks_before_cleanup")
+            before_bytes = state.get("retained_bytes_before_cleanup")
+            if not isinstance(before_blocks, int) or before_blocks <= 0:
+                raise RuntimeError(f"retained allocation cleanup had no retained blocks: {state}")
+            if not isinstance(before_bytes, int) or before_bytes <= 0:
+                raise RuntimeError(f"retained allocation cleanup had no retained bytes: {state}")
+            workload.update(
+                {
+                    "retained_blocks_before_cleanup": before_blocks,
+                    "retained_bytes_before_cleanup": before_bytes,
+                    "cleaned_up": True,
+                    "cleanup_state": state,
+                }
+            )
+            self.check(
+                "retained-allocation-cleanup",
+                "PASS",
+                retained_blocks_before_cleanup=before_blocks,
+                retained_bytes_before_cleanup=before_bytes,
+            )
+            return
+
+        if state.get("started") is not True or state.get("allocation_failed") is True:
+            raise RuntimeError(f"retained allocation activation failed: {state}")
+        retained_blocks = state.get("retained_blocks")
+        retained_bytes = state.get("retained_bytes")
+        if not isinstance(retained_blocks, int) or retained_blocks <= 0:
+            raise RuntimeError(f"retained allocation workload produced no live blocks: {state}")
+        if not isinstance(retained_bytes, int) or retained_bytes <= 0:
+            raise RuntimeError(f"retained allocation workload produced no live bytes: {state}")
+        workload.update(
+            {
+                "retained_blocks": retained_blocks,
+                "retained_bytes": retained_bytes,
+                "active_state": state,
+            }
+        )
+        self.check(
+            "retained-allocation-active",
+            "PASS",
+            retained_blocks=retained_blocks,
+            retained_bytes=retained_bytes,
+        )
+
+    def release_retained_allocation_workload(self) -> None:
+        if not self.spec.live_only:
+            return
+        assert self.server is not None
+        if not self.result["measurement"].get("profiler_stop_observed_at"):
+            raise RuntimeError("retained allocation release was requested before profiler stop evidence")
+        start = self.server.command("allocation-live release")
+        output = self.server.wait_command_output(start, 8)
+        if not any("retained allocation workload released" in line.lower() for line in output):
+            raise RuntimeError(f"retained allocation fixture did not acknowledge release: {output[-30:]}")
+        self.result["workload"]["retained_allocation"]["release_acknowledgement"] = output[-20:]
+        self.check("retained-allocation-released-after-profile-stop", "PASS")
 
     @staticmethod
     def _spark_version(lines: list[str]) -> str | None:
@@ -971,6 +1230,8 @@ class FinalProfilerMatrixCase(IntegrationTest):
             self.root / f"{self.spec.name}.sparkprofile",
             self.root / f"{self.spec.name}-profile-summary.json",
         ]
+        if self.spec.live_only:
+            candidates.append(self.allocation_live_state_path)
         for path in candidates:
             if not path.is_file() or path.is_symlink():
                 continue
@@ -1026,6 +1287,7 @@ class FinalProfilerMatrixCase(IntegrationTest):
         if viewer_url is None:
             raise RuntimeError(f"{self.spec.name} profiler produced no direct viewer URL")
         self.result["measurement"]["viewer_url"] = viewer_url
+        self.result["measurement"]["profiler_stop_observed_at"] = now_iso()
         self.check("viewer-url-emitted", "PASS", viewer_url=viewer_url, command=command)
 
         raw = fetch_viewer_payload(viewer_url)
@@ -1095,7 +1357,11 @@ class FinalProfilerMatrixCase(IntegrationTest):
             stage = "warmup"
             self.run_warmup()
             stage = "profiler-mode"
+            self.start_retained_allocation_workload()
             self.run_profile()
+            self.validate_retained_allocation_state(cleaned=False)
+            self.release_retained_allocation_workload()
+            self.validate_retained_allocation_state(cleaned=True)
             stage = "bot-stop"
             self.stop_bot()
             stage = "shutdown"
