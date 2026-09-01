@@ -30,41 +30,92 @@ class _FrameworkShutdownServerProcess(ServerProcess):
     """Gracefully stop the Windows Endstone root through its interactive command map."""
 
     lifecycle_diagnostic: dict[str, Any]
+    lifecycle_registered: bool = False
+
+    def _record_shutdown_acknowledgement(self, diagnostic: dict[str, Any], command_start: int | None) -> None:
+        evidence: dict[str, Any] = diagnostic["acknowledgement_evidence"]
+        if command_start is None:
+            evidence["shutdown_requested"] = False
+            evidence["observed"] = False
+            evidence["source"] = "unavailable"
+            diagnostic["acknowledgement_observed"] = False
+            return
+        try:
+            command_output = self.snapshot()[command_start:]
+        except (AttributeError, TypeError):
+            command_output = []
+        observed = any("ci lifecycle shutdown requested" in line.lower() for line in command_output)
+        evidence["shutdown_requested"] = observed
+        evidence["observed"] = observed
+        evidence["source"] = "captured-output"
+        diagnostic["acknowledgement_observed"] = observed
 
     def graceful_stop(self, timeout: float = 60.0) -> bool:
-        pid = self.process.pid if self.process is not None else None
-        diagnostic: dict[str, Any] = {
-            "method": "interactive-cishutdown",
-            "command": "cishutdown",
-            "pid": pid,
-            "timeout_seconds": timeout,
-            "alive_before": self.is_alive(),
-        }
-        self.lifecycle_diagnostic = diagnostic
+        diagnostic = self._begin_lifecycle("interactive-cishutdown", "cishutdown", timeout)
+        phase = getattr(self, "lifecycle_phase", None)
+        diagnostic["phase_ordinal"] = phase.get("ordinal") if isinstance(phase, dict) else None
+        diagnostic["phase_name"] = phase.get("name") if isinstance(phase, dict) else None
+        evidence: dict[str, Any] = diagnostic["acknowledgement_evidence"]
+        diagnostic["command_sent"] = False
+        diagnostic["acknowledgement_observed"] = False
+        diagnostic["forced"] = False
+        evidence["registration_observed"] = self.lifecycle_registered
+        command_start: int | None = None
         if not diagnostic["alive_before"]:
-            diagnostic["outcome"] = "already-exited"
-            diagnostic["returncode"] = self.process.returncode if self.process is not None else None
+            self._finish_lifecycle(
+                diagnostic,
+                outcome="already-exited",
+                returncode=self.process.returncode if self.process is not None else None,
+            )
+            diagnostic["wrapper_outcome"] = diagnostic["outcome"]
+            diagnostic["wrapper_return_code"] = diagnostic["returncode"]
+            self._record_shutdown_acknowledgement(diagnostic, command_start)
+            diagnostic["cleanup_outcome"] = "already-exited"
             print(f"[windows-lifecycle] {diagnostic}", flush=True)
             return True
         if self.process is None:
-            diagnostic["outcome"] = "missing-process"
+            self._finish_lifecycle(diagnostic, outcome="missing-process")
+            diagnostic["wrapper_outcome"] = diagnostic["outcome"]
+            diagnostic["wrapper_return_code"] = diagnostic["returncode"]
+            self._record_shutdown_acknowledgement(diagnostic, command_start)
+            diagnostic["cleanup_outcome"] = "verification-failed"
             print(f"[windows-lifecycle] {diagnostic}", flush=True)
             return False
         try:
-            self.command("cishutdown")
+            command_result = self.command("cishutdown")
+            if isinstance(command_result, int):
+                command_start = command_result
+            evidence["command_sent"] = True
             diagnostic["command_sent"] = True
             self.process.wait(timeout=timeout)
-            diagnostic["returncode"] = self.process.returncode
-            diagnostic["outcome"] = "exited" if self.process.returncode == 0 else "nonzero-exit"
+            self._record_shutdown_acknowledgement(diagnostic, command_start)
+            self._finish_lifecycle(
+                diagnostic,
+                outcome="exited" if self.process.returncode == 0 else "nonzero-exit",
+                returncode=self.process.returncode,
+            )
+            diagnostic["wrapper_outcome"] = diagnostic["outcome"]
+            diagnostic["wrapper_return_code"] = diagnostic["returncode"]
+            diagnostic["cleanup_outcome"] = "graceful-exit" if self.process.returncode == 0 else "nonzero-exit"
             print(f"[windows-lifecycle] {diagnostic}", flush=True)
             return self.process.returncode == 0
         except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
-            diagnostic["outcome"] = "exception"
+            self._record_shutdown_acknowledgement(diagnostic, command_start)
+            self._finish_lifecycle(
+                diagnostic,
+                outcome="timeout" if isinstance(exc, subprocess.TimeoutExpired) else "exception",
+                returncode=self.process.returncode,
+                timeout_reason=(
+                    f"process did not exit within {timeout:.1f}s" if isinstance(exc, subprocess.TimeoutExpired) else None
+                ),
+            )
+            diagnostic["wrapper_outcome"] = diagnostic["outcome"]
+            diagnostic["wrapper_return_code"] = diagnostic["returncode"]
+            diagnostic["cleanup_outcome"] = "timeout" if isinstance(exc, subprocess.TimeoutExpired) else "command-failed"
             diagnostic["exception_type"] = type(exc).__name__
             diagnostic["exception"] = str(exc)
             diagnostic["winerror"] = getattr(exc, "winerror", None)
             diagnostic["errno"] = getattr(exc, "errno", None)
-            diagnostic["returncode"] = self.process.returncode
             print(f"[windows-lifecycle] {diagnostic}", flush=True)
             return False
 
@@ -122,6 +173,7 @@ def _start_windows_interactive_server(self: CombinedPackGameruleFleetValidation)
         30,
         "CI lifecycle command registration",
     )
+    self.server.lifecycle_registered = True
     self.check("windows-interactive-lifecycle", "PASS", shutdown_control="cishutdown")
     version_file = self.server_dir / "version.txt"
     if version_file.exists():
