@@ -949,7 +949,7 @@ class FinalProfilerMatrixCase(IntegrationTest):
                 ],
                 timeout=180,
             )
-            wheels = sorted(wheel_dir.glob("spark_allocation_live_test-*.whl"))
+            wheels = sorted(wheel_dir.glob("endstone_spark_allocation_live_test-*.whl"))
             if len(wheels) != 1:
                 raise RuntimeError(f"Expected one retained allocation fixture wheel, got: {wheels}")
             plugin_dir = self.server_dir / "plugins"

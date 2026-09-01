@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "spark-allocation-live-test"
+name = "endstone-spark-allocation-live-test"
 version = "0.1.0"
 description = "Bounded retained native-allocation workload for Spark live-only profiling"
 requires-python = ">=3.11"

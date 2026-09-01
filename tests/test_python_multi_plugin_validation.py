@@ -214,6 +214,8 @@ class PythonMultiPluginWorkflowTest(unittest.TestCase):
         )
         self.assertIn("spark-python-attribution-plugin-a", controller)
         self.assertIn("spark-python-attribution-plugin-b", controller)
+        self.assertIn("endstone_spark_python_attribution_plugin_a", controller)
+        self.assertIn("endstone_spark_python_attribution_plugin_b", controller)
 
 
 if __name__ == "__main__":

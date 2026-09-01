@@ -48,7 +48,7 @@ PLUGIN_SPECS = (
     MultiPluginSpec(
         name="plugin-a",
         source_path=FIXTURE_ROOT / "spark-python-attribution-plugin-a",
-        wheel_prefix="spark_python_attribution_plugin_a",
+        wheel_prefix="endstone_spark_python_attribution_plugin_a",
         source_id="spark-python-attribution-plugin-a",
         module="endstone_spark_python_attribution_a",
         class_name="PluginA",
@@ -58,7 +58,7 @@ PLUGIN_SPECS = (
     MultiPluginSpec(
         name="plugin-b",
         source_path=FIXTURE_ROOT / "spark-python-attribution-plugin-b",
-        wheel_prefix="spark_python_attribution_plugin_b",
+        wheel_prefix="endstone_spark_python_attribution_plugin_b",
         source_id="spark-python-attribution-plugin-b",
         module="endstone_spark_python_attribution_b",
         class_name="PluginB",
