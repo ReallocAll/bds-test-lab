@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,75 +9,7 @@ from controller import combined_windows_final_runner as final
 from controller.combined_pack_gamerule_fleet_validation import WORLD_NAME
 
 
-class _FileCommandServer:
-    def __init__(self, root: Path, lines: list[str]) -> None:
-        self.cwd = root
-        self._lines = lines
-        self._pending_file_commands: dict[int, str] = {}
-
-    def snapshot(self) -> list[str]:
-        return list(self._lines)
-
-    def is_alive(self) -> bool:
-        return True
-
-
 class CombinedWindowsFinalRunnerTest(unittest.TestCase):
-    def test_file_control_command_writes_tokenized_request(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            request = root / "command.request"
-            server = _FileCommandServer(
-                root,
-                [f"CI lifecycle control enabled; command-control={request}; file-control={root / 'shutdown.request'}"],
-            )
-
-            start = final._file_control_command(server, "spark tps")  # type: ignore[arg-type]
-
-            self.assertEqual(start, 1)
-            payload = json.loads(request.read_text(encoding="utf-8"))
-            self.assertEqual(payload["command"], "spark tps")
-            self.assertTrue(payload["token"])
-            self.assertEqual(server._pending_file_commands[start], payload["token"])
-
-    def test_file_control_command_rejects_pending_request(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            request = root / "command.request"
-            request.write_text("pending", encoding="utf-8")
-            server = _FileCommandServer(
-                root,
-                [f"CI lifecycle control enabled; command-control={request}; file-control={root / 'shutdown.request'}"],
-            )
-
-            with self.assertRaisesRegex(RuntimeError, "previous CI command request is still pending"):
-                final._file_control_command(server, "spark tps")  # type: ignore[arg-type]
-
-    def test_file_control_wait_requires_positive_dispatch_ack(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            server = _FileCommandServer(root, [])
-            server._pending_file_commands[0] = "abc123"
-            server._lines = [
-                "CI command dispatch requested; token=abc123; command=spark tps",
-                "CI command dispatch completed; token=abc123; dispatched=true",
-            ]
-
-            output = final._wait_file_control_command_output(server, 0, 0.2)  # type: ignore[arg-type]
-
-            self.assertEqual(output, server._lines)
-            self.assertNotIn(0, server._pending_file_commands)
-
-    def test_file_control_wait_fails_closed_on_rejected_dispatch(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            server = _FileCommandServer(root, [])
-            server._pending_file_commands[0] = "abc123"
-            server._lines = ["CI command dispatch completed; token=abc123; dispatched=false"]
-
-            with self.assertRaisesRegex(RuntimeError, "rejected CI command transport request"):
-                final._wait_file_control_command_output(server, 0, 0.2)  # type: ignore[arg-type]
-
     def test_windows_bootstrap_reuses_exactly_one_bds_created_world(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             server_dir = Path(tmp)

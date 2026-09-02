@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import subprocess
 import sys
+import time
 import uuid
 from typing import Any
 
@@ -39,6 +41,50 @@ class _FrameworkShutdownServerProcess(ServerProcess):
     lifecycle_diagnostic: dict[str, Any]
     lifecycle_registered: bool = False
     lifecycle_request_path: pathlib.Path | None = None
+    lifecycle_command_path: pathlib.Path | None = None
+
+    def command(self, command: str) -> int:
+        command_path = getattr(self, "lifecycle_command_path", None)
+        if command_path is None:
+            return super().command(command)
+        if not self.is_alive():
+            raise RuntimeError(f"Cannot send command to stopped server: {command}")
+        if command_path.exists():
+            raise RuntimeError(f"previous CI command request is still pending: {command_path}")
+        start = len(self.snapshot())
+        token = uuid.uuid4().hex
+        pending = getattr(self, "_pending_file_commands", None)
+        if pending is None:
+            pending = {}
+            self._pending_file_commands = pending
+        pending[start] = token
+        payload = {"token": token, "command": command}
+        print(f"> {command} [file-trigger token={token}]", flush=True)
+        command_path.parent.mkdir(parents=True, exist_ok=True)
+        command_path.write_text(json.dumps(payload, separators=(",", ":")) + "\n", encoding="utf-8")
+        return start
+
+    def wait_command_output(self, start_index: int, timeout: float = 8.0) -> list[str]:
+        pending = getattr(self, "_pending_file_commands", {})
+        token = pending.get(start_index)
+        if token is None:
+            return super().wait_command_output(start_index, timeout)
+        completion = f"ci command dispatch completed; token={token}; dispatched=".casefold()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            lines = self.snapshot()[start_index:]
+            matched = next((line for line in lines if completion in line.casefold()), None)
+            if matched is not None:
+                pending.pop(start_index, None)
+                if "dispatched=true" not in matched.casefold():
+                    raise RuntimeError(f"Endstone rejected CI command transport request: {matched}")
+                return lines
+            if not self.is_alive():
+                raise RuntimeError("BDS exited before CI command dispatch acknowledgement")
+            time.sleep(0.05)
+        raise TimeoutError(
+            f"Timed out after {timeout:.0f}s waiting for CI command dispatch acknowledgement: {token}"
+        )
 
     def _record_shutdown_acknowledgement(
         self,
@@ -289,17 +335,27 @@ def _start_windows_interactive_server(self: CombinedPackGameruleFleetValidation)
         request_path = pathlib.Path(raw_path)
         if not request_path.is_absolute():
             request_path = (self.root / request_path).resolve()
+        command_path: pathlib.Path | None = None
+        if "command-control=" in registration.lower():
+            raw_command_path = registration.split("command-control=", 1)[1].split(";", 1)[0].strip()
+            command_path = pathlib.Path(raw_command_path)
+            if not command_path.is_absolute():
+                command_path = (self.root / command_path).resolve()
         self.server.lifecycle_request_path = request_path
+        self.server.lifecycle_command_path = command_path
         self.server.lifecycle_registered = True
         self.check(
             "windows-framework-lifecycle",
             "PASS",
             shutdown_control="file-trigger",
+            command_control="file-trigger" if command_path is not None else "console-compat",
             request_path=str(request_path),
+            command_path=str(command_path) if command_path is not None else None,
             compatibility_command="cishutdown",
         )
     else:
         self.server.lifecycle_request_path = None
+        self.server.lifecycle_command_path = None
         self.server.lifecycle_registered = True
         self.check("windows-interactive-lifecycle", "PASS", shutdown_control="cishutdown")
     version_file = self.server_dir / "version.txt"
