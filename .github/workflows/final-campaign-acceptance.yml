@@ -1,4 +1,4 @@
-name: Final Spark performance acceptance
+name: Final alloc-live post-merge acceptance
 
 on:
   push:
@@ -19,30 +19,20 @@ env:
   EXPECTED_ENDSTONE_SHA: "46eff9f125f52eac76472d84339ead8fbf51fcd2"
 
 jobs:
-  linux-profiler-matrix:
-    name: Linux profiler ${{ matrix.mode }}
+  alloc-live:
+    name: Linux alloc-live-only post-merge
     runs-on: ubuntu-24.04
     timeout-minutes: 50
-    strategy:
-      fail-fast: false
-      matrix:
-        mode: [default, "1ms", all-thread, only-ticks-over, allocation, alloc-live-only]
     steps:
-      - uses: actions/checkout@v7
-      - name: Wait for exact final Spark Build
+      - name: Checkout post-merge main
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Record harness revision
         shell: bash
-        run: |
-          set -euo pipefail
-          for attempt in $(seq 1 80); do
-            json="$(gh api "repos/ReallocAll/spark/actions/runs?head_sha=${SPARK_SHA}&per_page=30")"
-            build="$(jq -r '[.workflow_runs[] | select(.name == "Build")][0].conclusion // ""' <<<"$json")"
-            echo "attempt ${attempt}: Build=${build:-pending}"
-            if [[ "$build" == success ]]; then exit 0; fi
-            if [[ "$build" == failure || "$build" == cancelled || "$build" == timed_out ]]; then exit 1; fi
-            sleep 15
-          done
-          exit 1
-      - uses: actions/checkout@v7
+        run: echo "LAB_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+      - name: Checkout exact bot
+        uses: actions/checkout@v7
         with:
           repository: ReallocAll/bds-test-bot
           ref: ${{ env.BOT_REF }}
@@ -69,78 +59,76 @@ jobs:
         run: python -m pip install --disable-pip-version-check psutil hatchling
       - name: Require exact Spark artifact
         run: python -m controller.assert_spark_artifact --platform linux --expected-sha "$SPARK_SHA"
-      - name: Run isolated real-BDS mode
+      - name: Run fixed-order real-BDS alloc-live
         run: >-
           python -m controller.final_profiler_matrix
-          --mode "${{ matrix.mode }}"
+          --mode alloc-live-only
           --bot "$GITHUB_WORKSPACE/dist-bds-test-bot"
           --spark-sha "$SPARK_SHA"
           --bot-ref "$BOT_REF"
           --evidence-root evidence
       - name: Verify bStats disabled
         if: always()
-        run: python -m controller.verify_bstats_evidence --result "evidence/${{ matrix.mode }}/test-results.json"
-      - name: Upload evidence
+        run: python -m controller.verify_bstats_evidence --result evidence/alloc-live-only/test-results.json
+      - name: Verify final alloc-live contract independently
         if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: final-acceptance-${{ matrix.mode }}-${{ github.run_id }}
-          path: evidence/${{ matrix.mode }}/
-          if-no-files-found: warn
-          retention-days: 30
-
-  python-attribution:
-    name: Linux Python multi-plugin attribution
-    runs-on: ubuntu-24.04
-    timeout-minutes: 50
-    steps:
-      - uses: actions/checkout@v7
-      - name: Wait for exact final Spark Build
         shell: bash
         run: |
-          set -euo pipefail
-          for attempt in $(seq 1 80); do
-            json="$(gh api "repos/ReallocAll/spark/actions/runs?head_sha=${SPARK_SHA}&per_page=30")"
-            build="$(jq -r '[.workflow_runs[] | select(.name == "Build")][0].conclusion // ""' <<<"$json")"
-            if [[ "$build" == success ]]; then exit 0; fi
-            if [[ "$build" == failure || "$build" == cancelled || "$build" == timed_out ]]; then exit 1; fi
-            sleep 15
-          done
-          exit 1
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-      - name: Install validation dependencies
-        run: python -m pip install --disable-pip-version-check psutil packaging hatchling
-      - name: Require exact Spark artifact
-        run: python -m controller.assert_spark_artifact --platform linux --expected-sha "$SPARK_SHA"
-      - name: Run two-plugin real-BDS profile
-        env:
-          EXPECTED_SPARK_SHA: ${{ env.SPARK_SHA }}
-          EXPECTED_ENDSTONE_SHA: ${{ env.EXPECTED_ENDSTONE_SHA }}
-        run: >-
-          python -m controller.python_multi_plugin_validation
-          --spark-sha "$SPARK_SHA"
-          --bds-version "$EXPECTED_BDS_VERSION"
-          --profile-seconds 60
-      - name: Verify bStats disabled
-        if: always()
-        run: python -m controller.verify_bstats_evidence --result test-results.json --result python-attribution-result.json
-      - name: Upload attribution evidence
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path('evidence/alloc-live-only/test-results.json')
+          if not path.is_file():
+              raise SystemExit('alloc-live result missing')
+          data = json.loads(path.read_text(encoding='utf-8'))
+          if data.get('status') != 'PASS':
+              raise SystemExit(f"alloc-live status={data.get('status')}: {data.get('error_summary')}")
+          provenance = data.get('provenance') or {}
+          if (provenance.get('spark_sha') or '').lower() != os.environ['SPARK_SHA'].lower():
+              raise SystemExit(f"Spark SHA mismatch: {provenance.get('spark_sha')}")
+          if (provenance.get('bot_sha') or '').lower() != os.environ['BOT_REF'].lower():
+              raise SystemExit(f"Bot SHA mismatch: {provenance.get('bot_sha')}")
+          endstone = provenance.get('endstone') or {}
+          if (endstone.get('sha') or '').lower() != os.environ['EXPECTED_ENDSTONE_SHA'].lower():
+              raise SystemExit(f"Endstone SHA mismatch: {endstone.get('sha')}")
+          measurement = data.get('measurement') or {}
+          if not measurement.get('profiler_start_acknowledgement'):
+              raise SystemExit('profiler running acknowledgement missing')
+          retained = (data.get('workload') or {}).get('retained_allocation') or {}
+          expected = 24 * (1 << 20)
+          if retained.get('retained_blocks_before_cleanup') != 24 or retained.get('retained_bytes_before_cleanup') != expected:
+              raise SystemExit(f"retained fixture mismatch: {retained}")
+          if not retained.get('cleaned_up'):
+              raise SystemExit(f"retained fixture cleanup incomplete: {retained}")
+          assertions = data.get('semantic_assertions') or {}
+          if not assertions or not all(assertions.values()) or not assertions.get('retained_helper_chain'):
+              raise SystemExit(f"semantic assertions failed: {assertions}")
+          profile = data.get('profile') or {}
+          if int(profile.get('raw_bytes') or 0) <= 0:
+              raise SystemExit(f"empty profile: {profile}")
+          incomplete = (data.get('quality') or {}).get('incomplete_flags') or {}
+          if any(incomplete.values()):
+              raise SystemExit(f"incomplete profile: {incomplete}")
+          print('post-merge final alloc-live acceptance PASS')
+          PY
+      - name: Upload bounded acceptance evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: final-acceptance-python-attribution-${{ github.run_id }}
+          name: final-postmerge-alloc-live-${{ github.run_id }}
           path: |
-            metadata.json
-            bds.log
-            endstone.log
-            spark.log
-            test-results.json
-            python-attribution-result.json
-            bstats-config.toml
-            python-multi-plugin.sparkprofile
-            python-multi-plugin-profile-summary.json
-            failure-diagnostics.txt
+            evidence/alloc-live-only/test-results.json
+            evidence/alloc-live-only/profiler-mode-result.json
+            evidence/alloc-live-only/metadata.json
+            evidence/alloc-live-only/bstats-config.toml
+            evidence/alloc-live-only/evidence-manifest.json
+            evidence/alloc-live-only/allocation-live-state.json
+            evidence/alloc-live-only/*.sparkprofile
+            evidence/alloc-live-only/*-profile-summary.json
+            evidence/alloc-live-only/bds.log
+            evidence/alloc-live-only/endstone.log
+            evidence/alloc-live-only/spark.log
+            evidence/alloc-live-only/bot.log
+            evidence/alloc-live-only/failure-diagnostics.txt
           if-no-files-found: warn
           retention-days: 30
