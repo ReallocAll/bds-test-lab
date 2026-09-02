@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "endstone-ci-lifecycle-control"
 version = "0.1.0"
-description = "Zero-idle-overhead lifecycle control command for exact Endstone BDS CI"
+description = "Low-overhead deterministic lifecycle control for exact Endstone BDS CI"
 requires-python = ">=3.11"
 
 [project.entry-points."endstone"]
