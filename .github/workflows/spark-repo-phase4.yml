@@ -1,0 +1,121 @@
+name: Spark repository phase 4
+
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/spark-repo-phase4.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  finalize:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ secrets.REPO_PAT }}
+      TARGET_REPO: ReallocAll/spark
+      BASE_SHA: 53b556eae4e66ff280a50d6c926258fcbc73b3bc
+      DEVELOP_SHA: 6cbda71cf858eab29f59fd9243ea94f2110f5637
+      OLD_DEV_SHA: 9a0838c7e68f334b1d73e8ebde0017f7dd90a939
+    steps:
+      - name: Verify rollback and delete patch-equivalent stale branches
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(gh api repos/$TARGET_REPO/git/ref/heads/main --jq .object.sha)" = "$BASE_SHA"
+          test "$(gh api repos/$TARGET_REPO/git/ref/heads/develop --jq .object.sha)" = "$DEVELOP_SHA"
+          test "$(gh pr list --repo "$TARGET_REPO" --state open --limit 100 --json number --jq length)" = "0"
+          if gh api repos/$TARGET_REPO/releases/tags/v0.6.0 >/dev/null 2>&1; then exit 1; fi
+          if gh api repos/$TARGET_REPO/git/ref/tags/v0.6.0 >/dev/null 2>&1; then exit 1; fi
+
+          git clone --mirror "https://x-access-token:${GH_TOKEN}@github.com/${TARGET_REPO}.git" spark-branches.git
+          cd spark-branches.git
+          mkdir -p /tmp/spark-phase4
+          : > /tmp/spark-phase4/deleted-branches.tsv
+          : > /tmp/unsafe.txt
+          git for-each-ref --format='%(refname:short)%09%(objectname)' refs/heads | sort | while IFS=$'\t' read -r branch tip; do
+            case "$branch" in main|develop|exp/windows-stable-entry-hooks) continue ;; esac
+            unique=$(git cherry "$OLD_DEV_SHA" "$tip" 2>/dev/null | grep -c '^+' || true)
+            if [[ "$unique" != "0" ]]; then
+              printf '%s\t%s\tunique=%s\n' "$branch" "$tip" "$unique" >> /tmp/unsafe.txt
+              continue
+            fi
+            gh api --method DELETE "repos/$TARGET_REPO/git/refs/heads/$branch"
+            printf '%s\t%s\tpatch-equivalent to pre-release develop\n' "$branch" "$tip" | tee -a /tmp/spark-phase4/deleted-branches.tsv
+          done
+          if [[ -s /tmp/unsafe.txt ]]; then
+            cat /tmp/unsafe.txt >&2
+            exit 1
+          fi
+          cd ..
+          mapfile -t branches < <(gh api --paginate "repos/$TARGET_REPO/branches?per_page=100" --jq '.[].name' | sort)
+          printf '%s\n' "${branches[@]}" | tee /tmp/spark-phase4/branches-after.txt
+          test "${#branches[@]}" -eq 3
+          test "${branches[0]}" = develop
+          test "${branches[1]}" = exp/windows-stable-entry-hooks
+          test "${branches[2]}" = main
+
+      - name: Harden manual Release workflow on main and develop
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${TARGET_REPO}.git" spark-release
+          cd spark-release
+          git config user.name ReallocAll
+          git config user.email '63277109+ReallocAll@users.noreply.github.com'
+          mkdir -p /tmp/spark-phase4
+
+          harden() {
+            branch="$1"
+            expected="$2"
+            git fetch origin "$branch"
+            git checkout -B "$branch" "origin/$branch"
+            test "$(git rev-parse HEAD)" = "$expected"
+            python - <<'PY'
+          from pathlib import Path
+          p = Path('.github/workflows/release.yml')
+          s = p.read_text()
+          old = '''      dry_run:\n        description: "Preview without making changes"\n        required: false\n        type: boolean\n        default: false'''
+          new = '''      dry_run:\n        description: "Preview without making changes"\n        required: false\n        type: boolean\n        default: true'''
+          if s.count(old) != 1:
+              raise SystemExit('expected exactly one unsafe dry_run block')
+          p.write_text(s.replace(old, new, 1))
+          PY
+            git diff --check
+            git diff --exit-code -- .github/workflows/release.yml >/dev/null && { echo "release workflow was not changed" >&2; exit 1; } || true
+            grep -A4 -F '      dry_run:' .github/workflows/release.yml | grep -F 'default: true'
+            git add .github/workflows/release.yml
+            git commit -m 'ci: make manual releases default to dry run'
+            new_sha=$(git rev-parse HEAD)
+            git push --force-with-lease=refs/heads/$branch:$expected origin HEAD:"refs/heads/$branch"
+            printf '%s\t%s\t%s\n' "$branch" "$expected" "$new_sha" | tee -a /tmp/spark-phase4/release-hardening-shas.tsv
+          }
+
+          harden main "$BASE_SHA"
+          harden develop "$DEVELOP_SHA"
+
+      - name: Dispatch required manual validation workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run python-attribution.yml --repo "$TARGET_REPO" --ref develop
+          gh workflow run windows-iat-hook-safety.yml --repo "$TARGET_REPO" --ref develop
+          echo 'Dispatched Python attribution and Windows IAT Hook Safety on final develop.'
+
+      - name: Verify publication remains absent
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh api repos/$TARGET_REPO/releases/tags/v0.6.0 >/dev/null 2>&1; then exit 1; fi
+          if gh api repos/$TARGET_REPO/git/ref/tags/v0.6.0 >/dev/null 2>&1; then exit 1; fi
+          gh api repos/$TARGET_REPO/git/ref/heads/main --jq .object.sha | tee /tmp/spark-phase4/final-main.txt
+          gh api repos/$TARGET_REPO/git/ref/heads/develop --jq .object.sha | tee /tmp/spark-phase4/final-develop.txt
+          gh api repos/$TARGET_REPO/git/ref/heads/exp/windows-stable-entry-hooks --jq .object.sha | tee /tmp/spark-phase4/final-exp.txt
+
+      - name: Upload audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: spark-repository-phase4-audit
+          path: /tmp/spark-phase4
+          retention-days: 14
+          if-no-files-found: error
