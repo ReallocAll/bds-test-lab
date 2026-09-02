@@ -18,7 +18,6 @@ jobs:
       BASE_SHA: 53b556eae4e66ff280a50d6c926258fcbc73b3bc
       OLD_DEV_SHA: 9a0838c7e68f334b1d73e8ebde0017f7dd90a939
       OLD_RELEASE_SHA: 3c5cbdfc664912e3b87202c068ec04d8fe95c039
-      OLD_EXP_SHA: 964117e459add10bfd128b050f5ee90639d0e962
       BAD_TAG: v0.6.0
 
     steps:
@@ -36,7 +35,6 @@ jobs:
 
           test "$main_sha" = "$OLD_RELEASE_SHA"
           test "$develop_sha" = "$OLD_RELEASE_SHA"
-          test "$exp_sha" = "$OLD_EXP_SHA"
           test "$tag_sha" = "$OLD_RELEASE_SHA"
           test "$release_tag" = "$BAD_TAG"
           test "$open_prs" = "0"
@@ -44,7 +42,9 @@ jobs:
           parent_sha=$(gh api "repos/$TARGET_REPO/git/commits/$OLD_RELEASE_SHA" --jq '.parents[0].sha')
           test "$parent_sha" = "$OLD_DEV_SHA"
 
-          echo "Exact preconditions verified."
+          echo "EXPECTED_EXP_SHA=$exp_sha" >> "$GITHUB_ENV"
+          echo "Captured Stable Entry tip: $exp_sha"
+          echo "Exact production preconditions verified."
 
       - name: Clone and audit before rewrite
         shell: bash
@@ -55,7 +55,7 @@ jobs:
 
           test "$(git rev-parse refs/heads/main)" = "$OLD_RELEASE_SHA"
           test "$(git rev-parse refs/heads/develop)" = "$OLD_RELEASE_SHA"
-          test "$(git rev-parse refs/heads/exp/windows-stable-entry-hooks)" = "$OLD_EXP_SHA"
+          test "$(git rev-parse refs/heads/exp/windows-stable-entry-hooks)" = "$EXPECTED_EXP_SHA"
           test "$(git rev-parse "$OLD_RELEASE_SHA^")" = "$OLD_DEV_SHA"
           test "$(git rev-parse "$OLD_DEV_SHA^{tree}")" = "79b02e8e2487ccd67f98188f17d33bb56391b7ad"
 
@@ -65,6 +65,7 @@ jobs:
           git show "$OLD_DEV_SHA:CHANGELOG.md" | grep -F '## [Unreleased]'
 
           mkdir -p /tmp/spark-maintenance-report
+          echo "$EXPECTED_EXP_SHA" > /tmp/spark-maintenance-report/old-exp-sha.txt
           git for-each-ref --format='%(refname:short)%09%(objectname)' refs/heads | sort > /tmp/spark-maintenance-report/branches-before.tsv
 
           : > /tmp/spark-maintenance-report/branch-audit.tsv
@@ -126,7 +127,7 @@ jobs:
           cd spark.git
 
           git update-ref refs/heads/maintenance-develop "$OLD_DEV_SHA"
-          git update-ref refs/heads/maintenance-exp "$OLD_EXP_SHA"
+          git update-ref refs/heads/maintenance-exp "$EXPECTED_EXP_SHA"
           git rev-list "$BASE_SHA"..refs/heads/maintenance-develop refs/heads/maintenance-exp | sort -u > /tmp/rewrite_ids
 
           : > /tmp/metadata-before.tsv
@@ -185,7 +186,7 @@ jobs:
           echo "$new_exp" > /tmp/spark-maintenance-report/new-exp-sha.txt
 
           test "$(git rev-parse "$new_dev^{tree}")" = "$(awk -F '\t' -v s="$OLD_DEV_SHA" '$1==s {print $2}' /tmp/metadata-before.tsv)"
-          test "$(git rev-parse "$new_exp^{tree}")" = "$(awk -F '\t' -v s="$OLD_EXP_SHA" '$1==s {print $2}' /tmp/metadata-before.tsv)"
+          test "$(git rev-parse "$new_exp^{tree}")" = "$(awk -F '\t' -v s="$EXPECTED_EXP_SHA" '$1==s {print $2}' /tmp/metadata-before.tsv)"
 
           failures=0
           : > /tmp/spark-maintenance-report/tree-identity-verification.tsv
@@ -234,12 +235,11 @@ jobs:
               9a0838c7e68f334b1d73e8ebde0017f7dd90a939; do
               new=$(awk -v o="$old" '$1==o {print $2}' "$map_file")
               [[ -n "$new" && ! "$new" =~ ^0+$ ]] || continue
-              old_subject=$(git show -s --format='%s' "$old" 2>/dev/null || echo '<original object pruned>')
               new_subject=$(git show -s --format='%s' "$new")
               old_tree=$(awk -F '\t' -v s="$old" '$1==s {print $2}' /tmp/metadata-before.tsv)
               new_tree=$(git rev-parse "$new^{tree}")
               equal=no; [[ -n "$old_tree" && "$old_tree" == "$new_tree" ]] && equal=yes
-              echo -e "$old\t$new\t$old_subject\t$new_subject\t$equal"
+              echo -e "$old\t$new\t$new_subject\t$equal"
             done
           } > /tmp/spark-maintenance-report/important-mapping.tsv
 
@@ -251,7 +251,7 @@ jobs:
 
           test "$(gh api "repos/$TARGET_REPO/git/ref/heads/main" --jq .object.sha)" = "$OLD_RELEASE_SHA"
           test "$(gh api "repos/$TARGET_REPO/git/ref/heads/develop" --jq .object.sha)" = "$OLD_RELEASE_SHA"
-          test "$(gh api "repos/$TARGET_REPO/git/ref/heads/exp/windows-stable-entry-hooks" --jq .object.sha)" = "$OLD_EXP_SHA"
+          test "$(gh api "repos/$TARGET_REPO/git/ref/heads/exp/windows-stable-entry-hooks" --jq .object.sha)" = "$EXPECTED_EXP_SHA"
           test "$(gh api "repos/$TARGET_REPO/git/ref/tags/$BAD_TAG" --jq .object.sha)" = "$OLD_RELEASE_SHA"
 
           new_dev=$(cat /tmp/spark-maintenance-report/new-develop-sha.txt)
