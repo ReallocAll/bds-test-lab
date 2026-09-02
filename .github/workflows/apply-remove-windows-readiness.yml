@@ -1,4 +1,4 @@
-name: Apply Windows readiness fix
+name: Ready validated alloc-live PR
 
 on:
   push:
@@ -11,67 +11,10 @@ permissions:
   contents: read
 
 jobs:
-  apply:
+  ready:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: fix/combined-pack-state-oracle
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Remove brittle startup command readiness probe
+      - name: Mark validated PR 62 ready
         env:
           GH_TOKEN: ${{ secrets.REPO_PAT }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -m pip install --disable-pip-version-check psutil packaging pyyaml
-          python - <<'PY'
-          from pathlib import Path
-
-          source = Path('controller/combined_pack_gamerule_fleet_exact_runner.py')
-          lines = source.read_text(encoding='utf-8').splitlines(keepends=True)
-          starts = [i for i, line in enumerate(lines) if 'readiness_start = self.server.command("spark tps")' in line]
-          lifecycle = [i for i, line in enumerate(lines) if 'self.check("windows-interactive-lifecycle"' in line]
-          if len(starts) != 1 or len(lifecycle) != 1 or not starts[0] < lifecycle[0]:
-              raise SystemExit(f'unexpected readiness block anchors: starts={starts} lifecycle={lifecycle}')
-          del lines[starts[0]:lifecycle[0]]
-          source.write_text(''.join(lines), encoding='utf-8')
-
-          tests = Path('tests/test_combined_pack_exact_runner.py')
-          lines = tests.read_text(encoding='utf-8').splitlines(keepends=True)
-          def remove_one(predicate, label):
-              hits = [i for i, line in enumerate(lines) if predicate(line)]
-              if len(hits) != 1:
-                  raise SystemExit(f'unexpected {label} hits: {hits}')
-              del lines[hits[0]]
-
-          remove_one(lambda line: line == '    commands: list[str] = []\n', 'commands class field')
-          remove_one(lambda line: 'TPS (5s/10s/1m/5m/15m): 20.00 / 20.00 / 20.00 / 20.00 / 20.00' in line, 'fake TPS output')
-
-          method = [i for i, line in enumerate(lines) if line.startswith('    def command(self, command: str) -> int:')]
-          snapshot = [i for i, line in enumerate(lines) if line.startswith('    def snapshot(self) -> list[str]:')]
-          command_start = method[0] if len(method) == 1 else None
-          snapshot_after = next((i for i in snapshot if command_start is not None and i > command_start), None)
-          if command_start is None or snapshot_after is None:
-              raise SystemExit(f'unexpected fake command method anchors: method={method} snapshot={snapshot}')
-          del lines[command_start:snapshot_after]
-
-          remove_one(lambda line: '_StartedServer.commands = []' in line, 'commands reset')
-          assertion = [i for i, line in enumerate(lines) if 'self.assertEqual(_StartedServer.commands, ["spark tps"])' in line]
-          lifecycle_block = [i for i, line in enumerate(lines) if line.strip() == 'lifecycle = [']
-          assertion_start = assertion[0] if len(assertion) == 1 else None
-          lifecycle_after = next((i for i in lifecycle_block if assertion_start is not None and i > assertion_start), None)
-          if assertion_start is None or lifecycle_after is None:
-              raise SystemExit(f'unexpected readiness assertion anchors: assertion={assertion} lifecycle={lifecycle_block}')
-          del lines[assertion_start:lifecycle_after]
-          tests.write_text(''.join(lines), encoding='utf-8')
-          PY
-          python -m unittest tests.test_combined_pack_exact_runner
-          python -m py_compile controller/combined_pack_gamerule_fleet_exact_runner.py tests/test_combined_pack_exact_runner.py
-          git diff --check
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add controller/combined_pack_gamerule_fleet_exact_runner.py tests/test_combined_pack_exact_runner.py
-          git commit -m 'test: remove brittle Windows command readiness probe'
-          git push "https://x-access-token:${GH_TOKEN}@github.com/ReallocAll/bds-test-lab.git" HEAD:fix/combined-pack-state-oracle
+        run: gh pr ready 62 --repo ReallocAll/bds-test-lab
