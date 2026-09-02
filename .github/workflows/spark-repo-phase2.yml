@@ -1,0 +1,174 @@
+name: Spark repository phase 2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/spark-repo-phase2.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  normalize-and-audit:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ secrets.REPO_PAT }}
+      TARGET_REPO: ReallocAll/spark
+      BASE_SHA: 53b556eae4e66ff280a50d6c926258fcbc73b3bc
+      DEVELOP_SHA: 6cbda71cf858eab29f59fd9243ea94f2110f5637
+      OLD_DEV_SHA: 9a0838c7e68f334b1d73e8ebde0017f7dd90a939
+      BAD_TAG: v0.6.0
+
+    steps:
+      - name: Verify production rollback state
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$TARGET_REPO/git/ref/heads/main" --jq .object.sha)" = "$BASE_SHA"
+          test "$(gh api "repos/$TARGET_REPO/git/ref/heads/develop" --jq .object.sha)" = "$DEVELOP_SHA"
+          if gh api "repos/$TARGET_REPO/releases/tags/$BAD_TAG" >/dev/null 2>&1; then
+            echo "Erroneous release unexpectedly exists" >&2
+            exit 1
+          fi
+          if gh api "repos/$TARGET_REPO/git/ref/tags/$BAD_TAG" >/dev/null 2>&1; then
+            echo "Erroneous tag unexpectedly exists" >&2
+            exit 1
+          fi
+          test "$(gh pr list --repo "$TARGET_REPO" --state open --limit 100 --json number --jq 'length')" = "0"
+
+      - name: Normalize Stable Entry history with lease protection
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check git-filter-repo
+          mkdir -p /tmp/spark-phase2
+          success=no
+
+          for attempt in $(seq 1 10); do
+            echo "Stable Entry rewrite attempt $attempt"
+            rm -rf spark-exp.git /tmp/rewrite_ids /tmp/metadata-before.tsv
+            git clone --mirror "https://x-access-token:${GH_TOKEN}@github.com/${TARGET_REPO}.git" spark-exp.git
+            cd spark-exp.git
+
+            old_exp=$(git rev-parse refs/heads/exp/windows-stable-entry-hooks)
+            old_tree=$(git rev-parse "$old_exp^{tree}")
+            echo "Captured exp tip: $old_exp"
+
+            git update-ref refs/heads/maintenance-exp "$old_exp"
+            git rev-list "$BASE_SHA"..refs/heads/maintenance-exp | sort -u > /tmp/rewrite_ids
+            : > /tmp/metadata-before.tsv
+            while read -r sha; do
+              git show -s --format='%H%x09%T%x09%an%x09%ae%x09%aI%x09%cn%x09%ce%x09%cI' "$sha" >> /tmp/metadata-before.tsv
+            done < /tmp/rewrite_ids
+
+            cat > /tmp/filter_callback.py <<'PY'
+          import re
+          rewrite_ids = set(open('/tmp/rewrite_ids', 'rb').read().splitlines())
+          if commit.original_id in rewrite_ids:
+              msg = commit.message.decode('utf-8', 'surrogateescape')
+              had_final_newline = msg.endswith('\n')
+              if re.match(r'^Merge pull request #\d+ from [^\n]+\n\n', msg):
+                  msg = msg.split('\n\n', 1)[1]
+              lines = msg.splitlines()
+              if lines:
+                  lines[0] = re.sub(r'\s+(?:\(#[0-9]+\)|#[0-9]+|PR\s+#[0-9]+)$', '', lines[0], flags=re.I)
+              cleaned = []
+              for line in lines:
+                  if re.match(r'(?i)^Co-authored-by:\s*github-actions\[bot\](?:\s|<|$)', line):
+                      continue
+                  if re.match(r'(?i)^(?:PR|Pull Request):\s*#?[0-9]+\s*$', line):
+                      continue
+                  cleaned.append(line)
+              while cleaned and not cleaned[-1].strip():
+                  cleaned.pop()
+              if cleaned and cleaned[-1].strip() == '---------':
+                  cleaned.pop()
+                  while cleaned and not cleaned[-1].strip():
+                      cleaned.pop()
+              new_msg = '\n'.join(cleaned)
+              if had_final_newline and new_msg:
+                  new_msg += '\n'
+              commit.message = new_msg.encode('utf-8', 'surrogateescape')
+          PY
+
+            git filter-repo --force \
+              --refs refs/heads/maintenance-exp \
+              --commit-callback "$(cat /tmp/filter_callback.py)"
+
+            map_file="$(git rev-parse --git-dir)/filter-repo/commit-map"
+            test -f "$map_file"
+            new_exp=$(git rev-parse refs/heads/maintenance-exp)
+            test "$(git rev-parse "$new_exp^{tree}")" = "$old_tree"
+
+            failures=0
+            while IFS=$'\t' read -r old tree an ae ad cn ce cd; do
+              new=$(awk -v o="$old" '$1==o {print $2}' "$map_file")
+              [[ -n "$new" && ! "$new" =~ ^0+$ ]] || { failures=$((failures + 1)); continue; }
+              new_tree=$(git rev-parse "$new^{tree}")
+              IFS=$'\t' read -r nan nae nad ncn nce ncd < <(git show -s --format='%an%x09%ae%x09%aI%x09%cn%x09%ce%x09%cI' "$new")
+              [[ "$tree" = "$new_tree" && "$an" = "$nan" && "$ae" = "$nae" && "$ad" = "$nad" && "$cn" = "$ncn" && "$ce" = "$nce" && "$cd" = "$ncd" ]] || failures=$((failures + 1))
+            done < /tmp/metadata-before.tsv
+            test "$failures" -eq 0
+
+            if git log --format='%s' "$BASE_SHA"..refs/heads/maintenance-exp | grep -E '\(#[0-9]+\)$|^Merge pull request #[0-9]+'; then
+              echo "PR subject pollution remains in Stable Entry history" >&2
+              exit 1
+            fi
+            if git log --format='%B' "$BASE_SHA"..refs/heads/maintenance-exp | grep -Ei '^Co-authored-by:\s*github-actions\[bot\]|^(PR|Pull Request):'; then
+              echo "Automation trailer pollution remains in Stable Entry history" >&2
+              exit 1
+            fi
+
+            git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${TARGET_REPO}.git"
+            set +e
+            git push --force-with-lease=refs/heads/exp/windows-stable-entry-hooks:"$old_exp" origin \
+              refs/heads/maintenance-exp:refs/heads/exp/windows-stable-entry-hooks
+            rc=$?
+            set -e
+            if [[ "$rc" -eq 0 ]]; then
+              echo -e "$old_exp\t$new_exp\t$old_tree" > /tmp/spark-phase2/stable-entry-map.tsv
+              echo "Stable Entry normalized: $old_exp -> $new_exp"
+              success=yes
+              cd ..
+              break
+            fi
+
+            echo "Stable Entry moved concurrently; retrying without overwriting it."
+            cd ..
+          done
+
+          test "$success" = yes
+
+      - name: Audit remaining non-core branches
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf spark-audit.git
+          git clone --mirror "https://x-access-token:${GH_TOKEN}@github.com/${TARGET_REPO}.git" spark-audit.git
+          cd spark-audit.git
+          mkdir -p /tmp/spark-phase2
+          out=/tmp/spark-phase2/remaining-branch-audit.tsv
+          printf 'branch\ttip\tdate\tahead\tbehind\tunique_vs_old_dev\tassociated_prs\tsubject\tdiffstat\n' > "$out"
+
+          git for-each-ref --format='%(refname:short)%09%(objectname)' refs/heads | sort | while IFS=$'\t' read -r branch tip; do
+            case "$branch" in
+              main|develop|exp/windows-stable-entry-hooks) continue ;;
+            esac
+            date=$(git show -s --format='%cI' "$tip")
+            subject=$(git show -s --format='%s' "$tip" | tr '\t\n' '  ')
+            ahead=$(git rev-list --count "$DEVELOP_SHA..$tip" 2>/dev/null || echo '?')
+            behind=$(git rev-list --count "$tip..$DEVELOP_SHA" 2>/dev/null || echo '?')
+            unique=$(git cherry "$OLD_DEV_SHA" "$tip" 2>/dev/null | grep -c '^+' || true)
+            prs=$(gh api -H 'Accept: application/vnd.github+json' "repos/$TARGET_REPO/commits/$tip/pulls" --jq 'map("#" + (.number|tostring) + ":" + .state + ":" + (if .merged_at then "merged" else "unmerged" end)) | join(",")' 2>/dev/null || true)
+            stat=$(git diff --shortstat "$DEVELOP_SHA...$tip" 2>/dev/null | tr '\t\n' '  ' || true)
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$branch" "$tip" "$date" "$ahead" "$behind" "$unique" "$prs" "$subject" "$stat" | tee -a "$out"
+          done
+
+      - name: Upload phase 2 audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: spark-repository-phase2-audit
+          path: /tmp/spark-phase2
+          retention-days: 14
+          if-no-files-found: error
