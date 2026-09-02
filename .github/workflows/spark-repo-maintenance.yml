@@ -33,14 +33,12 @@ jobs:
           release_tag=$(gh api "repos/$TARGET_REPO/releases/tags/$BAD_TAG" --jq .tag_name)
           open_prs=$(gh pr list --repo "$TARGET_REPO" --state open --limit 100 --json number --jq 'length')
           parent_sha=$(gh api "repos/$TARGET_REPO/git/commits/$OLD_RELEASE_SHA" --jq '.parents[0].sha')
-
           test "$main_sha" = "$OLD_RELEASE_SHA"
           test "$develop_sha" = "$OLD_RELEASE_SHA"
           test "$tag_sha" = "$OLD_RELEASE_SHA"
           test "$release_tag" = "$BAD_TAG"
           test "$open_prs" = "0"
           test "$parent_sha" = "$OLD_DEV_SHA"
-
           echo "EXPECTED_EXP_SHA=$exp_sha" >> "$GITHUB_ENV"
           echo "Captured Stable Entry tip: $exp_sha"
 
@@ -50,13 +48,11 @@ jobs:
           set -euo pipefail
           git clone --mirror "https://x-access-token:${GH_TOKEN}@github.com/${TARGET_REPO}.git" spark.git
           cd spark.git
-
           test "$(git rev-parse refs/heads/main)" = "$OLD_RELEASE_SHA"
           test "$(git rev-parse refs/heads/develop)" = "$OLD_RELEASE_SHA"
           test "$(git rev-parse refs/heads/exp/windows-stable-entry-hooks)" = "$EXPECTED_EXP_SHA"
           test "$(git rev-parse "$OLD_RELEASE_SHA^")" = "$OLD_DEV_SHA"
           test "$(git rev-parse "$OLD_DEV_SHA^{tree}")" = "79b02e8e2487ccd67f98188f17d33bb56391b7ad"
-
           git show "$OLD_DEV_SHA:CMakeLists.txt" | grep -F 'project(spark VERSION 0.5.3 LANGUAGES CXX)'
           git show "$OLD_DEV_SHA:src/spark_constants.h" | grep -F 'inline constexpr const char *kVersion = "0.5.3";'
           git show "$OLD_DEV_SHA:src/plugin.cpp" | grep -F 'ENDSTONE_PLUGIN("spark", "0.5.3", SparkPlugin)'
@@ -65,39 +61,24 @@ jobs:
           mkdir -p /tmp/spark-maintenance-report
           echo "$EXPECTED_EXP_SHA" > /tmp/spark-maintenance-report/old-exp-sha.txt
           git for-each-ref --format='%(refname:short)%09%(objectname)' refs/heads | sort > /tmp/spark-maintenance-report/branches-before.tsv
-
           : > /tmp/spark-maintenance-report/branch-audit.tsv
           : > /tmp/delete-branches.txt
           : > /tmp/ambiguous-branches.txt
           while IFS=$'\t' read -r branch tip; do
             case "$branch" in
               main|develop|exp/windows-stable-entry-hooks)
-                printf '%s\t%s\tKEEP_CORE\n' "$branch" "$tip" >> /tmp/spark-maintenance-report/branch-audit.tsv
-                continue
-                ;;
+                printf '%s\t%s\tKEEP_CORE\n' "$branch" "$tip" >> /tmp/spark-maintenance-report/branch-audit.tsv; continue ;;
             esac
-            merged=no
-            git merge-base --is-ancestor "$tip" "$OLD_DEV_SHA" 2>/dev/null && merged=yes || true
-            release_derived=no
-            git merge-base --is-ancestor "$OLD_RELEASE_SHA" "$tip" 2>/dev/null && release_derived=yes || true
+            merged=no; git merge-base --is-ancestor "$tip" "$OLD_DEV_SHA" 2>/dev/null && merged=yes || true
+            release_derived=no; git merge-base --is-ancestor "$OLD_RELEASE_SHA" "$tip" 2>/dev/null && release_derived=yes || true
             unique_patches=unknown
-            if git merge-base "$OLD_DEV_SHA" "$tip" >/dev/null 2>&1; then
-              unique_patches=$(git cherry "$OLD_DEV_SHA" "$tip" | grep -c '^+' || true)
-            fi
-            disposition=KEEP_AMBIGUOUS
-            reason="independent patches require explicit review"
-            if [[ "$release_derived" == yes ]]; then
-              disposition=DELETE; reason="derived from erroneous release commit"
-            elif [[ "$merged" == yes ]]; then
-              disposition=DELETE; reason="tip already reachable from pre-release develop"
-            elif [[ "$unique_patches" == 0 ]]; then
-              disposition=DELETE; reason="patch-equivalent to pre-release develop"
-            elif [[ "$branch" =~ ^(ci|diagnostic|docs|copilot|backport|release|backup|archive|local|cleanup|test)/ ]]; then
-              disposition=DELETE; reason="closed one-shot/CI/maintenance namespace with no open PR"
-            fi
-            printf '%s\t%s\t%s\tmerged=%s\trelease_derived=%s\tunique_patches=%s\t%s\n' \
-              "$branch" "$tip" "$disposition" "$merged" "$release_derived" "$unique_patches" "$reason" \
-              >> /tmp/spark-maintenance-report/branch-audit.tsv
+            if git merge-base "$OLD_DEV_SHA" "$tip" >/dev/null 2>&1; then unique_patches=$(git cherry "$OLD_DEV_SHA" "$tip" | grep -c '^+' || true); fi
+            disposition=KEEP_AMBIGUOUS; reason="independent patches require explicit review"
+            if [[ "$release_derived" == yes ]]; then disposition=DELETE; reason="derived from erroneous release commit"
+            elif [[ "$merged" == yes ]]; then disposition=DELETE; reason="tip already reachable from pre-release develop"
+            elif [[ "$unique_patches" == 0 ]]; then disposition=DELETE; reason="patch-equivalent to pre-release develop"
+            elif [[ "$branch" =~ ^(ci|diagnostic|docs|copilot|backport|release|backup|archive|local|cleanup|test)/ ]]; then disposition=DELETE; reason="closed one-shot/CI/maintenance namespace with no open PR"; fi
+            printf '%s\t%s\t%s\tmerged=%s\trelease_derived=%s\tunique_patches=%s\t%s\n' "$branch" "$tip" "$disposition" "$merged" "$release_derived" "$unique_patches" "$reason" >> /tmp/spark-maintenance-report/branch-audit.tsv
             if [[ "$disposition" == DELETE ]]; then echo "$branch" >> /tmp/delete-branches.txt; else echo "$branch" >> /tmp/ambiguous-branches.txt; fi
           done < /tmp/spark-maintenance-report/branches-before.tsv
           cp /tmp/delete-branches.txt /tmp/spark-maintenance-report/delete-branches.txt
@@ -105,136 +86,58 @@ jobs:
 
           python -m pip install --disable-pip-version-check requests
           cat > /tmp/recreate.py <<'PY'
-          import datetime as dt
-          import json
-          import os
-          import re
-          import subprocess
-          import sys
-          import time
-          import requests
-
-          repo = os.environ['TARGET_REPO']
-          token = os.environ['GH_TOKEN']
-          base = os.environ['BASE_SHA']
-          old_dev = os.environ['OLD_DEV_SHA']
-          old_exp = os.environ['EXPECTED_EXP_SHA']
-          api = f'https://api.github.com/repos/{repo}'
-          sess = requests.Session()
-          sess.headers.update({
-              'Authorization': f'Bearer {token}',
-              'Accept': 'application/vnd.github+json',
-              'X-GitHub-Api-Version': '2022-11-28',
-          })
-
-          def git(*args, text=True):
-              return subprocess.check_output(['git', *args], text=text).rstrip('\n') if text else subprocess.check_output(['git', *args])
-
-          def clean_message(raw: bytes) -> str:
-              msg = raw.decode('utf-8', 'surrogateescape')
-              had_nl = msg.endswith('\n')
-              if re.match(r'^Merge pull request #\d+ from [^\n]+\n\n', msg):
-                  msg = msg.split('\n\n', 1)[1]
-              lines = msg.splitlines()
-              if lines:
-                  lines[0] = re.sub(r'\s+(?:\(#[0-9]+\)|#[0-9]+|PR\s+#[0-9]+)$', '', lines[0], flags=re.I)
-              cleaned = []
-              for line in lines:
-                  if re.match(r'(?i)^Co-authored-by:\s*github-actions\[bot\](?:\s|<|$)', line):
-                      continue
-                  if re.match(r'(?i)^(?:PR|Pull Request):\s*#?[0-9]+\s*$', line):
-                      continue
-                  cleaned.append(line)
-              while cleaned and not cleaned[-1].strip():
-                  cleaned.pop()
-              if cleaned and cleaned[-1].strip() == '---------':
-                  cleaned.pop()
-                  while cleaned and not cleaned[-1].strip():
-                      cleaned.pop()
-              out = '\n'.join(cleaned)
-              if had_nl and out:
-                  out += '\n'
-              return out
-
-          def raw_message(sha: str) -> bytes:
-              obj = git('cat-file', 'commit', sha, text=False)
-              return obj.split(b'\n\n', 1)[1] if b'\n\n' in obj else b''
-
-          revs = git('rev-list', '--reverse', '--topo-order', f'{base}..{old_dev}', old_exp).splitlines()
-          rewrite = set(revs)
-          mapping = {}
-          rows = []
-          failures = []
-
-          for idx, old in enumerate(revs, 1):
-              tree = git('show', '-s', '--format=%T', old)
-              parents = git('show', '-s', '--format=%P', old).split()
-              mapped_parents = [mapping.get(p, p) for p in parents]
-              meta = git('show', '-s', '--format=%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI', old).split('\x00')
-              an, ae, ad, cn, ce, cd = meta
-              old_msg = raw_message(old).decode('utf-8', 'surrogateescape')
-              new_msg = clean_message(raw_message(old))
-              payload = {
-                  'message': new_msg,
-                  'tree': tree,
-                  'parents': mapped_parents,
-                  'author': {'name': an, 'email': ae, 'date': ad},
-                  'committer': {'name': cn, 'email': ce, 'date': cd},
-              }
-              r = sess.post(f'{api}/git/commits', json=payload, timeout=30)
-              if r.status_code != 201:
-                  print(f'create commit failed old={old} status={r.status_code} body={r.text}', file=sys.stderr)
-                  sys.exit(1)
-              data = r.json()
-              new = data['sha']
-              mapping[old] = new
-
-              if data['tree']['sha'] != tree:
-                  failures.append((old, 'tree'))
-              if data['author']['name'] != an or data['author']['email'] != ae:
-                  failures.append((old, 'author identity'))
-              if data['committer']['name'] != cn or data['committer']['email'] != ce:
-                  failures.append((old, 'committer identity'))
-
-              def instant(s):
-                  return dt.datetime.fromisoformat(s.replace('Z', '+00:00')).timestamp()
-              if instant(data['author']['date']) != instant(ad):
-                  failures.append((old, 'author date'))
-              if instant(data['committer']['date']) != instant(cd):
-                  failures.append((old, 'committer date'))
-
-              subject_old = old_msg.splitlines()[0] if old_msg.splitlines() else ''
-              subject_new = new_msg.splitlines()[0] if new_msg.splitlines() else ''
-              if re.search(r'(?:\(#[0-9]+\)|(?:PR\s+)?#[0-9]+)$', subject_new, flags=re.I) or subject_new.startswith('Merge pull request #'):
-                  failures.append((old, 'PR subject pollution'))
-              if re.search(r'(?im)^Co-authored-by:\s*github-actions\[bot\]|^(?:PR|Pull Request):', new_msg):
-                  failures.append((old, 'automation trailer pollution'))
-              rows.append((old, new, subject_old, subject_new, tree))
-              if idx % 40 == 0:
-                  print(f'Recreated {idx}/{len(revs)} commits')
-
-          if failures:
-              print(json.dumps(failures, indent=2), file=sys.stderr)
-              sys.exit(1)
-
-          new_dev = mapping[old_dev]
-          new_exp = mapping[old_exp]
-          with open('/tmp/spark-maintenance-report/commit-map.tsv', 'w', encoding='utf-8') as f:
+          import datetime as dt, json, os, re, subprocess, sys, requests
+          repo=os.environ['TARGET_REPO']; token=os.environ['GH_TOKEN']; base=os.environ['BASE_SHA']; old_dev=os.environ['OLD_DEV_SHA']; old_exp=os.environ['EXPECTED_EXP_SHA']
+          api=f'https://api.github.com/repos/{repo}'; s=requests.Session(); s.headers.update({'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'})
+          def git(*a,text=True): return subprocess.check_output(['git',*a],text=text).rstrip('\n') if text else subprocess.check_output(['git',*a])
+          def rawmsg(sha):
+              o=git('cat-file','commit',sha,text=False); return o.split(b'\n\n',1)[1] if b'\n\n' in o else b''
+          def clean(raw):
+              m=raw.decode('utf-8','surrogateescape'); had=m.endswith('\n')
+              if re.match(r'^Merge pull request #\d+ from [^\n]+\n\n',m): m=m.split('\n\n',1)[1]
+              ls=m.splitlines()
+              if ls: ls[0]=re.sub(r'\s+(?:\(#[0-9]+\)|#[0-9]+|PR\s+#[0-9]+)$','',ls[0],flags=re.I)
+              out=[]
+              for line in ls:
+                  if re.match(r'(?i)^Co-authored-by:\s*github-actions\[bot\](?:\s|<|$)',line): continue
+                  if re.match(r'(?i)^(?:PR|Pull Request):\s*#?[0-9]+\s*$',line): continue
+                  out.append(line)
+              while out and not out[-1].strip(): out.pop()
+              if out and out[-1].strip()=='---------':
+                  out.pop()
+                  while out and not out[-1].strip(): out.pop()
+              x='\n'.join(out)
+              return x+'\n' if had and x else x
+          revs=git('rev-list','--reverse','--topo-order',f'{base}..{old_dev}',old_exp).splitlines(); mp={}; rows=[]; failures=[]
+          def instant(x): return dt.datetime.fromisoformat(x.replace('Z','+00:00')).timestamp()
+          for i,old in enumerate(revs,1):
+              tree=git('show','-s','--format=%T',old); parents=git('show','-s','--format=%P',old).split(); parents=[mp.get(p,p) for p in parents]
+              an,ae,ad,cn,ce,cd=git('show','-s','--format=%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI',old).split('\x00'); om=rawmsg(old).decode('utf-8','surrogateescape'); nm=clean(rawmsg(old))
+              r=s.post(f'{api}/git/commits',json={'message':nm,'tree':tree,'parents':parents,'author':{'name':an,'email':ae,'date':ad},'committer':{'name':cn,'email':ce,'date':cd}},timeout=30)
+              if r.status_code!=201: print(f'create failed {old} {r.status_code} {r.text}',file=sys.stderr); sys.exit(1)
+              d=r.json(); new=d['sha']; mp[old]=new
+              if d['tree']['sha']!=tree: failures.append((old,'tree'))
+              if d['author']['name']!=an or d['author']['email']!=ae or instant(d['author']['date'])!=instant(ad): failures.append((old,'author'))
+              if d['committer']['name']!=cn or d['committer']['email']!=ce or instant(d['committer']['date'])!=instant(cd): failures.append((old,'committer'))
+              osub=om.splitlines()[0] if om.splitlines() else ''; nsub=nm.splitlines()[0] if nm.splitlines() else ''
+              if re.search(r'(?:\(#[0-9]+\)|(?:PR\s+)?#[0-9]+)$',nsub,flags=re.I) or nsub.startswith('Merge pull request #'): failures.append((old,'PR subject'))
+              if re.search(r'(?im)^Co-authored-by:\s*github-actions\[bot\]|^(?:PR|Pull Request):',nm): failures.append((old,'trailer'))
+              rows.append((old,new,osub,nsub))
+              if i%40==0: print(f'Recreated {i}/{len(revs)} commits')
+          if failures: print(json.dumps(failures,indent=2),file=sys.stderr); sys.exit(1)
+          nd=mp[old_dev]; ne=mp[old_exp]
+          with open('/tmp/spark-maintenance-report/commit-map.tsv','w',encoding='utf-8') as f:
               f.write('Old SHA\tNew SHA\tOriginal message\tClean message\tTree equal?\n')
-              for old, new, osub, nsub, tree in rows:
-                  f.write(f'{old}\t{new}\t{osub}\t{nsub}\tyes\n')
-          with open('/tmp/spark-maintenance-report/new-develop-sha.txt', 'w') as f: f.write(new_dev + '\n')
-          with open('/tmp/spark-maintenance-report/new-exp-sha.txt', 'w') as f: f.write(new_exp + '\n')
-          with open('/tmp/spark-maintenance-report/identity-verification.txt', 'w') as f:
-              f.write(f'validated_commits={len(revs)}\nall_tree_equal=yes\nall_author_identity_equal=yes\nall_author_date_equal=yes\nall_committer_identity_equal=yes\nall_committer_date_equal=yes\n')
-
-          print(f'NEW_DEV_SHA={new_dev}')
-          print(f'NEW_EXP_SHA={new_exp}')
-          print(f'RECREATED_COMMITS={len(revs)}')
+              for a,b,c,d in rows: f.write(f'{a}\t{b}\t{c}\t{d}\tyes\n')
+          open('/tmp/spark-maintenance-report/new-develop-sha.txt','w').write(nd+'\n'); open('/tmp/spark-maintenance-report/new-exp-sha.txt','w').write(ne+'\n')
+          open('/tmp/spark-maintenance-report/identity-verification.txt','w').write(f'validated_commits={len(revs)}\nall_tree_equal=yes\nall_author_identity_equal=yes\nall_author_date_equal=yes\nall_committer_identity_equal=yes\nall_committer_date_equal=yes\n')
+          print(f'NEW_DEV_SHA={nd}'); print(f'NEW_EXP_SHA={ne}'); print(f'RECREATED_COMMITS={len(revs)}')
           PY
           python /tmp/recreate.py | tee /tmp/spark-maintenance-report/recreate-summary.txt
 
       - name: Recheck remote state without mutating refs
+        id: cas
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -245,9 +148,15 @@ jobs:
           echo "Prepared commit graph remains safe to publish."
 
       - name: Upload rewrite audit
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: spark-repository-maintenance-audit
           path: /tmp/spark-maintenance-report
           retention-days: 14
           if-no-files-found: error
+
+      - name: Fail if captured experiment moved
+        if: steps.cas.outcome != 'success'
+        shell: bash
+        run: exit 1
