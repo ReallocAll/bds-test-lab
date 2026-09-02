@@ -1,0 +1,122 @@
+name: Linux allocator ELF rescan measurement
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/linux-elf-rescan-measurement.yml"
+      - "controller/linux_elf_rescan_measurement.py"
+      - "fixtures/elf-rescan-probe/**"
+      - "fixtures/endstone-elf-rescan-probe/**"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+  EXPECTED_SPARK_SHA: "653e6821a45f5b5de5e8d22671960c2024db18be"
+  EXPECTED_ENDSTONE_SHA: "46eff9f125f52eac76472d84339ead8fbf51fcd2"
+  EXPECTED_ENDSTONE_RUN_ID: "33567087207"
+  EXPECTED_ENDSTONE_ARTIFACT_ID: "9824066404"
+  EXPECTED_ENDSTONE_VERSION: "0.11.11.dev396"
+  EXPECTED_BDS_VERSION: "1.26.45.1"
+  EXPECTED_BDS_PROTOCOL_VERSION: "26.45"
+
+jobs:
+  measure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact lab head
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout exact Spark source
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/spark
+          ref: ${{ env.EXPECTED_SPARK_SHA }}
+          path: spark-src
+          persist-credentials: false
+
+      - name: Verify exact Spark source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C spark-src rev-parse HEAD)" = "$EXPECTED_SPARK_SHA"
+
+      - name: Build in-process ELF rescan helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++23 -O2 -g -fPIC -shared \
+            -I spark-src/src \
+            fixtures/elf-rescan-probe/elf_rescan_probe.cpp \
+            spark-src/src/native/alloc/elf_import_hooks.cpp \
+            -ldl -pthread \
+            -o fixtures/elf-rescan-probe/libspark_elf_rescan_probe.so
+          file fixtures/elf-rescan-probe/libspark_elf_rescan_probe.so
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install validation dependencies and probe plugin
+        run: >-
+          python -m pip install --disable-pip-version-check
+          psutil packaging hatchling
+          ./fixtures/endstone-elf-rescan-probe
+
+      - name: Require exact Spark artifact
+        run: >-
+          python -m controller.assert_spark_artifact
+          --platform linux
+          --expected-sha "$EXPECTED_SPARK_SHA"
+
+      - name: Run real-BDS measurement
+        env:
+          SPARK_ELF_RESCAN_HELPER_BINARY: ${{ github.workspace }}/fixtures/elf-rescan-probe/libspark_elf_rescan_probe.so
+        run: python -m controller.linux_elf_rescan_measurement
+
+      - name: Verify bStats disabled and evidence bounds
+        if: always()
+        shell: bash
+        run: |
+          python -m controller.verify_bstats_evidence --result test-results.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path('test-results.json').read_text(encoding='utf-8'))
+          assert data.get('status') == 'PASS', data.get('error_summary')
+          ev = data['elf_rescan_measurement']
+          assert ev['iterations'] == 31
+          assert ev['target_count'] > 0
+          assert ev['wall_mean_ms'] > 0
+          assert ev['thread_cpu_mean_ms'] > 0
+          assert ev['installed_patch_phase_included'] is False
+          print(json.dumps(ev, sort_keys=True))
+          PY
+
+      - name: Upload ELF rescan evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-elf-rescan-measurement-${{ github.run_id }}
+          path: |
+            test-results.json
+            metadata.json
+            bstats-config.toml
+            bds.log
+            endstone.log
+            spark.log
+            failure-diagnostics.txt
+            fixtures/elf-rescan-probe/libspark_elf_rescan_probe.so
+            work/linux/bedrock_server/version.txt
+          if-no-files-found: warn
+          retention-days: 30
