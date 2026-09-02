@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "endstone-elf-rescan-probe"
+version = "0.1.0"
+description = "CI-only in-process Linux ELF rescan measurement fixture"
+requires-python = ">=3.11"
+
+[project.entry-points."endstone"]
+elf-rescan-probe = "endstone_elf_rescan_probe:ElfRescanProbe"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/endstone_elf_rescan_probe"]
