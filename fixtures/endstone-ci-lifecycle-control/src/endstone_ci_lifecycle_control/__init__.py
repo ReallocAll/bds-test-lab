@@ -44,7 +44,7 @@ class CiLifecycleControl(Plugin):
             self,
             self._poll_file_control,
             delay=1,
-            period=1,
+            period=5,
         )
         if self._file_control_task is None:
             raise RuntimeError("Endstone did not schedule the CI file control")
