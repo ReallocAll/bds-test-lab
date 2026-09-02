@@ -20,7 +20,7 @@ jobs:
       CLEAN_SHARED_BASE: af10038855a2b2a4396f16d254214939cc622855
       FINAL_DEVELOP: 8cb5c2b651a8c9808da397e6957526f87c1fe712
     steps:
-      - name: Reattach experiment-only chain to clean production base
+      - name: Reattach experiment-only DAG to clean production base
         shell: bash
         run: |
           set -euo pipefail
@@ -35,27 +35,30 @@ jobs:
           git merge-base --is-ancestor "$CLEAN_SHARED_BASE" "$FINAL_DEVELOP"
           test "$(git rev-parse "$OLD_LOCAL_BASE^{tree}")" = "$(git rev-parse "$CLEAN_SHARED_BASE^{tree}")"
 
-          mapfile -t commits < <(git rev-list --reverse "$OLD_LOCAL_BASE..$EXPECTED_OLD_HEAD")
-          test "${#commits[@]}" -gt 0
-          prev="$OLD_LOCAL_BASE"
-          for old in "${commits[@]}"; do
-            read -r commit parent extra < <(git rev-list --parents -n1 "$old")
-            test "$commit" = "$old"
-            test "$parent" = "$prev"
-            test -z "${extra:-}"
-            prev="$old"
-          done
-          test "$prev" = "$EXPECTED_OLD_HEAD"
-
+          mapfile -t commits < <(git rev-list --reverse --topo-order "$OLD_LOCAL_BASE..$EXPECTED_OLD_HEAD")
+          test "${#commits[@]}" = 32
+          declare -A MAP
           mkdir -p /tmp/stable-entry-topology
           printf 'old_sha\tnew_sha\ttree_sha\tsubject\n' > /tmp/stable-entry-topology/old-to-new.tsv
-          new_parent="$CLEAN_SHARED_BASE"
 
           for old in "${commits[@]}"; do
+            mapfile -t old_parents < <(git show -s --format='%P' "$old" | tr ' ' '\n' | sed '/^$/d')
+            new_parents=()
+            for p in "${old_parents[@]}"; do
+              if [[ "$p" = "$OLD_LOCAL_BASE" ]]; then
+                new_parents+=("$CLEAN_SHARED_BASE")
+              elif [[ -n "${MAP[$p]:-}" ]]; then
+                new_parents+=("${MAP[$p]}")
+              else
+                echo "unmapped parent $p for experiment commit $old" >&2
+                exit 1
+              fi
+            done
+            test "${#new_parents[@]}" -gt 0
+
             tree=$(git rev-parse "$old^{tree}")
             msg=/tmp/stable-entry-topology/msg
             git cat-file commit "$old" | sed '1,/^$/d' > "$msg"
-
             an=$(git show -s --format='%an' "$old")
             ae=$(git show -s --format='%ae' "$old")
             ad=$(git show -s --format='%aI' "$old")
@@ -63,9 +66,11 @@ jobs:
             ce=$(git show -s --format='%ce' "$old")
             cd=$(git show -s --format='%cI' "$old")
 
+            parent_args=()
+            for p in "${new_parents[@]}"; do parent_args+=( -p "$p" ); done
             new=$(GIT_AUTHOR_NAME="$an" GIT_AUTHOR_EMAIL="$ae" GIT_AUTHOR_DATE="$ad" \
                   GIT_COMMITTER_NAME="$cn" GIT_COMMITTER_EMAIL="$ce" GIT_COMMITTER_DATE="$cd" \
-                  git commit-tree "$tree" -p "$new_parent" -F "$msg")
+                  git commit-tree "$tree" "${parent_args[@]}" -F "$msg")
 
             test "$(git rev-parse "$new^{tree}")" = "$tree"
             test "$(git show -s --format='%an' "$new")" = "$an"
@@ -77,15 +82,30 @@ jobs:
             git cat-file commit "$new" | sed '1,/^$/d' > /tmp/stable-entry-topology/new-msg
             cmp -s "$msg" /tmp/stable-entry-topology/new-msg
 
+            MAP[$old]="$new"
             subject=$(git show -s --format='%s' "$old" | tr '\t\n' '  ')
             printf '%s\t%s\t%s\t%s\n' "$old" "$new" "$tree" "$subject" >> /tmp/stable-entry-topology/old-to-new.tsv
-            new_parent="$new"
           done
 
-          NEW_HEAD="$new_parent"
+          NEW_HEAD="${MAP[$EXPECTED_OLD_HEAD]}"
+          test -n "$NEW_HEAD"
           test "$(git rev-parse "$NEW_HEAD^{tree}")" = "$(git rev-parse "$EXPECTED_OLD_HEAD^{tree}")"
           test "$(git rev-list --count "$CLEAN_SHARED_BASE..$NEW_HEAD")" = "${#commits[@]}"
           test "$(git merge-base "$FINAL_DEVELOP" "$NEW_HEAD")" = "$CLEAN_SHARED_BASE"
+
+          for old in "${commits[@]}"; do
+            new="${MAP[$old]}"
+            mapfile -t old_parents < <(git show -s --format='%P' "$old" | tr ' ' '\n' | sed '/^$/d')
+            mapfile -t new_parents < <(git show -s --format='%P' "$new" | tr ' ' '\n' | sed '/^$/d')
+            test "${#old_parents[@]}" = "${#new_parents[@]}"
+            for i in "${!old_parents[@]}"; do
+              p="${old_parents[$i]}"
+              expected="${MAP[$p]:-$CLEAN_SHARED_BASE}"
+              if [[ "$p" != "$OLD_LOCAL_BASE" && -z "${MAP[$p]:-}" ]]; then exit 1; fi
+              test "${new_parents[$i]}" = "$expected"
+            done
+          done
+
           ! git log --format='%s' "$CLEAN_SHARED_BASE..$NEW_HEAD" | grep -E '\(#[0-9]+\)$|^Merge pull request #[0-9]+'
           ! git log --format='%B' "$CLEAN_SHARED_BASE..$NEW_HEAD" | grep -Ei '^Co-authored-by:\s*github-actions\[bot\]|^(PR|Pull Request):'
 
