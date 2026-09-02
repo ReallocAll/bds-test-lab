@@ -25,6 +25,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python -m pip install --disable-pip-version-check psutil packaging pyyaml
           python - <<'PY'
           from pathlib import Path
 
