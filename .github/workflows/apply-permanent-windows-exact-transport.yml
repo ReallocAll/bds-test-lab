@@ -5,6 +5,7 @@ on:
     branches: [fix/combined-pack-state-oracle]
     paths:
       - ".github/workflows/apply-permanent-windows-exact-transport.yml"
+      - ".github/apply_permanent_windows_exact_transport.py"
 
 permissions:
   contents: write
