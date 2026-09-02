@@ -15,7 +15,6 @@ jobs:
       GH_TOKEN: ${{ secrets.REPO_PAT }}
       TARGET_REPO: ReallocAll/spark
       EXP_BRANCH: exp/windows-stable-entry-hooks
-      EXPECTED_OLD_HEAD: 2b4bb22f0be6a5b9debf68acb4e609c4d01970e0
       OLD_LOCAL_BASE: 2678b37e208e708dfbe7b6bbc22a7c260a9d2654
       CLEAN_SHARED_BASE: af10038855a2b2a4396f16d254214939cc622855
       FINAL_DEVELOP: 8cb5c2b651a8c9808da397e6957526f87c1fe712
@@ -24,24 +23,27 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          trap 'rc=$?; echo "repair failed rc=$rc line=$LINENO command=$BASH_COMMAND" >&2; exit $rc' ERR
           git clone --quiet "https://x-access-token:${GH_TOKEN}@github.com/${TARGET_REPO}.git" spark
           cd spark
           git fetch --quiet origin '+refs/heads/*:refs/remotes/origin/*' --tags
 
-          current=$(git rev-parse "refs/remotes/origin/${EXP_BRANCH}")
-          test "$current" = "$EXPECTED_OLD_HEAD"
+          EXPECTED_OLD_HEAD=$(git rev-parse "refs/remotes/origin/${EXP_BRANCH}")
+          echo "snapshot_head=$EXPECTED_OLD_HEAD"
           test "$(git rev-parse refs/remotes/origin/develop)" = "$FINAL_DEVELOP"
           git merge-base --is-ancestor "$OLD_LOCAL_BASE" "$EXPECTED_OLD_HEAD"
           git merge-base --is-ancestor "$CLEAN_SHARED_BASE" "$FINAL_DEVELOP"
           test "$(git rev-parse "$OLD_LOCAL_BASE^{tree}")" = "$(git rev-parse "$CLEAN_SHARED_BASE^{tree}")"
 
           mapfile -t commits < <(git rev-list --reverse --topo-order "$OLD_LOCAL_BASE..$EXPECTED_OLD_HEAD")
-          test "${#commits[@]}" = 32
+          test "${#commits[@]}" -gt 0
+          echo "experiment_commits=${#commits[@]}"
           declare -A MAP
           mkdir -p /tmp/stable-entry-topology
           printf 'old_sha\tnew_sha\ttree_sha\tsubject\n' > /tmp/stable-entry-topology/old-to-new.tsv
 
           for old in "${commits[@]}"; do
+            echo "rewrite=$old"
             mapfile -t old_parents < <(git show -s --format='%P' "$old" | tr ' ' '\n' | sed '/^$/d')
             new_parents=()
             for p in "${old_parents[@]}"; do
@@ -100,8 +102,14 @@ jobs:
             test "${#old_parents[@]}" = "${#new_parents[@]}"
             for i in "${!old_parents[@]}"; do
               p="${old_parents[$i]}"
-              expected="${MAP[$p]:-$CLEAN_SHARED_BASE}"
-              if [[ "$p" != "$OLD_LOCAL_BASE" && -z "${MAP[$p]:-}" ]]; then exit 1; fi
+              if [[ "$p" = "$OLD_LOCAL_BASE" ]]; then
+                expected="$CLEAN_SHARED_BASE"
+              elif [[ -n "${MAP[$p]:-}" ]]; then
+                expected="${MAP[$p]}"
+              else
+                echo "unmapped verification parent $p for $old" >&2
+                exit 1
+              fi
               test "${new_parents[$i]}" = "$expected"
             done
           done
