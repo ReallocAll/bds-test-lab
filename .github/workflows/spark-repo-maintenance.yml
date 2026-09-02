@@ -10,4 +10,4 @@ jobs:
   note:
     runs-on: ubuntu-24.04
     steps:
-      - run: echo "Maintenance helper is inert pending deletion after Spark cleanup."
+      - run: echo "Inert one-shot helper; delete after repository maintenance is complete."
