@@ -50,7 +50,8 @@ int main(int argc, char **argv)
     for (int i = 1; i < argc; ++i) {
         void *handle = ::dlopen(argv[i], RTLD_NOW | RTLD_LOCAL);
         if (handle == nullptr) {
-            fail(std::string("dlopen failed for ") + argv[i] + ": " + (::dlerror() ? ::dlerror() : "unknown"));
+            const char *error = ::dlerror();
+            fail(std::string("dlopen failed for ") + argv[i] + ": " + (error ? error : "unknown"));
         }
         handles.push_back(handle);
     }
@@ -65,9 +66,11 @@ int main(int argc, char **argv)
         if (address == nullptr || error != nullptr) {
             fail(std::string("dlsym failed for ") + names[i] + ": " + (error ? error : "unknown"));
         }
-        // Point imports at their current libc implementation. This exercises the same
-        // scan + installed patch path as Spark without changing allocator semantics.
-        specs[i] = spark::ElfImportHookSpec{.name = names[i], .replacement = address, .required = true};
+        // Match Spark production: malloc/calloc/realloc/free are required while
+        // reallocarray/aligned_alloc/posix_memalign are optional capabilities.
+        // Point imports at their current libc implementation so the installed
+        // scan+patch path is exercised without changing allocator semantics.
+        specs[i] = spark::ElfImportHookSpec{.name = names[i], .replacement = address, .required = i < 4};
     }
 
     spark::ElfImportHooks hooks;
