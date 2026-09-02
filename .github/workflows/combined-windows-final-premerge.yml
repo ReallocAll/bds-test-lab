@@ -90,7 +90,7 @@ jobs:
 
       - name: Run exact Windows combined E2E
         run: >-
-          python -m controller.combined_pack_gamerule_fleet_exact_runner
+          python -m controller.combined_windows_final_runner
           --platform windows
           --bot dist/bds-test-bot.exe
           --profile-seconds 30
