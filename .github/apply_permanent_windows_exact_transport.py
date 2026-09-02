@@ -117,8 +117,10 @@ exact_test = Path("tests/test_combined_pack_exact_runner.py")
 tests = exact_test.read_text(encoding="utf-8")
 tests = tests.replace(
     '            "[CiLifecycleControl] CI lifecycle control enabled; cishutdown registered",\n',
-    '            "[CiLifecycleControl] CI lifecycle control enabled; cishutdown registered; "\n'
-    '            "command-control=plugins/ci/command.request; file-control=plugins/ci/shutdown.request",\n',
+    '            (\n'
+    '                "[CiLifecycleControl] CI lifecycle control enabled; cishutdown registered; "\n'
+    '                "command-control=plugins/ci/command.request; file-control=plugins/ci/shutdown.request"\n'
+    '            ),\n',
     1,
 )
 insert_anchor = "    def test_framework_shutdown_process_sends_cishutdown(self) -> None:\n"
