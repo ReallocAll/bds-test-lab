@@ -385,7 +385,7 @@ class ProfilePayloadValidationTest(unittest.TestCase):
                 json.dumps(
                     {
                         "status": "cleaned",
-                        "started": True,
+                        "started": False,
                         "allocation_failed": False,
                         "retained_blocks": 0,
                         "retained_bytes": 0,
@@ -430,7 +430,7 @@ class ProfilePayloadValidationTest(unittest.TestCase):
                 json.dumps(
                     {
                         "status": "cleaned",
-                        "started": True,
+                        "started": False,
                         "retained_blocks": 0,
                         "retained_bytes": 0,
                         "retained_blocks_before_cleanup": 0,
