@@ -1,0 +1,115 @@
+name: Linux ELF rescan direct benchmark
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "benchmarks/elf_rescan_benchmark.cpp"
+      - ".github/workflows/elf-rescan-benchmark.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SPARK_SHA: "7ffcec4c0d1e5327b79fabde9ac385fd825df322"
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout benchmark harness
+        uses: actions/checkout@v7
+
+      - name: Checkout exact Spark source
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/spark
+          ref: ${{ env.SPARK_SHA }}
+          path: spark-src
+          persist-credentials: false
+
+      - name: Build direct rescan benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C spark-src rev-parse HEAD)" = "$SPARK_SHA"
+          clang++ -std=c++23 -O2 -g \
+            -I spark-src/src \
+            benchmarks/elf_rescan_benchmark.cpp \
+            spark-src/src/native/alloc/elf_import_hooks.cpp \
+            -ldl -pthread -o elf-rescan-benchmark
+
+      - name: Build BDS-shaped dummy module set
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dummy-modules
+          cat > dummy-module.c <<'C'
+          #include <stdlib.h>
+          __attribute__((visibility("default"), noinline)) void *spark_rescan_dummy_allocate(size_t n) {
+              return malloc(n);
+          }
+          C
+          for i in $(seq -w 1 64); do
+            clang -shared -fPIC -O2 -fno-builtin-malloc \
+              -Wl,-soname,"spark-rescan-dummy-${i}.so" \
+              dummy-module.c -o "dummy-modules/spark-rescan-dummy-${i}.so"
+          done
+          test "$(find dummy-modules -type f -name '*.so' | wc -l)" -eq 64
+
+      - name: Measure baseline and 64-module installed rescans
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./elf-rescan-benchmark | tee rescan-baseline.json
+          mapfile -t modules < <(find "$PWD/dummy-modules" -type f -name '*.so' | sort)
+          ./elf-rescan-benchmark "${modules[@]}" | tee rescan-64-modules.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          baseline = json.loads(Path('rescan-baseline.json').read_text())
+          loaded = json.loads(Path('rescan-64-modules.json').read_text())
+          result = {
+              'spark_sha': '7ffcec4c0d1e5327b79fabde9ac385fd825df322',
+              'measurement_kind': 'direct-installed-elf-import-rescan',
+              'baseline': baseline,
+              'bds_shaped_64_module': loaded,
+              'observed_real_bds_reference': {
+                  'period_seconds': 5,
+                  'profile_hooked_modules': 20,
+                  'profile_skipped_modules': 47,
+                  'profile_total_accounted_modules': 67,
+                  'profile_hook_targets': 76,
+              },
+          }
+          Path('elf-rescan-benchmark-result.json').write_text(json.dumps(result, indent=2) + '\n')
+          print(json.dumps(result, indent=2))
+          PY
+
+      - name: Add benchmark summary
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          data = json.loads(Path('elf-rescan-benchmark-result.json').read_text())
+          print('## Linux ELF/module rescan direct measurement')
+          print()
+          print(f"Spark SHA: `{data['spark_sha']}`")
+          for label, key in [('runner baseline', 'baseline'), ('64 dummy modules', 'bds_shaped_64_module')]:
+              row = data[key]
+              print(f"- {label}: modules={row['hooked_modules'] + row['skipped_modules'] + row['failed_modules']}, targets={row['targets']}, mean={row['rescan_us_mean']:.3f} us, p95={row['rescan_us_p95']:.3f} us, max={row['rescan_us_max']:.3f} us, amortized={row['amortized_us_per_second']:.3f} us/s, one-core={row['equivalent_one_core_percent']:.6f}%")
+          PY
+
+      - name: Upload measurement evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: elf-rescan-direct-${{ github.run_id }}
+          path: |
+            rescan-baseline.json
+            rescan-64-modules.json
+            elf-rescan-benchmark-result.json
+          if-no-files-found: error
+          retention-days: 30
