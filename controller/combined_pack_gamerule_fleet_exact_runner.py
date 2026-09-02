@@ -47,7 +47,7 @@ class _FrameworkShutdownServerProcess(ServerProcess):
         token: str | None,
     ) -> None:
         evidence: dict[str, Any] = diagnostic["acknowledgement_evidence"]
-        if output_start is None or token is None:
+        if output_start is None:
             evidence["shutdown_requested"] = False
             evidence["observed"] = False
             evidence["source"] = "unavailable"
@@ -57,12 +57,70 @@ class _FrameworkShutdownServerProcess(ServerProcess):
             output = self.snapshot()[output_start:]
         except (AttributeError, TypeError):
             output = []
-        marker = f"ci lifecycle shutdown requested via file; token={token}".casefold()
+        if token is None:
+            marker = "ci lifecycle shutdown requested"
+            source = "captured-output"
+        else:
+            marker = f"ci lifecycle shutdown requested via file; token={token}".casefold()
+            source = "captured-output-token"
         observed = any(marker in line.casefold() for line in output)
         evidence["shutdown_requested"] = observed
         evidence["observed"] = observed
-        evidence["source"] = "captured-output-token"
+        evidence["source"] = source
         diagnostic["acknowledgement_observed"] = observed
+
+    def _graceful_stop_compat_command(
+        self,
+        diagnostic: dict[str, Any],
+        timeout: float,
+    ) -> bool:
+        """Keep the historical command path only for fixtures without file-control registration."""
+
+        diagnostic["method"] = "interactive-cishutdown"
+        diagnostic["stop_method"] = "interactive-cishutdown"
+        diagnostic["command"] = "cishutdown"
+        evidence: dict[str, Any] = diagnostic["acknowledgement_evidence"]
+        evidence["transport"] = "console-command-compat"
+        output_start: int | None = None
+        try:
+            output_start = self.command("cishutdown")
+            evidence["command_sent"] = True
+            diagnostic["command_sent"] = True
+            assert self.process is not None
+            self.process.wait(timeout=timeout)
+            reader = getattr(self, "_reader", None)
+            if reader is not None:
+                reader.join(timeout=3)
+            self._record_shutdown_acknowledgement(diagnostic, output_start, None)
+            self._finish_lifecycle(
+                diagnostic,
+                outcome="exited" if self.process.returncode == 0 else "nonzero-exit",
+                returncode=self.process.returncode,
+            )
+            diagnostic["wrapper_outcome"] = diagnostic["outcome"]
+            diagnostic["wrapper_return_code"] = diagnostic["returncode"]
+            diagnostic["cleanup_outcome"] = "graceful-exit" if self.process.returncode == 0 else "nonzero-exit"
+            print(f"[windows-lifecycle] {diagnostic}", flush=True)
+            return self.process.returncode == 0
+        except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
+            self._record_shutdown_acknowledgement(diagnostic, output_start, None)
+            self._finish_lifecycle(
+                diagnostic,
+                outcome="timeout" if isinstance(exc, subprocess.TimeoutExpired) else "exception",
+                returncode=self.process.returncode if self.process is not None else None,
+                timeout_reason=(
+                    f"process did not exit within {timeout:.1f}s" if isinstance(exc, subprocess.TimeoutExpired) else None
+                ),
+            )
+            diagnostic["wrapper_outcome"] = diagnostic["outcome"]
+            diagnostic["wrapper_return_code"] = diagnostic["returncode"]
+            diagnostic["cleanup_outcome"] = "timeout" if isinstance(exc, subprocess.TimeoutExpired) else "command-failed"
+            diagnostic["exception_type"] = type(exc).__name__
+            diagnostic["exception"] = str(exc)
+            diagnostic["winerror"] = getattr(exc, "winerror", None)
+            diagnostic["errno"] = getattr(exc, "errno", None)
+            print(f"[windows-lifecycle] {diagnostic}", flush=True)
+            return False
 
     def graceful_stop(self, timeout: float = 60.0) -> bool:
         request_path = self.lifecycle_request_path
@@ -95,7 +153,7 @@ class _FrameworkShutdownServerProcess(ServerProcess):
             diagnostic["cleanup_outcome"] = "already-exited"
             print(f"[windows-lifecycle] {diagnostic}", flush=True)
             return True
-        if self.process is None or request_path is None or not self.lifecycle_registered:
+        if self.process is None or not self.lifecycle_registered:
             self._finish_lifecycle(
                 diagnostic,
                 outcome="file-control-unavailable",
@@ -107,6 +165,8 @@ class _FrameworkShutdownServerProcess(ServerProcess):
             diagnostic["cleanup_outcome"] = "verification-failed"
             print(f"[windows-lifecycle] {diagnostic}", flush=True)
             return False
+        if request_path is None:
+            return self._graceful_stop_compat_command(diagnostic, timeout)
         try:
             output_start = len(self.snapshot())
             token = uuid.uuid4().hex
@@ -211,30 +271,37 @@ def _start_windows_interactive_server(self: CombinedPackGameruleFleetValidation)
     self.check("spark-load-enable", "PASS")
     lines = self.server.wait_for(
         lambda current: any(
-            "ci lifecycle control enabled;" in line.lower() and "file-control=" in line.lower()
+            "ci lifecycle control enabled;" in line.lower()
+            and ("file-control=" in line.lower() or "cishutdown registered" in line.lower())
             for line in current
         ),
         30,
-        "CI lifecycle file control registration",
+        "CI lifecycle control registration",
     )
     registration = next(
         line
         for line in reversed(lines)
-        if "ci lifecycle control enabled;" in line.lower() and "file-control=" in line.lower()
+        if "ci lifecycle control enabled;" in line.lower()
+        and ("file-control=" in line.lower() or "cishutdown registered" in line.lower())
     )
-    raw_path = registration.split("file-control=", 1)[1].strip()
-    request_path = pathlib.Path(raw_path)
-    if not request_path.is_absolute():
-        request_path = (self.root / request_path).resolve()
-    self.server.lifecycle_request_path = request_path
-    self.server.lifecycle_registered = True
-    self.check(
-        "windows-framework-lifecycle",
-        "PASS",
-        shutdown_control="file-trigger",
-        request_path=str(request_path),
-        compatibility_command="cishutdown",
-    )
+    if "file-control=" in registration.lower():
+        raw_path = registration.split("file-control=", 1)[1].strip()
+        request_path = pathlib.Path(raw_path)
+        if not request_path.is_absolute():
+            request_path = (self.root / request_path).resolve()
+        self.server.lifecycle_request_path = request_path
+        self.server.lifecycle_registered = True
+        self.check(
+            "windows-framework-lifecycle",
+            "PASS",
+            shutdown_control="file-trigger",
+            request_path=str(request_path),
+            compatibility_command="cishutdown",
+        )
+    else:
+        self.server.lifecycle_request_path = None
+        self.server.lifecycle_registered = True
+        self.check("windows-interactive-lifecycle", "PASS", shutdown_control="cishutdown")
     version_file = self.server_dir / "version.txt"
     if version_file.exists():
         self.result["bds_version"] = version_file.read_text(encoding="utf-8").strip()
