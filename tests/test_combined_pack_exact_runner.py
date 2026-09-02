@@ -54,6 +54,7 @@ class _Validator:
 
 class _StartedServer:
     created_cmd: list[str] | None = None
+    commands: list[str] = []
 
     def __init__(self, cmd: list[str], root: Path, log_path: Path) -> None:
         del root, log_path
@@ -69,10 +70,15 @@ class _StartedServer:
             "[EndstoneServer] Version: 1.26.44.3",
             "[Endstone] Enabling spark v0.6.0",
             "[CiLifecycleControl] CI lifecycle control enabled; cishutdown registered",
+            "TPS (5s/10s/1m/5m/15m): 20.00 / 20.00 / 20.00 / 20.00 / 20.00",
         ]
         if not predicate(lines):
             raise AssertionError("test fixture did not satisfy wait predicate")
         return lines
+
+    def command(self, command: str) -> int:
+        type(self).commands.append(command)
+        return 0
 
     def snapshot(self) -> list[str]:
         return ["[EndstoneServer] Version: 1.26.44.3"]
@@ -582,6 +588,7 @@ class CombinedPackExactRunnerTest(unittest.TestCase):
             validator.result_path = root / "test-results.json"  # type: ignore[attr-defined]
             validator.server_dir.joinpath("version.txt").write_text("26.44", encoding="utf-8")  # type: ignore[attr-defined]
             _StartedServer.created_cmd = None
+            _StartedServer.commands = []
             with (
                 mock.patch.object(exact, "_FrameworkShutdownServerProcess", _StartedServer),
                 mock.patch.dict(os.environ, {"EXPECTED_BDS_VERSION": "1.26.44.3"}, clear=True),
@@ -593,6 +600,13 @@ class CombinedPackExactRunnerTest(unittest.TestCase):
         self.assertNotIn("--no-interactive", _StartedServer.created_cmd)
         self.assertIn("--server-folder", _StartedServer.created_cmd)
         self.assertEqual(validator.result["bds_version"], "26.44")
+        self.assertEqual(_StartedServer.commands, ["spark tps"])
+        readiness = [
+            fields
+            for name, status, fields in validator.checks
+            if name == "windows-interactive-command-ready" and status == "PASS"
+        ]
+        self.assertEqual(readiness[0]["probe"], "spark tps")
         lifecycle = [
             fields
             for name, status, fields in validator.checks

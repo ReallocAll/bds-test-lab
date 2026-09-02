@@ -179,6 +179,20 @@ def _start_windows_interactive_server(self: CombinedPackGameruleFleetValidation)
         "CI lifecycle command registration",
     )
     self.server.lifecycle_registered = True
+    readiness_start = self.server.command("spark tps")
+    readiness_lines = self.server.wait_for(
+        lambda lines: any(
+            "tps (5s/10s/1m/5m/15m):" in line.lower() for line in lines[readiness_start:]
+        ),
+        15,
+        "interactive command processing readiness",
+    )
+    self.check(
+        "windows-interactive-command-ready",
+        "PASS",
+        probe="spark tps",
+        output=readiness_lines[readiness_start:][-20:],
+    )
     self.check("windows-interactive-lifecycle", "PASS", shutdown_control="cishutdown")
     version_file = self.server_dir / "version.txt"
     if version_file.exists():
