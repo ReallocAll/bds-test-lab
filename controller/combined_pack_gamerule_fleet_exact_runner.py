@@ -440,7 +440,7 @@ def _run_public_profile_phase_with_restart_pack_evidence(
 ) -> None:
     """Avoid a redundant Windows console probe after local real-BDS execution proof."""
 
-    if self.platform != "windows":
+    if getattr(self, "platform", None) != "windows":
         _ORIGINAL_RUN_PUBLIC_PROFILE_PHASE(self)
         return
 
