@@ -1106,6 +1106,8 @@ class FinalProfilerMatrixCase(IntegrationTest):
         if cleaned:
             if state.get("cleaned_up") is not True or state.get("status") != "cleaned":
                 raise RuntimeError(f"retained allocation cleanup was not proven: {state}")
+            if state.get("started") is not False:
+                raise RuntimeError(f"retained allocation cleanup left the scheduler armed: {state}")
             if state.get("retained_blocks") != 0 or state.get("retained_bytes") != 0:
                 raise RuntimeError(f"retained allocation cleanup left live blocks: {state}")
             before_blocks = state.get("retained_blocks_before_cleanup")
