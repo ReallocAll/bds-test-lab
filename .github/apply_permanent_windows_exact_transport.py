@@ -8,7 +8,7 @@ text = text.replace(
     1,
 )
 attr_anchor = "    lifecycle_registered: bool = False\n    lifecycle_request_path: pathlib.Path | None = None\n"
-attr_replacement = '''    lifecycle_registered: bool = False
+attr_replacement = r'''    lifecycle_registered: bool = False
     lifecycle_request_path: pathlib.Path | None = None
     lifecycle_command_path: pathlib.Path | None = None
 
