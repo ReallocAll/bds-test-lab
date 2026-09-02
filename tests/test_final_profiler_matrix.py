@@ -20,6 +20,7 @@ from controller.final_profiler_matrix import (
     ONLY_TICKS_OVER_DIAGNOSTICS,
     ONLY_TICKS_OVER_MS,
     PROFILER_MODES,
+    PROFILER_RUNNING_ACK_TOKEN,
     RETAINED_ALLOCATION_HELPER_NAME,
     RETAINED_ALLOCATION_HELPER_SYMBOL,
     RETAINED_ALLOCATION_POSITIVE_DIAGNOSTICS,
@@ -537,6 +538,131 @@ class FinalProfilerInstallationTest(unittest.TestCase):
             case.result["workload"]["retained_allocation"]["helper_source"],
             str(helper_source.relative_to(repository_root)),
         )
+
+
+class FinalProfilerOrderingTest(unittest.TestCase):
+    @staticmethod
+    def _case(root: Path) -> FinalProfilerMatrixCase:
+        bot = root / "bds-test-bot"
+        bot.write_bytes(b"bot")
+        with mock.patch.object(Path, "cwd", return_value=root):
+            return FinalProfilerMatrixCase(
+                "alloc-live-only",
+                bot,
+                "a" * 40,
+                bot_ref="b" * 40,
+            )
+
+    def test_profiler_running_ack_precedes_live_workload(self) -> None:
+        class FakeServer:
+            def __init__(self) -> None:
+                self.lines: list[str] = []
+                self.events: list[tuple[str, str]] = []
+
+            def command(self, command: str) -> int:
+                self.events.append(("command", command))
+                start = len(self.lines)
+                self.lines.append(f"> {command}")
+                if command.startswith("spark profiler start"):
+                    self.lines.append("[Spark] Profiler is now running!")
+                elif command == "allocation-live start":
+                    self.lines.append("Spark retained allocation workload started")
+                return start
+
+            def snapshot(self) -> list[str]:
+                return list(self.lines)
+
+            def wait_for(self, predicate, timeout: float, description: str) -> list[str]:
+                del timeout
+                self.events.append(("wait", description))
+                if not predicate(self.lines):
+                    raise AssertionError("fake server did not expose the expected acknowledgement")
+                return list(self.lines)
+
+            def wait_command_output(self, start: int, timeout: float) -> list[str]:
+                del timeout
+                self.events.append(("wait-command", self.lines[start]))
+                return self.lines[start:]
+
+            def is_alive(self) -> bool:
+                return True
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            case = self._case(root)
+            server = FakeServer()
+            case.server = server
+
+            case.start_profiler()
+            self.assertEqual(server.events[0], ("command", "spark profiler start --timeout 15 --alloc-live-only"))
+            self.assertEqual(server.events[1], ("wait", "Spark profiler running acknowledgement"))
+            self.assertEqual(case.result["measurement"]["profiler_start_acknowledgement"], PROFILER_RUNNING_ACK_TOKEN)
+
+            case.start_retained_allocation_workload()
+            case.allocation_live_state_path.write_text(
+                json.dumps(
+                    {
+                        "status": "running",
+                        "started": True,
+                        "allocation_failed": False,
+                        "retained_blocks": 24,
+                        "retained_bytes": 24 * (1 << 20),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            case.wait_for_retained_allocation_state()
+            case.validate_retained_allocation_state(cleaned=False)
+            self.assertLess(
+                next(index for index, event in enumerate(server.events) if event[1].startswith("spark profiler start")),
+                next(index for index, event in enumerate(server.events) if event[1] == "allocation-live start"),
+            )
+            self.assertLess(
+                next(index for index, event in enumerate(server.events) if event[1] == "allocation-live start"),
+                next(index for index, event in enumerate(server.events) if event == ("wait", "retained allocation workload state")),
+            )
+            self.assertEqual(case.result["workload"]["retained_allocation"]["retained_blocks"], 24)
+
+    def test_live_workload_release_follows_profile_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            case = self._case(Path(temp))
+            order: list[str] = []
+
+            def record(name: str):
+                def action(*_args, **_kwargs):
+                    order.append(name)
+
+                return action
+
+            for name in (
+                "install_artifacts",
+                "start_server",
+                "run_basic_commands",
+                "bootstrap_offline_server",
+                "start_bot",
+                "run_warmup",
+                "start_profiler",
+                "start_retained_allocation_workload",
+                "wait_for_retained_allocation_state",
+                "run_profile",
+                "release_retained_allocation_workload",
+                "stop_bot",
+                "shutdown",
+            ):
+                setattr(case, name, mock.Mock(side_effect=record(name)))
+
+            def validate(*, cleaned: bool) -> None:
+                order.append("validate-cleanup" if cleaned else "validate-active")
+
+            case.validate_retained_allocation_state = mock.Mock(side_effect=validate)
+            self.assertEqual(case.execute_case(), 0)
+
+            self.assertLess(order.index("start_profiler"), order.index("start_retained_allocation_workload"))
+            self.assertLess(order.index("start_retained_allocation_workload"), order.index("wait_for_retained_allocation_state"))
+            self.assertLess(order.index("wait_for_retained_allocation_state"), order.index("validate-active"))
+            self.assertLess(order.index("validate-active"), order.index("run_profile"))
+            self.assertLess(order.index("run_profile"), order.index("release_retained_allocation_workload"))
+            self.assertLess(order.index("release_retained_allocation_workload"), order.index("validate-cleanup"))
 
 
 class WorkflowSecurityContractTest(unittest.TestCase):
