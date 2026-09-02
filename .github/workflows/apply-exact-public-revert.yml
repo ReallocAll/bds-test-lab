@@ -1,0 +1,36 @@
+name: Restore exact public behavior proof
+
+on:
+  push:
+    branches: [fix/combined-pack-state-oracle]
+    paths:
+      - ".github/workflows/apply-exact-public-revert.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: fix/combined-pack-state-oracle
+
+      - name: Restore exact public behavior proof
+        run: python .github/apply_exact_public_revert.py
+
+      - name: Validate exact controller
+        run: |
+          python -m py_compile controller/combined_pack_gamerule_fleet_exact_runner.py controller/combined_windows_final_runner.py
+          git diff --check
+
+      - name: Commit source-only patch and remove helper
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add controller/combined_pack_gamerule_fleet_exact_runner.py
+          git rm .github/apply_exact_public_revert.py .github/workflows/apply-exact-public-revert.yml
+          git commit -m "test: restore full Windows public behavior proof"
+          git push origin HEAD:fix/combined-pack-state-oracle
