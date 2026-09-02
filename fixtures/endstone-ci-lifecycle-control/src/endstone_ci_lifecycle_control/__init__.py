@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from endstone.command import Command, CommandSender
@@ -8,7 +9,7 @@ from endstone.scheduler import Task
 
 
 class CiLifecycleControl(Plugin):
-    """CI-only lifecycle control with command and low-frequency file transports."""
+    """CI-only lifecycle and command control using low-frequency file transports."""
 
     api_version = "0.11"
     commands = {  # noqa: RUF012 - Endstone discovers command metadata from the plugin class.
@@ -28,6 +29,7 @@ class CiLifecycleControl(Plugin):
     def __init__(self) -> None:
         super().__init__()
         self._request_path: Path | None = None
+        self._command_path: Path | None = None
         self._file_control_task: Task | None = None
 
     def on_enable(self) -> None:
@@ -35,17 +37,20 @@ class CiLifecycleControl(Plugin):
             raise RuntimeError("Endstone did not register the cishutdown command")
         self.data_folder.mkdir(parents=True, exist_ok=True)
         self._request_path = self.data_folder / "shutdown.request"
+        self._command_path = self.data_folder / "command.request"
         self._request_path.unlink(missing_ok=True)
+        self._command_path.unlink(missing_ok=True)
         self._file_control_task = self.server.scheduler.run_task(
             self,
             self._poll_file_control,
             delay=1,
-            period=20,
+            period=1,
         )
         if self._file_control_task is None:
-            raise RuntimeError("Endstone did not schedule the CI lifecycle file control")
+            raise RuntimeError("Endstone did not schedule the CI file control")
         self.logger.info(
-            f"CI lifecycle control enabled; cishutdown registered; file-control={self._request_path.resolve()}"
+            "CI lifecycle control enabled; cishutdown registered; "
+            f"file-control={self._request_path.resolve()}; command-control={self._command_path.resolve()}"
         )
 
     def on_disable(self) -> None:
@@ -54,8 +59,30 @@ class CiLifecycleControl(Plugin):
         self._file_control_task = None
         if self._request_path is not None:
             self._request_path.unlink(missing_ok=True)
+        if self._command_path is not None:
+            self._command_path.unlink(missing_ok=True)
 
     def _poll_file_control(self) -> None:
+        command_path = self._command_path
+        if command_path is not None and command_path.is_file():
+            try:
+                payload = json.loads(command_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError) as exc:
+                command_path.unlink(missing_ok=True)
+                self.logger.error(f"CI command file rejected: {type(exc).__name__}: {exc}")
+            else:
+                command_path.unlink(missing_ok=True)
+                token = str(payload.get("token", "")).strip()
+                command_line = str(payload.get("command", "")).strip()
+                if not token or not command_line:
+                    self.logger.error("CI command file rejected: token and command are required")
+                else:
+                    self.logger.info(f"CI command dispatch requested; token={token}; command={command_line}")
+                    dispatched = self.server.dispatch_command(self.server.command_sender, command_line)
+                    self.logger.info(
+                        f"CI command dispatch completed; token={token}; dispatched={str(bool(dispatched)).lower()}"
+                    )
+
         request_path = self._request_path
         if request_path is None or not request_path.is_file():
             return
