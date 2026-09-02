@@ -7,12 +7,14 @@ on:
       - ".github/workflows/combined-pack-gamerule-20p-checks.yml"
       - "controller/combined_pack_gamerule_fleet_validation.py"
       - "controller/combined_pack_gamerule_fleet_exact_runner.py"
+      - "controller/combined_windows_final_runner.py"
       - "controller/windows_evidence_matrix.py"
       - "controller/python_evidence_provenance.py"
       - "controller/cross_platform_fleet_validation.py"
       - "controller/fleet_spark_validation.py"
       - "fixtures/endstone-ci-lifecycle-control/**"
       - "tests/test_combined_pack_exact_runner.py"
+      - "tests/test_combined_windows_final_runner.py"
       - "tests/test_python_evidence_provenance.py"
       - "tests/test_cross_platform_fleet_signal_exit.py"
   workflow_dispatch:
@@ -38,6 +40,7 @@ jobs:
         run: >-
           python -m unittest
           tests.test_combined_pack_exact_runner
+          tests.test_combined_windows_final_runner
           tests.test_python_evidence_provenance
           tests.test_cross_platform_fleet_signal_exit
 
@@ -46,20 +49,24 @@ jobs:
           python -m py_compile
           controller/combined_pack_gamerule_fleet_validation.py
           controller/combined_pack_gamerule_fleet_exact_runner.py
+          controller/combined_windows_final_runner.py
           controller/windows_evidence_matrix.py
           controller/python_evidence_provenance.py
           controller/cross_platform_fleet_validation.py
           controller/fleet_spark_validation.py
           fixtures/endstone-ci-lifecycle-control/src/endstone_ci_lifecycle_control/__init__.py
           tests/test_combined_pack_exact_runner.py
+          tests/test_combined_windows_final_runner.py
 
       - name: Ruff focused files
         run: >-
           ruff check
           controller/combined_pack_gamerule_fleet_exact_runner.py
+          controller/combined_windows_final_runner.py
           controller/windows_evidence_matrix.py
           fixtures/endstone-ci-lifecycle-control/src/endstone_ci_lifecycle_control/__init__.py
           tests/test_combined_pack_exact_runner.py
+          tests/test_combined_windows_final_runner.py
 
       - name: Parse 20-player workflows
         run: |
@@ -95,8 +102,16 @@ jobs:
           missing = [value for value in required if value not in workflow]
           if missing:
               raise SystemExit(f'missing immutable provenance pins: {missing}')
-          if 'cishutdown' not in exact_runner or 'interactive-cishutdown' not in exact_runner:
-              raise SystemExit('Windows interactive lifecycle command is missing')
+          lifecycle_required = (
+              'framework-file-shutdown',
+              'file-trigger',
+              'acknowledgement-unobserved',
+              'process_tree_verification',
+              'cishutdown',
+          )
+          lifecycle_missing = [value for value in lifecycle_required if value not in exact_runner]
+          if lifecycle_missing:
+              raise SystemExit(f'Windows framework lifecycle contract is incomplete: {lifecycle_missing}')
           if '--no-interactive' in exact_runner:
               raise SystemExit('exact Windows runner disables the Endstone interactive command map')
           if 'CTRL_BREAK_EVENT' in exact_runner or 'send_signal' in exact_runner:
