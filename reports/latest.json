@@ -1,11 +1,19 @@
 {
-  "completed_at": "2026-09-02T15:23:31.280459Z",
+  "completed_at": "2026-09-02T15:27:45.764779Z",
   "components": {
     "endstone": {
       "platforms": {
         "linux": {
           "artifact": "endstone-0.11.11.dev396-linux-x86_64.zip",
           "artifact_id": 9824066404,
+          "run_id": 33567087207,
+          "run_url": "https://github.com/EndstoneMC/endstone/actions/runs/33567087207",
+          "sha": "46eff9f125f52eac76472d84339ead8fbf51fcd2",
+          "workflow": "Build"
+        },
+        "windows": {
+          "artifact": "endstone-0.11.11.dev396-windows-x86_64.zip",
+          "artifact_id": 9824065779,
           "run_id": 33567087207,
           "run_url": "https://github.com/EndstoneMC/endstone/actions/runs/33567087207",
           "sha": "46eff9f125f52eac76472d84339ead8fbf51fcd2",
@@ -25,6 +33,14 @@
           "run_url": "https://github.com/ReallocAll/spark/actions/runs/33636722030",
           "sha": "9a0838c7e68f334b1d73e8ebde0017f7dd90a939",
           "workflow": "Build"
+        },
+        "windows": {
+          "artifact": "spark-windows-33636722030",
+          "artifact_id": 9849312047,
+          "run_id": 33636722030,
+          "run_url": "https://github.com/ReallocAll/spark/actions/runs/33636722030",
+          "sha": "9a0838c7e68f334b1d73e8ebde0017f7dd90a939",
+          "workflow": "Build"
         }
       },
       "run_id": 33636722030,
@@ -33,13 +49,13 @@
     }
   },
   "endstone_sha": "46eff9f125f52eac76472d84339ead8fbf51fcd2",
-  "lab_commit": "5ba2bde73cf5fd3697110d436f3386779c247a97",
-  "lab_run_id": "33647929114",
-  "lab_run_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/33647929114",
+  "lab_commit": "ddea7d4f563d19e11f1816303356e397356bc6fa",
+  "lab_run_id": "33648083890",
+  "lab_run_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/33648083890",
   "platforms": {
     "linux": {
-      "actions_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/33647929114",
-      "allocation_profile_viewer_url": "https://spark.lucko.me/Wv90HCtk4F",
+      "actions_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/33648083890",
+      "allocation_profile_viewer_url": "https://spark.lucko.me/O9it9DjRx1",
       "bds_version": "26.45",
       "checks": [
         {
@@ -111,12 +127,12 @@
         {
           "name": "execution-profiler",
           "status": "PASS",
-          "viewer_url": "https://spark.lucko.me/BACkmwEmtS"
+          "viewer_url": "https://spark.lucko.me/6aGn9UmSi9"
         },
         {
           "name": "allocation-profiler",
           "status": "PASS",
-          "viewer_url": "https://spark.lucko.me/Wv90HCtk4F"
+          "viewer_url": "https://spark.lucko.me/O9it9DjRx1"
         },
         {
           "bytes": 16,
@@ -143,47 +159,47 @@
         {
           "detail": "controlled hard kill produced a replayable journal and recovered profile",
           "name": "crash-recovery",
-          "sha256": "06875146b60e526803c1071c248a9c4119914d674d54aaea334073cc91bf9f53",
+          "sha256": "a7654f18a2ff079e06bf4f5c5444cf6a80366494f66074300d1745ddcbb0b4f0",
           "status": "PASS",
-          "viewer_url": "https://spark.lucko.me/aqPfarCzQK"
+          "viewer_url": "https://spark.lucko.me/rtJ8PYcJK1"
         }
       ],
       "error_summary": null,
-      "execution_profile_viewer_url": "https://spark.lucko.me/BACkmwEmtS",
+      "execution_profile_viewer_url": "https://spark.lucko.me/6aGn9UmSi9",
       "failed_stage": null,
       "profiles": [
         {
           "duration_seconds": 12,
           "kind": "execution",
           "notes": "Headless execution profiler",
-          "profile_key": "BACkmwEmtS",
+          "profile_key": "6aGn9UmSi9",
           "server_version": "26.45",
-          "url": "https://spark.lucko.me/BACkmwEmtS"
+          "url": "https://spark.lucko.me/6aGn9UmSi9"
         },
         {
           "duration_seconds": 12,
           "kind": "allocation",
           "notes": "Headless native allocation profiler",
-          "profile_key": "Wv90HCtk4F",
+          "profile_key": "O9it9DjRx1",
           "server_version": "26.45",
-          "url": "https://spark.lucko.me/Wv90HCtk4F"
+          "url": "https://spark.lucko.me/O9it9DjRx1"
         },
         {
           "duration_seconds": 12,
           "kind": "crash-recovery",
           "notes": "Recovered from RecoveryWriter journal after controlled hard kill and uploaded by the lab.",
-          "profile_key": "aqPfarCzQK",
+          "profile_key": "rtJ8PYcJK1",
           "server_version": "26.45",
-          "sha256": "06875146b60e526803c1071c248a9c4119914d674d54aaea334073cc91bf9f53",
-          "url": "https://spark.lucko.me/aqPfarCzQK"
+          "sha256": "a7654f18a2ff079e06bf4f5c5444cf6a80366494f66074300d1745ddcbb0b4f0",
+          "url": "https://spark.lucko.me/rtJ8PYcJK1"
         }
       ],
       "recovery": {
         "crash_replay": "PASS",
         "journal_segments_before_restart": 1,
-        "recovered_profile_path": "work/linux/bedrock_server/plugins/spark/profiles/profile-1788362543756.sparkprofile",
-        "recovered_profile_sha256": "06875146b60e526803c1071c248a9c4119914d674d54aaea334073cc91bf9f53",
-        "recovered_profile_viewer_url": "https://spark.lucko.me/aqPfarCzQK"
+        "recovered_profile_path": "work/linux/bedrock_server/plugins/spark/profiles/profile-1788362685138.sparkprofile",
+        "recovered_profile_sha256": "a7654f18a2ff079e06bf4f5c5444cf6a80366494f66074300d1745ddcbb0b4f0",
+        "recovered_profile_viewer_url": "https://spark.lucko.me/rtJ8PYcJK1"
       },
       "shutdown_status": "controlled_crash_for_recovery",
       "soak": {
@@ -195,7 +211,17 @@
         "samples": [
           {
             "elapsed_seconds": 0,
-            "rss_bytes": 855629824,
+            "rss_bytes": 860090368,
+            "threads": 27
+          },
+          {
+            "elapsed_seconds": 60,
+            "rss_bytes": 860233728,
+            "threads": 27
+          },
+          {
+            "elapsed_seconds": 120,
+            "rss_bytes": 860393472,
             "threads": 27
           }
         ],
@@ -207,11 +233,183 @@
       "status": "running"
     },
     "windows": {
-      "actions_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/33647929114",
-      "error_summary": "No integration result was produced",
-      "failed_stage": "job-output-missing",
-      "profiles": [],
-      "status": "FAIL"
+      "actions_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/33648083890",
+      "allocation_profile_viewer_url": "https://spark.lucko.me/VKSo3tK2Ym",
+      "bds_version": "26.45",
+      "checks": [
+        {
+          "name": "artifact-discovery",
+          "status": "PASS"
+        },
+        {
+          "detail": "downloads\\endstone\\payload\\endstone-0.11.11.dev396-windows-x86_64\\endstone-0.11.11.dev396-cp313-cp313-win_amd64.whl",
+          "name": "endstone-wheel-located",
+          "status": "PASS"
+        },
+        {
+          "bytes": 16,
+          "canonical_enabled": false,
+          "detail": "canonical bStats config installed before BDS startup",
+          "evidence_path": "bstats-config.toml",
+          "name": "bstats-disabled",
+          "relative_path": "plugins/bstats/config.toml",
+          "sha256": "4ddaf7b63170a13e8224532a142dfc1dc8e77dac63933cebe8cc9afc42fd44a0",
+          "status": "PASS"
+        },
+        {
+          "detail": "work\\windows\\bedrock_server\\plugins\\endstone_spark.dll",
+          "name": "spark-plugin-deployed",
+          "status": "PASS"
+        },
+        {
+          "detail": "work\\windows\\bedrock_server\\plugins\\spark_allocation_shim.dll",
+          "name": "spark-allocation-shim-deployed",
+          "status": "PASS"
+        },
+        {
+          "bytes": 16,
+          "canonical_enabled": false,
+          "detail": "canonical bStats config installed before BDS startup",
+          "evidence_path": "bstats-config.toml",
+          "name": "bstats-disabled",
+          "relative_path": "plugins/bstats/config.toml",
+          "sha256": "4ddaf7b63170a13e8224532a142dfc1dc8e77dac63933cebe8cc9afc42fd44a0",
+          "status": "PASS"
+        },
+        {
+          "name": "bds-start",
+          "status": "PASS"
+        },
+        {
+          "name": "ready",
+          "status": "PASS"
+        },
+        {
+          "name": "spark-load-enable",
+          "status": "PASS"
+        },
+        {
+          "detail": "spark profiler info",
+          "name": "spark-profiler-info",
+          "status": "PASS"
+        },
+        {
+          "detail": "spark tps",
+          "name": "spark-tps",
+          "status": "PASS"
+        },
+        {
+          "detail": "spark health",
+          "name": "spark-health",
+          "status": "PASS"
+        },
+        {
+          "detail": "spark activity",
+          "name": "spark-activity",
+          "status": "PASS"
+        },
+        {
+          "name": "execution-profiler",
+          "status": "PASS",
+          "viewer_url": "https://spark.lucko.me/2wRzRV4Cx6"
+        },
+        {
+          "name": "allocation-profiler",
+          "status": "PASS",
+          "viewer_url": "https://spark.lucko.me/VKSo3tK2Ym"
+        },
+        {
+          "bytes": 16,
+          "canonical_enabled": false,
+          "detail": "canonical bStats config installed before BDS startup",
+          "evidence_path": "bstats-config.toml",
+          "name": "bstats-disabled",
+          "relative_path": "plugins/bstats/config.toml",
+          "sha256": "4ddaf7b63170a13e8224532a142dfc1dc8e77dac63933cebe8cc9afc42fd44a0",
+          "status": "PASS"
+        },
+        {
+          "name": "bds-start",
+          "status": "PASS"
+        },
+        {
+          "name": "ready",
+          "status": "PASS"
+        },
+        {
+          "name": "spark-load-enable",
+          "status": "PASS"
+        },
+        {
+          "detail": "controlled hard kill produced a replayable journal and recovered profile",
+          "name": "crash-recovery",
+          "sha256": "ea212f4044c35aa3ec3e8ffb117d9277ff41e217dcf048615458ccab664dd6a4",
+          "status": "PASS",
+          "viewer_url": "https://spark.lucko.me/mZJZd6VQYN"
+        }
+      ],
+      "error_summary": null,
+      "execution_profile_viewer_url": "https://spark.lucko.me/2wRzRV4Cx6",
+      "failed_stage": null,
+      "profiles": [
+        {
+          "duration_seconds": 12,
+          "kind": "execution",
+          "notes": "Headless execution profiler",
+          "profile_key": "2wRzRV4Cx6",
+          "server_version": "26.45",
+          "url": "https://spark.lucko.me/2wRzRV4Cx6"
+        },
+        {
+          "duration_seconds": 12,
+          "kind": "allocation",
+          "notes": "Headless native allocation profiler",
+          "profile_key": "VKSo3tK2Ym",
+          "server_version": "26.45",
+          "url": "https://spark.lucko.me/VKSo3tK2Ym"
+        },
+        {
+          "duration_seconds": 12,
+          "kind": "crash-recovery",
+          "notes": "Recovered from RecoveryWriter journal after controlled hard kill and uploaded by the lab.",
+          "profile_key": "mZJZd6VQYN",
+          "server_version": "26.45",
+          "sha256": "ea212f4044c35aa3ec3e8ffb117d9277ff41e217dcf048615458ccab664dd6a4",
+          "url": "https://spark.lucko.me/mZJZd6VQYN"
+        }
+      ],
+      "recovery": {
+        "crash_replay": "PASS",
+        "journal_segments_before_restart": 1,
+        "recovered_profile_path": "work\\windows\\bedrock_server\\plugins\\spark\\profiles\\profile-1788362739262.sparkprofile",
+        "recovered_profile_sha256": "ea212f4044c35aa3ec3e8ffb117d9277ff41e217dcf048615458ccab664dd6a4",
+        "recovered_profile_viewer_url": "https://spark.lucko.me/mZJZd6VQYN"
+      },
+      "shutdown_status": "controlled_crash_for_recovery",
+      "soak": {
+        "duration_minutes": 30,
+        "rss_end_bytes": null,
+        "rss_growth_bytes": null,
+        "rss_peak_bytes": null,
+        "rss_start_bytes": null,
+        "samples": [
+          {
+            "elapsed_seconds": 0,
+            "rss_bytes": 620978176,
+            "threads": 56
+          },
+          {
+            "elapsed_seconds": 60,
+            "rss_bytes": 622202880,
+            "threads": 47
+          }
+        ],
+        "thread_delta": null,
+        "threads_end": null,
+        "threads_peak": null,
+        "threads_start": null
+      },
+      "status": "running"
     }
   },
   "schema_version": 2,
