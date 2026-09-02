@@ -142,6 +142,7 @@ class AllocationLivePlugin(Plugin):
         if action == "release":
             retained_before_cleanup = self._retained_blocks()
             bytes_before_cleanup = self._retained_bytes()
+            self._started = False
             if self._helper.spark_allocation_live_release() != 0 or self._retained_blocks() != 0:
                 self._failed = True
                 self._write_state("cleanup-failed")
@@ -170,6 +171,7 @@ class AllocationLivePlugin(Plugin):
         if retained_before_cleanup is None or bytes_before_cleanup is None:
             retained_before_cleanup = self._retained_blocks()
             bytes_before_cleanup = self._retained_bytes()
+        self._started = False
         if self._helper.spark_allocation_live_release() != 0:
             self._failed = True
         self._write_state("cleaned", retained_before_cleanup, bytes_before_cleanup)

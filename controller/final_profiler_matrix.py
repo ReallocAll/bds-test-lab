@@ -53,8 +53,10 @@ ONLY_TICKS_OVER_MS = 10
 DEFAULT_ALLOCATION_INTERVAL_BYTES = 524287
 RETAINED_ALLOCATION_BLOCK_BYTES = 1 << 20
 RETAINED_ALLOCATION_BLOCKS = 24
+RETAINED_ALLOCATION_READY_TIMEOUT_SECONDS = 30
 RETAINED_ALLOCATION_HELPER_NAME = "spark_allocation_live_helper.so"
 RETAINED_ALLOCATION_HELPER_SYMBOL = "spark_allocation_live_retain"
+PROFILER_RUNNING_ACK_TOKEN = "profiler is now running"
 SHA256_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 SPARK_VERSION_RE = re.compile(r"(?:endstone-spark|spark)\s+v?([0-9][0-9A-Za-z.+_-]*)", re.IGNORECASE)
 
@@ -764,6 +766,8 @@ class FinalProfilerMatrixCase(IntegrationTest):
         self.bot: BotProcess | None = None
         self.allocation_live_state_path = self.root / "allocation-live-state.json"
         self.allocation_live_fixture: pathlib.Path | None = None
+        self._profile_start_index: int | None = None
+        self._profile_command: str | None = None
         self.result.update(
             {
                 "test_kind": "spark-profiler-mode-matrix",
@@ -825,9 +829,12 @@ class FinalProfilerMatrixCase(IntegrationTest):
                     "started_at": None,
                     "completed_at": None,
                 },
-        "measurement": {
+                "measurement": {
                     "command": build_profiler_command(self.spec.name, self.profile_seconds),
                     "started_at": None,
+                    "profiler_start_acknowledgement": None,
+                    "profiler_start_acknowledgement_line": None,
+                    "profiler_start_observed_at": None,
                     "completed_at": None,
                     "stop_command_sent": False,
                     "viewer_url": None,
@@ -1060,6 +1067,37 @@ class FinalProfilerMatrixCase(IntegrationTest):
         self.result["workload"]["retained_allocation"]["start_acknowledgement"] = output[-20:]
         self.check("retained-allocation-started", "PASS", command="allocation-live start")
 
+    def wait_for_retained_allocation_state(self) -> None:
+        if not self.spec.live_only:
+            return
+        assert self.server is not None
+
+        def ready(_lines: list[str]) -> bool:
+            try:
+                state = self._read_allocation_state()
+            except (OSError, RuntimeError, TypeError, UnicodeDecodeError, json.JSONDecodeError):
+                return False
+            return (
+                state.get("status") == "running"
+                and state.get("started") is True
+                and state.get("allocation_failed") is False
+                and state.get("retained_blocks") == RETAINED_ALLOCATION_BLOCKS
+                and state.get("retained_bytes") == RETAINED_ALLOCATION_BLOCK_BYTES * RETAINED_ALLOCATION_BLOCKS
+            )
+
+        try:
+            self.server.wait_for(
+                ready,
+                RETAINED_ALLOCATION_READY_TIMEOUT_SECONDS,
+                "retained allocation workload state",
+            )
+        except TimeoutError as exc:
+            try:
+                state = self._read_allocation_state()
+            except (OSError, RuntimeError, TypeError, UnicodeDecodeError, json.JSONDecodeError):
+                state = None
+            raise RuntimeError(f"retained allocation workload did not reach the exact live state: {state}") from exc
+
     def validate_retained_allocation_state(self, *, cleaned: bool) -> None:
         if not self.spec.live_only:
             return
@@ -1068,6 +1106,8 @@ class FinalProfilerMatrixCase(IntegrationTest):
         if cleaned:
             if state.get("cleaned_up") is not True or state.get("status") != "cleaned":
                 raise RuntimeError(f"retained allocation cleanup was not proven: {state}")
+            if state.get("started") is not False:
+                raise RuntimeError(f"retained allocation cleanup left the scheduler armed: {state}")
             if state.get("retained_blocks") != 0 or state.get("retained_bytes") != 0:
                 raise RuntimeError(f"retained allocation cleanup left live blocks: {state}")
             before_blocks = state.get("retained_blocks_before_cleanup")
@@ -1092,7 +1132,7 @@ class FinalProfilerMatrixCase(IntegrationTest):
             )
             return
 
-        if state.get("started") is not True or state.get("allocation_failed") is True:
+        if state.get("started") is not True or state.get("allocation_failed") is not False:
             raise RuntimeError(f"retained allocation activation failed: {state}")
         retained_blocks = state.get("retained_blocks")
         retained_bytes = state.get("retained_bytes")
@@ -1100,6 +1140,10 @@ class FinalProfilerMatrixCase(IntegrationTest):
             raise RuntimeError(f"retained allocation workload produced no live blocks: {state}")
         if not isinstance(retained_bytes, int) or retained_bytes <= 0:
             raise RuntimeError(f"retained allocation workload produced no live bytes: {state}")
+        if retained_blocks != RETAINED_ALLOCATION_BLOCKS:
+            raise RuntimeError(f"retained allocation workload produced an unexpected block count: {state}")
+        if retained_bytes != RETAINED_ALLOCATION_BLOCK_BYTES * RETAINED_ALLOCATION_BLOCKS:
+            raise RuntimeError(f"retained allocation workload produced an unexpected byte count: {state}")
         workload.update(
             {
                 "retained_blocks": retained_blocks,
@@ -1126,6 +1170,36 @@ class FinalProfilerMatrixCase(IntegrationTest):
             raise RuntimeError(f"retained allocation fixture did not acknowledge release: {output[-30:]}")
         self.result["workload"]["retained_allocation"]["release_acknowledgement"] = output[-20:]
         self.check("retained-allocation-released-after-profile-stop", "PASS")
+
+    def _cleanup_after_failure(self) -> list[str]:
+        """Cancel an active profile and release retained allocations before a forced shutdown."""
+
+        if self.server is None or not self.server.is_alive():
+            return []
+        errors: list[str] = []
+        measurement = self.result["measurement"]
+        if self._profile_start_index is not None and not measurement.get("profiler_stop_observed_at"):
+            try:
+                cancel = self.server.command("spark profiler cancel")
+                output = self.server.wait_command_output(cancel, 8)
+                measurement["profiler_cancel_command_sent"] = True
+                measurement["profiler_cancel_output"] = output[-20:]
+                lowered = "\n".join(output).lower()
+                if not any(token in lowered for token in ("profiler was cancelled", "profiler was canceled")):
+                    errors.append(f"profiler cancellation was not acknowledged: {output[-20:]}")
+            except Exception as exc:  # noqa: BLE001 - preserve the original integration failure
+                errors.append(f"profiler cancellation cleanup failed: {type(exc).__name__}: {exc}")
+
+        workload = self.result["workload"]["retained_allocation"]
+        if self.spec.live_only and workload.get("started") and not workload.get("cleaned_up"):
+            try:
+                release = self.server.command("allocation-live release")
+                output = self.server.wait_command_output(release, 8)
+                workload["release_acknowledgement"] = output[-20:]
+                self.validate_retained_allocation_state(cleaned=True)
+            except Exception as exc:  # noqa: BLE001 - forced shutdown still gives the fixture on_disable cleanup
+                errors.append(f"retained allocation cleanup failed: {type(exc).__name__}: {exc}")
+        return errors
 
     @staticmethod
     def _spark_version(lines: list[str]) -> str | None:
@@ -1256,11 +1330,62 @@ class FinalProfilerMatrixCase(IntegrationTest):
         self.result["profile_manifest_sha256"] = hashlib.sha256(manifest_bytes).hexdigest()
         self.result["profile_manifest_bytes"] = len(manifest_bytes)
 
-    def run_profile(self) -> None:
+    def start_profiler(self, *, require_running_ack: bool | None = None) -> None:
         assert self.server is not None
+        if self._profile_start_index is not None:
+            raise RuntimeError("profiler start was already requested")
         command = build_profiler_command(self.spec.name, self.profile_seconds)
         self.result["measurement"]["started_at"] = now_iso()
         start = self.server.command(command)
+        if require_running_ack is None:
+            require_running_ack = self.spec.live_only
+        if not require_running_ack:
+            self._profile_start_index = start
+            self._profile_command = command
+            return
+        try:
+            lines = self.server.wait_for(
+                lambda snapshot: any(
+                    PROFILER_RUNNING_ACK_TOKEN in line.lower() for line in snapshot[start:]
+                ),
+                8,
+                "Spark profiler running acknowledgement",
+            )
+        except TimeoutError as exc:
+            output = self.server.snapshot()[start:]
+            joined = "\n".join(output).lower()
+            if "unknown command" in joined or "command not found" in joined:
+                raise RuntimeError(f"Spark profiler command was rejected: {command}\n" + "\n".join(output[-20:])) from exc
+            raise RuntimeError(
+                f"Spark profiler did not acknowledge running within 8s: {output[-20:]}"
+            ) from exc
+        output = lines[start:]
+        ack_line = next(line for line in output if PROFILER_RUNNING_ACK_TOKEN in line.lower())
+        self._profile_start_index = start
+        self._profile_command = command
+        self.result["measurement"].update(
+            {
+                "profiler_start_acknowledgement": PROFILER_RUNNING_ACK_TOKEN,
+                "profiler_start_acknowledgement_line": ack_line,
+                "profiler_start_acknowledgement_output": output[-20:],
+                "profiler_start_observed_at": now_iso(),
+            }
+        )
+        self.check(
+            "profiler-running",
+            "PASS",
+            command=command,
+            acknowledgement=PROFILER_RUNNING_ACK_TOKEN,
+            output=output[-20:],
+        )
+
+    def run_profile(self) -> None:
+        assert self.server is not None
+        if self._profile_start_index is None:
+            self.start_profiler()
+        assert self._profile_start_index is not None
+        start = self._profile_start_index
+        command = self._profile_command or build_profiler_command(self.spec.name, self.profile_seconds)
         deadline = time.monotonic() + self.profile_seconds + 90
         viewer_url: str | None = None
         while time.monotonic() < deadline:
@@ -1357,11 +1482,15 @@ class FinalProfilerMatrixCase(IntegrationTest):
             stage = "warmup"
             self.run_warmup()
             stage = "profiler-mode"
-            self.start_retained_allocation_workload()
+            if self.spec.live_only:
+                self.start_profiler()
+                self.start_retained_allocation_workload()
+                self.wait_for_retained_allocation_state()
+                self.validate_retained_allocation_state(cleaned=False)
             self.run_profile()
-            self.validate_retained_allocation_state(cleaned=False)
-            self.release_retained_allocation_workload()
-            self.validate_retained_allocation_state(cleaned=True)
+            if self.spec.live_only:
+                self.release_retained_allocation_workload()
+                self.validate_retained_allocation_state(cleaned=True)
             stage = "bot-stop"
             self.stop_bot()
             stage = "shutdown"
@@ -1376,6 +1505,9 @@ class FinalProfilerMatrixCase(IntegrationTest):
             self.result["error_summary"] = f"{type(exc).__name__}: {exc}"[:1200]
             diagnostic = traceback.format_exc()
             try:
+                cleanup_errors = self._cleanup_after_failure()
+                if cleanup_errors:
+                    diagnostic += "\n\nCleanup warnings:\n" + "\n".join(cleanup_errors)
                 if self.bot is not None and self.bot.is_alive():
                     self.bot.force_close()
                 if self.server is not None and self.server.is_alive():
