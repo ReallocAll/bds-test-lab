@@ -10,4 +10,4 @@ jobs:
   note:
     runs-on: ubuntu-24.04
     steps:
-      - run: echo "Parked until final cleanup."
+      - run: echo "Pending deletion after final Spark repository verification."
