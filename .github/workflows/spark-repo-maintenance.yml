@@ -152,7 +152,7 @@ jobs:
 
               cleaned = []
               for line in lines:
-                  if re.match(r'(?i)^Co-authored-by:\s*github-actions\[bot\]\b', line):
+                  if re.match(r'(?i)^Co-authored-by:\s*github-actions\[bot\](?:\s|<|$)', line):
                       continue
                   if re.match(r'(?i)^(PR|Pull Request):\s*#?[0-9]+\s*$', line):
                       continue
