@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import pathlib
 import subprocess
 import sys
+import uuid
 from typing import Any
 
 from controller.combined_pack_gamerule_fleet_validation import (
@@ -32,31 +34,43 @@ _ORIGINAL_INSTALL_BEHAVIOR_PACKS = CombinedPackGameruleFleetValidation.install_b
 
 
 class _FrameworkShutdownServerProcess(ServerProcess):
-    """Gracefully stop the Windows Endstone root through its interactive command map."""
+    """Gracefully stop Windows Endstone through a deterministic test-only file control."""
 
     lifecycle_diagnostic: dict[str, Any]
     lifecycle_registered: bool = False
+    lifecycle_request_path: pathlib.Path | None = None
 
-    def _record_shutdown_acknowledgement(self, diagnostic: dict[str, Any], command_start: int | None) -> None:
+    def _record_shutdown_acknowledgement(
+        self,
+        diagnostic: dict[str, Any],
+        output_start: int | None,
+        token: str | None,
+    ) -> None:
         evidence: dict[str, Any] = diagnostic["acknowledgement_evidence"]
-        if command_start is None:
+        if output_start is None or token is None:
             evidence["shutdown_requested"] = False
             evidence["observed"] = False
             evidence["source"] = "unavailable"
             diagnostic["acknowledgement_observed"] = False
             return
         try:
-            command_output = self.snapshot()[command_start:]
+            output = self.snapshot()[output_start:]
         except (AttributeError, TypeError):
-            command_output = []
-        observed = any("ci lifecycle shutdown requested" in line.lower() for line in command_output)
+            output = []
+        marker = f"ci lifecycle shutdown requested via file; token={token}".casefold()
+        observed = any(marker in line.casefold() for line in output)
         evidence["shutdown_requested"] = observed
         evidence["observed"] = observed
-        evidence["source"] = "captured-output"
+        evidence["source"] = "captured-output-token"
         diagnostic["acknowledgement_observed"] = observed
 
     def graceful_stop(self, timeout: float = 60.0) -> bool:
-        diagnostic = self._begin_lifecycle("interactive-cishutdown", "cishutdown", timeout)
+        request_path = self.lifecycle_request_path
+        diagnostic = self._begin_lifecycle(
+            "framework-file-shutdown",
+            str(request_path) if request_path is not None else "file-trigger-unavailable",
+            timeout,
+        )
         phase = getattr(self, "lifecycle_phase", None)
         diagnostic["phase_ordinal"] = phase.get("ordinal") if isinstance(phase, dict) else None
         diagnostic["phase_name"] = phase.get("name") if isinstance(phase, dict) else None
@@ -65,7 +79,10 @@ class _FrameworkShutdownServerProcess(ServerProcess):
         diagnostic["acknowledgement_observed"] = False
         diagnostic["forced"] = False
         evidence["registration_observed"] = self.lifecycle_registered
-        command_start: int | None = None
+        evidence["transport"] = "file-trigger"
+        evidence["request_path"] = str(request_path) if request_path is not None else None
+        output_start: int | None = None
+        token: str | None = None
         if not diagnostic["alive_before"]:
             self._finish_lifecycle(
                 diagnostic,
@@ -74,26 +91,35 @@ class _FrameworkShutdownServerProcess(ServerProcess):
             )
             diagnostic["wrapper_outcome"] = diagnostic["outcome"]
             diagnostic["wrapper_return_code"] = diagnostic["returncode"]
-            self._record_shutdown_acknowledgement(diagnostic, command_start)
+            self._record_shutdown_acknowledgement(diagnostic, output_start, token)
             diagnostic["cleanup_outcome"] = "already-exited"
             print(f"[windows-lifecycle] {diagnostic}", flush=True)
             return True
-        if self.process is None:
-            self._finish_lifecycle(diagnostic, outcome="missing-process")
+        if self.process is None or request_path is None or not self.lifecycle_registered:
+            self._finish_lifecycle(
+                diagnostic,
+                outcome="file-control-unavailable",
+                returncode=self.process.returncode if self.process is not None else None,
+            )
             diagnostic["wrapper_outcome"] = diagnostic["outcome"]
             diagnostic["wrapper_return_code"] = diagnostic["returncode"]
-            self._record_shutdown_acknowledgement(diagnostic, command_start)
+            self._record_shutdown_acknowledgement(diagnostic, output_start, token)
             diagnostic["cleanup_outcome"] = "verification-failed"
             print(f"[windows-lifecycle] {diagnostic}", flush=True)
             return False
         try:
-            command_result = self.command("cishutdown")
-            if isinstance(command_result, int):
-                command_start = command_result
+            output_start = len(self.snapshot())
+            token = uuid.uuid4().hex
+            evidence["token"] = token
+            request_path.parent.mkdir(parents=True, exist_ok=True)
+            request_path.write_text(token + "\n", encoding="utf-8")
             evidence["command_sent"] = True
             diagnostic["command_sent"] = True
             self.process.wait(timeout=timeout)
-            self._record_shutdown_acknowledgement(diagnostic, command_start)
+            reader = getattr(self, "_reader", None)
+            if reader is not None:
+                reader.join(timeout=3)
+            self._record_shutdown_acknowledgement(diagnostic, output_start, token)
             self._finish_lifecycle(
                 diagnostic,
                 outcome="exited" if self.process.returncode == 0 else "nonzero-exit",
@@ -101,11 +127,21 @@ class _FrameworkShutdownServerProcess(ServerProcess):
             )
             diagnostic["wrapper_outcome"] = diagnostic["outcome"]
             diagnostic["wrapper_return_code"] = diagnostic["returncode"]
+            if self.process.returncode == 0 and not diagnostic["acknowledgement_observed"]:
+                diagnostic["outcome"] = "acknowledgement-unobserved"
+                diagnostic["cleanup_outcome"] = "verification-failed"
+                print(f"[windows-lifecycle] {diagnostic}", flush=True)
+                return False
+            if self.process.returncode == 0 and diagnostic["process_tree_verification"] != "clean":
+                diagnostic["outcome"] = diagnostic["process_tree_verification"]
+                diagnostic["cleanup_outcome"] = diagnostic["process_tree_verification"]
+                print(f"[windows-lifecycle] {diagnostic}", flush=True)
+                return False
             diagnostic["cleanup_outcome"] = "graceful-exit" if self.process.returncode == 0 else "nonzero-exit"
             print(f"[windows-lifecycle] {diagnostic}", flush=True)
             return self.process.returncode == 0
         except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
-            self._record_shutdown_acknowledgement(diagnostic, command_start)
+            self._record_shutdown_acknowledgement(diagnostic, output_start, token)
             self._finish_lifecycle(
                 diagnostic,
                 outcome="timeout" if isinstance(exc, subprocess.TimeoutExpired) else "exception",
@@ -144,7 +180,7 @@ def _install_exact_artifacts(self: CombinedPackGameruleFleetValidation) -> None:
 
 
 def _start_windows_interactive_server(self: CombinedPackGameruleFleetValidation) -> None:
-    """Run Endstone with its interactive command map for graceful CI lifecycle control."""
+    """Run Endstone with deterministic test-only framework lifecycle control."""
 
     cmd = [
         sys.executable,
@@ -173,13 +209,32 @@ def _start_windows_interactive_server(self: CombinedPackGameruleFleetValidation)
         "Spark enable",
     )
     self.check("spark-load-enable", "PASS")
-    self.server.wait_for(
-        lambda lines: any("ci lifecycle control enabled; cishutdown registered" in line.lower() for line in lines),
+    lines = self.server.wait_for(
+        lambda current: any(
+            "ci lifecycle control enabled;" in line.lower() and "file-control=" in line.lower()
+            for line in current
+        ),
         30,
-        "CI lifecycle command registration",
+        "CI lifecycle file control registration",
     )
+    registration = next(
+        line
+        for line in reversed(lines)
+        if "ci lifecycle control enabled;" in line.lower() and "file-control=" in line.lower()
+    )
+    raw_path = registration.split("file-control=", 1)[1].strip()
+    request_path = pathlib.Path(raw_path)
+    if not request_path.is_absolute():
+        request_path = (self.root / request_path).resolve()
+    self.server.lifecycle_request_path = request_path
     self.server.lifecycle_registered = True
-    self.check("windows-interactive-lifecycle", "PASS", shutdown_control="cishutdown")
+    self.check(
+        "windows-framework-lifecycle",
+        "PASS",
+        shutdown_control="file-trigger",
+        request_path=str(request_path),
+        compatibility_command="cishutdown",
+    )
     version_file = self.server_dir / "version.txt"
     if version_file.exists():
         self.result["bds_version"] = version_file.read_text(encoding="utf-8").strip()
