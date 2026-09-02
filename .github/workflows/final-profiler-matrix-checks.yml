@@ -41,15 +41,12 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
-
       - name: Set up Python 3.13
         uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-
       - name: Install validation dependencies
         run: python -m pip install --disable-pip-version-check psutil ruff
-
       - name: Compile validator modules and tests
         run: >-
           python -m py_compile
@@ -72,18 +69,15 @@ jobs:
           fixtures/spark-allocation-live-test/src/spark_allocation_live_test/__init__.py
           fixtures/spark-python-attribution-plugin-a/src/endstone_spark_python_attribution_a/__init__.py
           fixtures/spark-python-attribution-plugin-b/src/endstone_spark_python_attribution_b/__init__.py
-
       - name: Run final profiler matrix tests
         run: >-
           python -m unittest
           tests.test_final_profiler_matrix
           tests.test_final_control_monitoring
           tests.test_python_multi_plugin_validation
-
       - name: Ruff validator modules and tests
         run: >-
-          ruff check
-          --ignore EXE001
+          ruff check --ignore EXE001
           controller/final_profiler_matrix.py
           controller/final_control_monitoring.py
           controller/python_multi_plugin_validation.py
@@ -110,10 +104,8 @@ jobs:
     timeout-minutes: 45
     env:
       PYTHONUNBUFFERED: "1"
-      # Keep these exact production pins synchronized with the accepted Spark/bot revisions.
-      SPARK_SHA: cde587a3f0e31e7fc03bca012b2b09e86c6185ab
+      SPARK_SHA: 653e6821a45f5b5de5e8d22671960c2024db18be
       BOT_REF: f175e4a6551d1973628b5ca926a497e9962c1302
-
     steps:
       - name: Checkout exact pull-request head
         uses: actions/checkout@v7
@@ -121,7 +113,6 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
-
       - name: Detect alloc-live validation scope
         id: scope
         shell: bash
@@ -140,7 +131,6 @@ jobs:
             echo 'run=false' >> "$GITHUB_OUTPUT"
           fi
           echo "LAB_SHA=$actual" >> "$GITHUB_ENV"
-
       - name: Checkout bot at exact SHA
         if: steps.scope.outputs.run == 'true'
         uses: actions/checkout@v7
@@ -149,14 +139,12 @@ jobs:
           ref: ${{ env.BOT_REF }}
           path: bot-src
           persist-credentials: false
-
       - name: Set up Go 1.25
         if: steps.scope.outputs.run == 'true'
         uses: actions/setup-go@v6
         with:
           go-version: "1.25.x"
           cache: false
-
       - name: Build and record exact bot revision
         if: steps.scope.outputs.run == 'true'
         shell: bash
@@ -170,17 +158,14 @@ jobs:
           go build -trimpath -o ../dist-bds-test-bot ./cmd/bds-test-bot
           chmod +x ../dist-bds-test-bot
           echo "BOT_SHA=$actual_bot_sha" >> "$GITHUB_ENV"
-
       - name: Set up Python 3.13
         if: steps.scope.outputs.run == 'true'
         uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-
       - name: Install validation dependencies
         if: steps.scope.outputs.run == 'true'
         run: python -m pip install --disable-pip-version-check psutil hatchling
-
       - name: Require exact Spark artifact
         if: steps.scope.outputs.run == 'true'
         env:
@@ -189,7 +174,6 @@ jobs:
           python -m controller.assert_spark_artifact
           --platform linux
           --expected-sha "$SPARK_SHA"
-
       - name: Run strict real-BDS alloc-live-only case
         if: steps.scope.outputs.run == 'true'
         env:
@@ -201,21 +185,18 @@ jobs:
           --spark-sha "$SPARK_SHA"
           --bot-ref "$BOT_REF"
           --evidence-root evidence
-
       - name: Verify canonical bStats evidence
         if: always() && steps.scope.outputs.run == 'true'
         run: >-
           python -m controller.verify_bstats_evidence
           --result evidence/alloc-live-only/test-results.json
-
       - name: Verify strict alloc-live result independently
         if: always() && steps.scope.outputs.run == 'true'
         shell: bash
         run: |
           python - <<'PY'
-          import json
+          import json, os
           from pathlib import Path
-
           path = Path('evidence/alloc-live-only/test-results.json')
           if not path.is_file():
               raise SystemExit('alloc-live result is missing')
@@ -223,45 +204,39 @@ jobs:
           if data.get('status') != 'PASS':
               raise SystemExit(f"alloc-live status is not PASS: {data.get('error_summary')}")
           provenance = data.get('provenance') or {}
-          if (provenance.get('spark_sha') or '').lower() != 'cde587a3f0e31e7fc03bca012b2b09e86c6185ab':
+          if (provenance.get('spark_sha') or '').lower() != os.environ['SPARK_SHA'].lower():
               raise SystemExit(f"unexpected Spark SHA: {provenance.get('spark_sha')}")
           measurement = data.get('measurement') or {}
           if not measurement.get('profiler_start_acknowledgement'):
               raise SystemExit('profiler start acknowledgement was not recorded')
           retained = (data.get('workload') or {}).get('retained_allocation') or {}
           expected_bytes = 24 * (1 << 20)
-          if retained.get('retained_blocks_before_cleanup') != 24:
-              raise SystemExit(f"unexpected retained block count: {retained}")
-          if retained.get('retained_bytes_before_cleanup') != expected_bytes:
-              raise SystemExit(f"unexpected retained byte count: {retained}")
+          if retained.get('retained_blocks_before_cleanup') != 24 or retained.get('retained_bytes_before_cleanup') != expected_bytes:
+              raise SystemExit(f"retained fixture mismatch: {retained}")
           if not retained.get('cleaned_up'):
               raise SystemExit(f"retained allocation was not cleaned up: {retained}")
           assertions = data.get('semantic_assertions') or {}
-          if not assertions or not all(assertions.values()):
-              raise SystemExit(f"semantic assertions are incomplete or false: {assertions}")
-          if not assertions.get('retained_helper_chain'):
-              raise SystemExit('retained helper chain oracle did not pass')
+          if not assertions or not all(assertions.values()) or not assertions.get('retained_helper_chain'):
+              raise SystemExit(f"strict semantic assertions failed: {assertions}")
           profile = data.get('profile') or {}
           if int(profile.get('raw_bytes') or 0) <= 0:
               raise SystemExit(f"raw allocation profile is empty: {profile}")
-          quality = data.get('quality') or {}
-          incomplete = quality.get('incomplete_flags') or {}
+          incomplete = (data.get('quality') or {}).get('incomplete_flags') or {}
           if any(incomplete.values()):
               raise SystemExit(f"profile reports incomplete flags: {incomplete}")
           print('strict alloc-live independent verification PASS')
           PY
-
       - name: Add alloc-live evidence summary
         if: always() && steps.scope.outputs.run == 'true'
         shell: bash
         run: |
           python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
-          import json
+          import json, os
           from pathlib import Path
           path = Path('evidence/alloc-live-only/test-results.json')
           print('## Strict alloc-live real BDS')
           print()
-          print(f"Harness SHA: `{__import__('os').environ.get('LAB_SHA')}`")
+          print(f"Harness SHA: `{os.environ.get('LAB_SHA')}`")
           if path.is_file():
               data = json.loads(path.read_text(encoding='utf-8'))
               provenance = data.get('provenance') or {}
@@ -276,7 +251,6 @@ jobs:
           else:
               print('Result: **missing**')
           PY
-
       - name: Upload alloc-live evidence
         if: always() && steps.scope.outputs.run == 'true'
         uses: actions/upload-artifact@v7
