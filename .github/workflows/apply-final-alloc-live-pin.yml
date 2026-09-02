@@ -1,0 +1,40 @@
+name: Apply final alloc-live pin
+
+on:
+  push:
+    branches:
+      - fix/alloc-live-profiler-first
+    paths:
+      - ".github/workflows/apply-final-alloc-live-pin.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: fix/alloc-live-profiler-first
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Replace accepted Spark SHA and remove this workflow
+        env:
+          GH_TOKEN: ${{ secrets.REPO_PAT }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          old='cde587a3f0e31e7fc03bca012b2b09e86c6185ab'
+          new='653e6821a45f5b5de5e8d22671960c2024db18be'
+          file='.github/workflows/final-profiler-matrix-checks.yml'
+          count="$(grep -o "$old" "$file" | wc -l)"
+          test "$count" -eq 2
+          sed -i "s/$old/$new/g" "$file"
+          test "$(grep -o "$new" "$file" | wc -l)" -eq 2
+          rm .github/workflows/apply-final-alloc-live-pin.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "$file" .github/workflows/apply-final-alloc-live-pin.yml
+          git commit -m 'ci: pin strict alloc-live gate to final Spark SHA'
+          git push "https://x-access-token:${GH_TOKEN}@github.com/ReallocAll/bds-test-lab.git" HEAD:fix/alloc-live-profiler-first
