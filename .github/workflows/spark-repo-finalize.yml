@@ -1,0 +1,109 @@
+name: Spark repository finalize
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/spark-repo-finalize.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  finalize:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ secrets.REPO_PAT }}
+      TARGET_REPO: ReallocAll/spark
+      MAIN_SHA: 53b556eae4e66ff280a50d6c926258fcbc73b3bc
+      DEVELOP_SHA: 6cbda71cf858eab29f59fd9243ea94f2110f5637
+      OLD_DEV_SHA: 9a0838c7e68f334b1d73e8ebde0017f7dd90a939
+      OLD_RELEASE_SHA: 3c5cbdfc664912e3b87202c068ec04d8fe95c039
+      BAD_TAG: v0.6.0
+
+    steps:
+      - name: Verify production refs before destructive cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$TARGET_REPO/git/ref/heads/main" --jq .object.sha)" = "$MAIN_SHA"
+          test "$(gh api "repos/$TARGET_REPO/git/ref/heads/develop" --jq .object.sha)" = "$DEVELOP_SHA"
+          test "$(gh api "repos/$TARGET_REPO/git/ref/tags/$BAD_TAG" --jq .object.sha)" = "$OLD_RELEASE_SHA"
+          test "$(gh api "repos/$TARGET_REPO/releases/tags/$BAD_TAG" --jq .tag_name)" = "$BAD_TAG"
+          test "$(gh pr list --repo "$TARGET_REPO" --state open --limit 100 --json number --jq 'length')" = "0"
+
+      - name: Delete erroneous release and tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_id=$(gh api "repos/$TARGET_REPO/releases/tags/$BAD_TAG" --jq .id)
+          gh api --method DELETE "repos/$TARGET_REPO/releases/$release_id"
+          gh api --method DELETE "repos/$TARGET_REPO/git/refs/tags/$BAD_TAG"
+          if gh api "repos/$TARGET_REPO/releases/tags/$BAD_TAG" >/dev/null 2>&1; then exit 1; fi
+          if gh api "repos/$TARGET_REPO/git/ref/tags/$BAD_TAG" >/dev/null 2>&1; then exit 1; fi
+          echo "Deleted Release and tag $BAD_TAG"
+
+      - name: Classify and delete safe stale branches
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --mirror "https://x-access-token:${GH_TOKEN}@github.com/${TARGET_REPO}.git" spark.git
+          cd spark.git
+          mkdir -p /tmp/spark-finalize
+          : > /tmp/spark-finalize/deleted-branches.tsv
+          : > /tmp/spark-finalize/remaining-branches.tsv
+
+          git for-each-ref --format='%(refname:short)%09%(objectname)' refs/heads | sort | while IFS=$'\t' read -r branch tip; do
+            case "$branch" in
+              main|develop|exp/windows-stable-entry-hooks)
+                printf '%s\t%s\tKEEP_CORE\n' "$branch" "$tip" >> /tmp/spark-finalize/remaining-branches.tsv
+                continue
+                ;;
+            esac
+
+            merged_old=no; git merge-base --is-ancestor "$tip" "$OLD_DEV_SHA" 2>/dev/null && merged_old=yes || true
+            release_derived=no; git merge-base --is-ancestor "$OLD_RELEASE_SHA" "$tip" 2>/dev/null && release_derived=yes || true
+            equivalent=no
+            if git merge-base "$DEVELOP_SHA" "$tip" >/dev/null 2>&1; then
+              plus=$(git cherry "$DEVELOP_SHA" "$tip" | grep -c '^+' || true)
+              [[ "$plus" == "0" ]] && equivalent=yes
+            fi
+
+            reason=""
+            if [[ "$release_derived" == yes ]]; then reason="derived from erroneous release commit"
+            elif [[ "$merged_old" == yes ]]; then reason="tip reachable from pre-rewrite develop"
+            elif [[ "$equivalent" == yes ]]; then reason="patch-equivalent to rewritten develop"
+            elif [[ "$branch" =~ ^(ci|diagnostic|docs|copilot|backport|release|backup|archive|local|cleanup|test)/ ]]; then reason="closed one-shot/CI/maintenance namespace; open PR count is zero"
+            fi
+
+            if [[ -n "$reason" ]]; then
+              gh api --method DELETE "repos/$TARGET_REPO/git/refs/heads/$branch"
+              printf '%s\t%s\t%s\n' "$branch" "$tip" "$reason" >> /tmp/spark-finalize/deleted-branches.tsv
+            else
+              printf '%s\t%s\tREVIEW independent patch\n' "$branch" "$tip" >> /tmp/spark-finalize/remaining-branches.tsv
+            fi
+          done
+
+          gh api --paginate "repos/$TARGET_REPO/branches?per_page=100" --jq '.[] | [.name,.commit.sha] | @tsv' | sort > /tmp/spark-finalize/branches-after.tsv
+          echo "Deleted branches: $(wc -l < /tmp/spark-finalize/deleted-branches.tsv)"
+          echo "Remaining branches: $(wc -l < /tmp/spark-finalize/branches-after.tsv)"
+          cat /tmp/spark-finalize/remaining-branches.tsv
+
+      - name: Verify rollback state
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$TARGET_REPO/git/ref/heads/main" --jq .object.sha)" = "$MAIN_SHA"
+          test "$(gh api "repos/$TARGET_REPO/git/ref/heads/develop" --jq .object.sha)" = "$DEVELOP_SHA"
+          if gh api "repos/$TARGET_REPO/releases/tags/$BAD_TAG" >/dev/null 2>&1; then exit 1; fi
+          if gh api "repos/$TARGET_REPO/git/ref/tags/$BAD_TAG" >/dev/null 2>&1; then exit 1; fi
+          gh api "repos/$TARGET_REPO/git/ref/heads/exp/windows-stable-entry-hooks" --jq .object.sha
+
+      - name: Upload finalize audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spark-repository-finalize-audit
+          path: /tmp/spark-finalize
+          retention-days: 14
+          if-no-files-found: warn
