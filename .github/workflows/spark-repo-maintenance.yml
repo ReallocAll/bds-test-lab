@@ -10,4 +10,4 @@ jobs:
   note:
     runs-on: ubuntu-24.04
     steps:
-      - run: echo "One-shot Spark rewrite preparation completed; retained temporarily for cleanup audit."
+      - run: echo "Maintenance helper is inert pending deletion after Spark cleanup."
