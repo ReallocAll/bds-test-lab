@@ -1,21 +1,21 @@
 # Latest BDS integration test
 
-- Lab commit: `5a3510eead8d29c1174b6aff85183380b7d33e9f`
-- Lab Actions: [33627994595](https://github.com/ReallocAll/bds-test-lab/actions/runs/33627994595)
-- State: **PASS**
-- Spark SHA: `653e6821a45f5b5de5e8d22671960c2024db18be`
+- Lab commit: `ca2bc3705ec5eb9f73ba6d5f5c084c289f163432`
+- Lab Actions: [33646504022](https://github.com/ReallocAll/bds-test-lab/actions/runs/33646504022)
+- State: **FAIL**
+- Spark SHA: `9a0838c7e68f334b1d73e8ebde0017f7dd90a939`
 - Endstone SHA: `46eff9f125f52eac76472d84339ead8fbf51fcd2`
-- Completed: `2026-09-02T12:37:08.745867Z`
+- Completed: `2026-09-02T15:10:21.767161Z`
 
 ## Platforms
 
 | Platform | Result | BDS | Shutdown | Crash replay | Soak | Execution | Allocation | Recovery |
 |---|---|---|---|---|---|---|---|---|
-| Windows | **PASS** | `26.45` | `graceful` | `PASS` | `30m` | [viewer](https://spark.lucko.me/kTFcVTkkvg) | [viewer](https://spark.lucko.me/UXFOWxvvn6) | [viewer](https://spark.lucko.me/9Mn96DjDb8) |
+| Windows | **running** | `26.45` | `controlled_crash_for_recovery` | `PASS` | `30m` | [viewer](https://spark.lucko.me/MVqeXKE5S6) | [viewer](https://spark.lucko.me/q8rfuzdzUq) | [viewer](https://spark.lucko.me/Au0UZdROW2) |
 
-- windows soak RSS: start `619147264`, end `53641216`, peak `620384256`
-- windows soak threads: start `56`, end `40`, peak `56`
-| Linux | **PASS** | `26.45` | `graceful` | `PASS` | `30m` | [viewer](https://spark.lucko.me/2trKsmZ3qo) | [viewer](https://spark.lucko.me/2YFHjMpdDR) | [viewer](https://spark.lucko.me/XJewZ9BN0H) |
+- windows soak RSS: start `None`, end `None`, peak `None`
+- windows soak threads: start `None`, end `None`, peak `None`
+| Linux | **running** | `26.45` | `controlled_crash_for_recovery` | `PASS` | `30m` | [viewer](https://spark.lucko.me/Qgozr9jzil) | [viewer](https://spark.lucko.me/VvbrkOb8QV) | [viewer](https://spark.lucko.me/lKfjKr57L0) |
 
-- linux soak RSS: start `856616960`, end `863158272`, peak `863158272`
-- linux soak threads: start `27`, end `28`, peak `28`
+- linux soak RSS: start `None`, end `None`, peak `None`
+- linux soak threads: start `None`, end `None`, peak `None`
