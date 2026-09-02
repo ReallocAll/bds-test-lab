@@ -68,7 +68,10 @@ class _StartedServer:
             "Server started.",
             "[EndstoneServer] Version: 1.26.44.3",
             "[Endstone] Enabling spark v0.6.0",
-            "[CiLifecycleControl] CI lifecycle control enabled; cishutdown registered",
+            (
+                "[CiLifecycleControl] CI lifecycle control enabled; cishutdown registered; "
+                "command-control=plugins/ci/command.request; file-control=plugins/ci/shutdown.request"
+            ),
         ]
         if not predicate(lines):
             raise AssertionError("test fixture did not satisfy wait predicate")
@@ -239,6 +242,58 @@ class CombinedPackExactRunnerTest(unittest.TestCase):
             self.assertRaisesRegex(RuntimeError, "full version mismatch"),
         ):
             exact._start_exact_server(validator)  # type: ignore[arg-type]
+
+    def test_framework_file_command_writes_tokenized_request(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            process = _WaitProcess(returncode=0)
+            server = _framework_server(process)
+            request = root / "command.request"
+            server.lifecycle_command_path = request
+            server.is_alive = lambda: True  # type: ignore[method-assign]
+            server.snapshot = lambda: ["ready"]  # type: ignore[method-assign]
+            start = server.command("spark tps")
+            self.assertEqual(start, 1)
+            payload = json.loads(request.read_text(encoding="utf-8"))
+            self.assertEqual(payload["command"], "spark tps")
+            self.assertTrue(payload["token"])
+            self.assertEqual(server._pending_file_commands[start], payload["token"])
+
+    def test_framework_file_command_rejects_pending_request(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            process = _WaitProcess(returncode=0)
+            server = _framework_server(process)
+            request = root / "command.request"
+            request.write_text("pending", encoding="utf-8")
+            server.lifecycle_command_path = request
+            server.is_alive = lambda: True  # type: ignore[method-assign]
+            with self.assertRaisesRegex(RuntimeError, "previous CI command request is still pending"):
+                server.command("spark tps")
+
+    def test_framework_file_command_wait_requires_positive_dispatch_ack(self) -> None:
+        process = _WaitProcess(returncode=0)
+        server = _framework_server(process)
+        server._pending_file_commands = {0: "abc123"}
+        server.snapshot = lambda: [  # type: ignore[method-assign]
+            "CI command dispatch requested; token=abc123; command=spark tps",
+            "CI command dispatch completed; token=abc123; dispatched=true",
+        ]
+        server.is_alive = lambda: True  # type: ignore[method-assign]
+        output = server.wait_command_output(0, 0.2)
+        self.assertEqual(len(output), 2)
+        self.assertNotIn(0, server._pending_file_commands)
+
+    def test_framework_file_command_wait_fails_closed_on_rejected_dispatch(self) -> None:
+        process = _WaitProcess(returncode=0)
+        server = _framework_server(process)
+        server._pending_file_commands = {0: "abc123"}
+        server.snapshot = lambda: [  # type: ignore[method-assign]
+            "CI command dispatch completed; token=abc123; dispatched=false"
+        ]
+        server.is_alive = lambda: True  # type: ignore[method-assign]
+        with self.assertRaisesRegex(RuntimeError, "rejected CI command transport request"):
+            server.wait_command_output(0, 0.2)
 
     def test_framework_shutdown_process_sends_cishutdown(self) -> None:
         process = _WaitProcess(returncode=0)
@@ -596,9 +651,13 @@ class CombinedPackExactRunnerTest(unittest.TestCase):
         lifecycle = [
             fields
             for name, status, fields in validator.checks
-            if name == "windows-interactive-lifecycle" and status == "PASS"
+            if name == "windows-framework-lifecycle" and status == "PASS"
         ]
-        self.assertEqual(lifecycle, [{"shutdown_control": "cishutdown"}])
+        self.assertEqual(len(lifecycle), 1)
+        self.assertEqual(lifecycle[0]["shutdown_control"], "file-trigger")
+        self.assertEqual(lifecycle[0]["command_control"], "file-trigger")
+        self.assertTrue(str(lifecycle[0]["request_path"]).endswith("plugins/ci/shutdown.request"))
+        self.assertTrue(str(lifecycle[0]["command_path"]).endswith("plugins/ci/command.request"))
         self.assertEqual(validator.checks[-1][0:2], ("exact-bds-version", "PASS"))
 
 
