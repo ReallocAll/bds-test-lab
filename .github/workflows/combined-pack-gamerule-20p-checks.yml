@@ -95,8 +95,16 @@ jobs:
           missing = [value for value in required if value not in workflow]
           if missing:
               raise SystemExit(f'missing immutable provenance pins: {missing}')
-          if 'cishutdown' not in exact_runner or 'interactive-cishutdown' not in exact_runner:
-              raise SystemExit('Windows interactive lifecycle command is missing')
+          lifecycle_required = (
+              'framework-file-shutdown',
+              'file-trigger',
+              'acknowledgement-unobserved',
+              'process_tree_verification',
+              'cishutdown',
+          )
+          lifecycle_missing = [value for value in lifecycle_required if value not in exact_runner]
+          if lifecycle_missing:
+              raise SystemExit(f'Windows framework lifecycle contract is incomplete: {lifecycle_missing}')
           if '--no-interactive' in exact_runner:
               raise SystemExit('exact Windows runner disables the Endstone interactive command map')
           if 'CTRL_BREAK_EVENT' in exact_runner or 'send_signal' in exact_runner:
