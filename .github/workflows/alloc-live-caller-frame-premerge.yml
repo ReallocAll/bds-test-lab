@@ -1,0 +1,171 @@
+name: Alloc-live caller-frame candidate real BDS
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/alloc-live-caller-frame-premerge.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  SPARK_SHA: "7ffcec4c0d1e5327b79fabde9ac385fd825df322"
+  BOT_REF: "f175e4a6551d1973628b5ca926a497e9962c1302"
+
+jobs:
+  strict-alloc-live:
+    name: Strict alloc-live caller-frame candidate
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Checkout exact lab head
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout bot at exact SHA
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/bds-test-bot
+          ref: ${{ env.BOT_REF }}
+          path: bot-src
+          persist-credentials: false
+
+      - name: Set up Go 1.25
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Build exact bot
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd bot-src
+          test "$(git rev-parse HEAD)" = "$BOT_REF"
+          go mod download
+          go test ./...
+          go build -trimpath -o ../dist-bds-test-bot ./cmd/bds-test-bot
+          chmod +x ../dist-bds-test-bot
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install validation dependencies
+        run: python -m pip install --disable-pip-version-check psutil hatchling
+
+      - name: Wait for exact Spark CI
+        env:
+          GH_TOKEN: ${{ secrets.REPO_PAT }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 80); do
+            json="$(gh api "repos/ReallocAll/spark/actions/runs?head_sha=${SPARK_SHA}&per_page=30")"
+            build="$(jq -r '[.workflow_runs[] | select(.name == "Build")][0].conclusion // ""' <<<"$json")"
+            python_ci="$(jq -r '[.workflow_runs[] | select(.name == "Python attribution")][0].conclusion // ""' <<<"$json")"
+            echo "Spark CI attempt ${attempt}: Build=${build:-pending} Python=${python_ci:-pending}"
+            if [[ "$build" == success && "$python_ci" == success ]]; then
+              exit 0
+            fi
+            for conclusion in "$build" "$python_ci"; do
+              if [[ "$conclusion" == failure || "$conclusion" == cancelled || "$conclusion" == timed_out ]]; then
+                echo "Exact Spark CI failed: Build=$build Python=$python_ci" >&2
+                exit 1
+              fi
+            done
+            sleep 15
+          done
+          echo "Timed out waiting for exact Spark CI" >&2
+          exit 1
+
+      - name: Require exact Spark artifact
+        env:
+          GH_TOKEN: ${{ secrets.REPO_PAT }}
+        run: >-
+          python -m controller.assert_spark_artifact
+          --platform linux
+          --expected-sha "$SPARK_SHA"
+
+      - name: Run strict alloc-live-only case
+        env:
+          GH_TOKEN: ${{ secrets.REPO_PAT }}
+        run: >-
+          python -m controller.final_profiler_matrix
+          --mode alloc-live-only
+          --bot "$GITHUB_WORKSPACE/dist-bds-test-bot"
+          --spark-sha "$SPARK_SHA"
+          --bot-ref "$BOT_REF"
+          --evidence-root evidence
+
+      - name: Verify canonical bStats evidence
+        if: always()
+        run: >-
+          python -m controller.verify_bstats_evidence
+          --result evidence/alloc-live-only/test-results.json
+
+      - name: Verify strict result independently
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path('evidence/alloc-live-only/test-results.json')
+          if not path.is_file():
+              raise SystemExit('alloc-live result is missing')
+          data = json.loads(path.read_text(encoding='utf-8'))
+          if data.get('status') != 'PASS':
+              raise SystemExit(f"alloc-live status is not PASS: {data.get('error_summary')}")
+          provenance = data.get('provenance') or {}
+          if (provenance.get('spark_sha') or '').lower() != os.environ['SPARK_SHA'].lower():
+              raise SystemExit(f"unexpected Spark SHA: {provenance.get('spark_sha')}")
+          measurement = data.get('measurement') or {}
+          if not measurement.get('profiler_start_acknowledgement'):
+              raise SystemExit('profiler start acknowledgement missing')
+          retained = (data.get('workload') or {}).get('retained_allocation') or {}
+          expected_bytes = 24 * (1 << 20)
+          if retained.get('retained_blocks_before_cleanup') != 24 or retained.get('retained_bytes_before_cleanup') != expected_bytes:
+              raise SystemExit(f"retained fixture mismatch: {retained}")
+          if not retained.get('cleaned_up'):
+              raise SystemExit(f"retained fixture cleanup failed: {retained}")
+          assertions = data.get('semantic_assertions') or {}
+          if not assertions or not all(assertions.values()) or not assertions.get('retained_helper_chain'):
+              raise SystemExit(f"strict semantic assertions failed: {assertions}")
+          profile = data.get('profile') or {}
+          if int(profile.get('raw_bytes') or 0) <= 0:
+              raise SystemExit(f"empty profile: {profile}")
+          incomplete = (data.get('quality') or {}).get('incomplete_flags') or {}
+          if any(incomplete.values()):
+              raise SystemExit(f"profile incomplete: {incomplete}")
+          print('strict alloc-live caller-frame candidate PASS')
+          PY
+
+      - name: Upload exact evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: spark-alloc-live-caller-frame-${{ github.run_id }}
+          path: |
+            evidence/alloc-live-only/test-results.json
+            evidence/alloc-live-only/profiler-mode-result.json
+            evidence/alloc-live-only/metadata.json
+            evidence/alloc-live-only/bstats-config.toml
+            evidence/alloc-live-only/evidence-manifest.json
+            evidence/alloc-live-only/allocation-live-state.json
+            evidence/alloc-live-only/*.sparkprofile
+            evidence/alloc-live-only/*-profile-summary.json
+            evidence/alloc-live-only/bds.log
+            evidence/alloc-live-only/endstone.log
+            evidence/alloc-live-only/spark.log
+            evidence/alloc-live-only/bot.log
+            evidence/alloc-live-only/failure-diagnostics.txt
+          if-no-files-found: warn
+          retention-days: 30
