@@ -1,0 +1,86 @@
+name: Apply Windows readiness fix
+
+on:
+  push:
+    branches:
+      - fix/combined-pack-state-oracle
+    paths:
+      - ".github/workflows/apply-remove-windows-readiness.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: fix/combined-pack-state-oracle
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Remove brittle startup command readiness probe
+        env:
+          GH_TOKEN: ${{ secrets.REPO_PAT }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          source = Path('controller/combined_pack_gamerule_fleet_exact_runner.py')
+          text = source.read_text(encoding='utf-8')
+          stale = '''    readiness_start = self.server.command("spark tps")
+    readiness_lines = self.server.wait_for(
+        lambda lines: any(
+            "tps (5s/10s/1m/5m/15m):" in line.lower() for line in lines[readiness_start:]
+        ),
+        15,
+        "interactive command processing readiness",
+    )
+    self.check(
+        "windows-interactive-command-ready",
+        "PASS",
+        probe="spark tps",
+        output=readiness_lines[readiness_start:][-20:],
+    )
+'''
+          if text.count(stale) != 1:
+              raise SystemExit(f'expected one readiness block, found {text.count(stale)}')
+          source.write_text(text.replace(stale, ''), encoding='utf-8')
+
+          tests = Path('tests/test_combined_pack_exact_runner.py')
+          text = tests.read_text(encoding='utf-8')
+          replacements = {
+              '    commands: list[str] = []\n': '',
+              '            "TPS (5s/10s/1m/5m/15m): 20.00 / 20.00 / 20.00 / 20.00 / 20.00",\n': '',
+              '''    def command(self, command: str) -> int:
+        type(self).commands.append(command)
+        return 0
+
+''': '',
+              '            _StartedServer.commands = []\n': '',
+              '''        self.assertEqual(_StartedServer.commands, ["spark tps"])
+        readiness = [
+            fields
+            for name, status, fields in validator.checks
+            if name == "windows-interactive-command-ready" and status == "PASS"
+        ]
+        self.assertEqual(readiness[0]["probe"], "spark tps")
+''': '',
+          }
+          for stale, replacement in replacements.items():
+              count = text.count(stale)
+              if count != 1:
+                  raise SystemExit(f'expected one test snippet, found {count}: {stale!r}')
+              text = text.replace(stale, replacement)
+          tests.write_text(text, encoding='utf-8')
+          PY
+          python -m unittest tests.test_combined_pack_exact_runner
+          python -m py_compile controller/combined_pack_gamerule_fleet_exact_runner.py tests/test_combined_pack_exact_runner.py
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add controller/combined_pack_gamerule_fleet_exact_runner.py tests/test_combined_pack_exact_runner.py
+          git commit -m 'test: remove brittle Windows command readiness probe'
+          git push "https://x-access-token:${GH_TOKEN}@github.com/ReallocAll/bds-test-lab.git" HEAD:fix/combined-pack-state-oracle
