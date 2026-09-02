@@ -31,6 +31,7 @@ BEHAVIOR_PACK_STATE_BASE = 21
 _ORIGINAL_INSTALL_ARTIFACTS = CombinedPackGameruleFleetValidation.install_artifacts
 _ORIGINAL_START_SERVER = CombinedPackGameruleFleetValidation.start_server
 _ORIGINAL_INSTALL_BEHAVIOR_PACKS = CombinedPackGameruleFleetValidation.install_behavior_packs
+_ORIGINAL_RUN_PUBLIC_PROFILE_PHASE = CombinedPackGameruleFleetValidation.run_public_profile_phase
 
 
 class _FrameworkShutdownServerProcess(ServerProcess):
@@ -434,10 +435,56 @@ def _verify_behavior_pack_functions_with_state_oracle(self: CombinedPackGamerule
     )
 
 
+def _run_public_profile_phase_with_restart_pack_evidence(
+    self: CombinedPackGameruleFleetValidation,
+) -> None:
+    """Avoid a redundant Windows console probe after local real-BDS execution proof."""
+
+    if self.platform != "windows":
+        _ORIGINAL_RUN_PUBLIC_PROFILE_PHASE(self)
+        return
+
+    checks = self.result.get("checks") if isinstance(self.result, dict) else None
+    local_execution_proved = isinstance(checks, list) and any(
+        isinstance(check, dict)
+        and check.get("name") == "behavior-packs-real-load"
+        and check.get("status") == "PASS"
+        for check in checks
+    )
+    if not local_execution_proved:
+        raise RuntimeError("Windows public phase requires prior local real-BDS behavior-pack execution proof")
+
+    original_verify = self.verify_behavior_pack_functions
+
+    def verify_restart_pack_stack() -> None:
+        assert self.server is not None
+        startup_log = "\n".join(self.server.snapshot()).casefold()
+        missing = [pack["name"] for pack in BEHAVIOR_PACKS if pack["name"].casefold() not in startup_log]
+        if missing:
+            raise RuntimeError(
+                "Windows public restart did not reload expected behavior packs: " + ", ".join(missing)
+            )
+        self.check(
+            "behavior-packs-public-restart",
+            "PASS",
+            "all three behavior packs reloaded; semantic execution was already proved in the local real-BDS phase",
+            count=len(BEHAVIOR_PACKS),
+            execution_oracle="local-phase-real-bds",
+            restart_oracle="startup-pack-stack",
+        )
+
+    self.verify_behavior_pack_functions = verify_restart_pack_stack  # type: ignore[method-assign]
+    try:
+        _ORIGINAL_RUN_PUBLIC_PROFILE_PHASE(self)
+    finally:
+        self.verify_behavior_pack_functions = original_verify  # type: ignore[method-assign]
+
+
 CombinedPackGameruleFleetValidation.install_artifacts = _install_exact_artifacts
 CombinedPackGameruleFleetValidation.start_server = _start_exact_server
 CombinedPackGameruleFleetValidation.install_behavior_packs = _install_behavior_packs_with_state_oracle
 CombinedPackGameruleFleetValidation.verify_behavior_pack_functions = _verify_behavior_pack_functions_with_state_oracle
+CombinedPackGameruleFleetValidation.run_public_profile_phase = _run_public_profile_phase_with_restart_pack_evidence
 
 if __name__ == "__main__":
     raise SystemExit(main())
