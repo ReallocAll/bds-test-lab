@@ -19,6 +19,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git clone --quiet "https://x-access-token:${GH_TOKEN}@github.com/${TARGET_REPO}.git" spark
+          cd spark
+          git fetch --quiet origin --tags
           declare -A tags=(
             [v0.4.1]=5d1994245d85f8242be54f25c631becd63d6f8da
             [v0.5.0]=41eafb2f4f1eeb905d0808a562cfa220181303fc
@@ -27,18 +30,16 @@ jobs:
           )
           for tag in v0.4.1 v0.5.0 v0.5.1 v0.5.2; do
             want=${tags[$tag]}
-            got=$(gh api "repos/$TARGET_REPO/git/ref/tags/$tag" --jq .object.sha 2>/dev/null || true)
+            git cat-file -e "${want}^{commit}"
+            got=$(git ls-remote --tags origin "refs/tags/$tag" | awk '{print $1}')
             if [[ -z "$got" ]]; then
-              gh api -X POST "repos/$TARGET_REPO/git/refs" -f ref="refs/tags/$tag" -f sha="$want" >/dev/null
+              git push --quiet origin "${want}:refs/tags/${tag}"
               echo "restored $tag -> $want"
             else
               test "$got" = "$want"
               echo "kept $tag -> $got"
             fi
           done
-          if gh api "repos/$TARGET_REPO/git/ref/tags/v0.6.0" >/dev/null 2>&1; then
-            echo 'unexpected v0.6.0 tag exists' >&2
-            exit 1
-          fi
-          test "$(gh api repos/$TARGET_REPO/git/ref/heads/main --jq .object.sha)" = 58d40317f97594fbb6d31a93086aed5c0460acce
-          test "$(gh api repos/$TARGET_REPO/git/ref/heads/develop --jq .object.sha)" = 8cb5c2b651a8c9808da397e6957526f87c1fe712
+          test -z "$(git ls-remote --tags origin refs/tags/v0.6.0)"
+          test "$(git ls-remote origin refs/heads/main | awk '{print $1}')" = 58d40317f97594fbb6d31a93086aed5c0460acce
+          test "$(git ls-remote origin refs/heads/develop | awk '{print $1}')" = 8cb5c2b651a8c9808da397e6957526f87c1fe712
