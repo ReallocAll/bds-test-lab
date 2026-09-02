@@ -4,6 +4,11 @@ on:
   pull_request:
     paths:
       - ".github/workflows/combined-windows-final-premerge.yml"
+      - "controller/combined_pack_gamerule_fleet_exact_runner.py"
+      - "controller/combined_windows_final_runner.py"
+      - "fixtures/endstone-ci-lifecycle-control/**"
+      - "tests/test_combined_pack_exact_runner.py"
+      - "tests/test_combined_windows_final_runner.py"
 
 permissions:
   contents: read
