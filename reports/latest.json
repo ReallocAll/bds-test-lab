@@ -1,5 +1,5 @@
 {
-  "completed_at": "2026-09-02T15:40:25.839139Z",
+  "completed_at": "2026-09-02T15:42:31.886227Z",
   "components": {
     "endstone": {
       "platforms": {
@@ -49,13 +49,13 @@
     }
   },
   "endstone_sha": "46eff9f125f52eac76472d84339ead8fbf51fcd2",
-  "lab_commit": "f88e981343ed6f88923cdeb7e2b154e26e553979",
-  "lab_run_id": "33649275502",
-  "lab_run_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/33649275502",
+  "lab_commit": "7b61b4f9ab191b80a24ed9d5c4892f04b9ba5b5a",
+  "lab_run_id": "33649977988",
+  "lab_run_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/33649977988",
   "platforms": {
     "linux": {
-      "actions_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/33649275502",
-      "allocation_profile_viewer_url": "https://spark.lucko.me/1mmW8yYJfT",
+      "actions_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/33649977988",
+      "allocation_profile_viewer_url": "https://spark.lucko.me/7uAUKLFiE2",
       "bds_version": "26.45",
       "checks": [
         {
@@ -127,12 +127,12 @@
         {
           "name": "execution-profiler",
           "status": "PASS",
-          "viewer_url": "https://spark.lucko.me/0c2YTtLT9G"
+          "viewer_url": "https://spark.lucko.me/3IsJUt8UVs"
         },
         {
           "name": "allocation-profiler",
           "status": "PASS",
-          "viewer_url": "https://spark.lucko.me/1mmW8yYJfT"
+          "viewer_url": "https://spark.lucko.me/7uAUKLFiE2"
         },
         {
           "bytes": 16,
@@ -159,47 +159,47 @@
         {
           "detail": "controlled hard kill produced a replayable journal and recovered profile",
           "name": "crash-recovery",
-          "sha256": "c69ac3a75927311a11b2c387c6a52e831e41a35d78b9f1a31293e592374e8a23",
+          "sha256": "b4fc400d2bf59eec2be25701d888e1c5725521cee66022af75e83f6a331d30a3",
           "status": "PASS",
-          "viewer_url": "https://spark.lucko.me/O0rOPtMH6J"
+          "viewer_url": "https://spark.lucko.me/yncbkLqrSE"
         }
       ],
       "error_summary": null,
-      "execution_profile_viewer_url": "https://spark.lucko.me/0c2YTtLT9G",
+      "execution_profile_viewer_url": "https://spark.lucko.me/3IsJUt8UVs",
       "failed_stage": null,
       "profiles": [
         {
           "duration_seconds": 12,
           "kind": "execution",
           "notes": "Headless execution profiler",
-          "profile_key": "0c2YTtLT9G",
+          "profile_key": "3IsJUt8UVs",
           "server_version": "26.45",
-          "url": "https://spark.lucko.me/0c2YTtLT9G"
+          "url": "https://spark.lucko.me/3IsJUt8UVs"
         },
         {
           "duration_seconds": 12,
           "kind": "allocation",
           "notes": "Headless native allocation profiler",
-          "profile_key": "1mmW8yYJfT",
+          "profile_key": "7uAUKLFiE2",
           "server_version": "26.45",
-          "url": "https://spark.lucko.me/1mmW8yYJfT"
+          "url": "https://spark.lucko.me/7uAUKLFiE2"
         },
         {
           "duration_seconds": 12,
           "kind": "crash-recovery",
           "notes": "Recovered from RecoveryWriter journal after controlled hard kill and uploaded by the lab.",
-          "profile_key": "O0rOPtMH6J",
+          "profile_key": "yncbkLqrSE",
           "server_version": "26.45",
-          "sha256": "c69ac3a75927311a11b2c387c6a52e831e41a35d78b9f1a31293e592374e8a23",
-          "url": "https://spark.lucko.me/O0rOPtMH6J"
+          "sha256": "b4fc400d2bf59eec2be25701d888e1c5725521cee66022af75e83f6a331d30a3",
+          "url": "https://spark.lucko.me/yncbkLqrSE"
         }
       ],
       "recovery": {
         "crash_replay": "PASS",
         "journal_segments_before_restart": 1,
-        "recovered_profile_path": "work/linux/bedrock_server/plugins/spark/profiles/profile-1788363323397.sparkprofile",
-        "recovered_profile_sha256": "c69ac3a75927311a11b2c387c6a52e831e41a35d78b9f1a31293e592374e8a23",
-        "recovered_profile_viewer_url": "https://spark.lucko.me/O0rOPtMH6J"
+        "recovered_profile_path": "work/linux/bedrock_server/plugins/spark/profiles/profile-1788363700821.sparkprofile",
+        "recovered_profile_sha256": "b4fc400d2bf59eec2be25701d888e1c5725521cee66022af75e83f6a331d30a3",
+        "recovered_profile_viewer_url": "https://spark.lucko.me/yncbkLqrSE"
       },
       "shutdown_status": "controlled_crash_for_recovery",
       "soak": {
@@ -211,28 +211,8 @@
         "samples": [
           {
             "elapsed_seconds": 0,
-            "rss_bytes": 855379968,
+            "rss_bytes": 856371200,
             "threads": 27
-          },
-          {
-            "elapsed_seconds": 60,
-            "rss_bytes": 855511040,
-            "threads": 27
-          },
-          {
-            "elapsed_seconds": 120,
-            "rss_bytes": 855703552,
-            "threads": 27
-          },
-          {
-            "elapsed_seconds": 180,
-            "rss_bytes": 856453120,
-            "threads": 27
-          },
-          {
-            "elapsed_seconds": 240,
-            "rss_bytes": 858951680,
-            "threads": 28
           }
         ],
         "thread_delta": null,
@@ -243,8 +223,8 @@
       "status": "running"
     },
     "windows": {
-      "actions_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/33649275502",
-      "allocation_profile_viewer_url": "https://spark.lucko.me/sh5UCE4Tkj",
+      "actions_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/33649977988",
+      "allocation_profile_viewer_url": "https://spark.lucko.me/8CMNAIAfyQ",
       "bds_version": "26.45",
       "checks": [
         {
@@ -321,12 +301,12 @@
         {
           "name": "execution-profiler",
           "status": "PASS",
-          "viewer_url": "https://spark.lucko.me/JDZeuX6JHF"
+          "viewer_url": "https://spark.lucko.me/zJjzTTsMtF"
         },
         {
           "name": "allocation-profiler",
           "status": "PASS",
-          "viewer_url": "https://spark.lucko.me/sh5UCE4Tkj"
+          "viewer_url": "https://spark.lucko.me/8CMNAIAfyQ"
         },
         {
           "bytes": 16,
@@ -337,63 +317,35 @@
           "relative_path": "plugins/bstats/config.toml",
           "sha256": "4ddaf7b63170a13e8224532a142dfc1dc8e77dac63933cebe8cc9afc42fd44a0",
           "status": "PASS"
-        },
-        {
-          "name": "bds-start",
-          "status": "PASS"
-        },
-        {
-          "name": "ready",
-          "status": "PASS"
-        },
-        {
-          "name": "spark-load-enable",
-          "status": "PASS"
-        },
-        {
-          "detail": "controlled hard kill produced a replayable journal and recovered profile",
-          "name": "crash-recovery",
-          "sha256": "30ec49cfd9bebe9b451b244d6b6e34e3262f7ec8d25763bd01f40fb254bd6cde",
-          "status": "PASS",
-          "viewer_url": "https://spark.lucko.me/m1Lro2emSD"
         }
       ],
       "error_summary": null,
-      "execution_profile_viewer_url": "https://spark.lucko.me/JDZeuX6JHF",
+      "execution_profile_viewer_url": "https://spark.lucko.me/zJjzTTsMtF",
       "failed_stage": null,
       "profiles": [
         {
           "duration_seconds": 12,
           "kind": "execution",
           "notes": "Headless execution profiler",
-          "profile_key": "JDZeuX6JHF",
+          "profile_key": "zJjzTTsMtF",
           "server_version": "26.45",
-          "url": "https://spark.lucko.me/JDZeuX6JHF"
+          "url": "https://spark.lucko.me/zJjzTTsMtF"
         },
         {
           "duration_seconds": 12,
           "kind": "allocation",
           "notes": "Headless native allocation profiler",
-          "profile_key": "sh5UCE4Tkj",
+          "profile_key": "8CMNAIAfyQ",
           "server_version": "26.45",
-          "url": "https://spark.lucko.me/sh5UCE4Tkj"
-        },
-        {
-          "duration_seconds": 12,
-          "kind": "crash-recovery",
-          "notes": "Recovered from RecoveryWriter journal after controlled hard kill and uploaded by the lab.",
-          "profile_key": "m1Lro2emSD",
-          "server_version": "26.45",
-          "sha256": "30ec49cfd9bebe9b451b244d6b6e34e3262f7ec8d25763bd01f40fb254bd6cde",
-          "url": "https://spark.lucko.me/m1Lro2emSD"
+          "url": "https://spark.lucko.me/8CMNAIAfyQ"
         }
       ],
       "recovery": {
-        "crash_replay": "PASS",
+        "crash_replay": "crashed_waiting_restart",
         "journal_segments_before_restart": 1,
-        "recovered_profile_path": "work\\windows\\bedrock_server\\plugins\\spark\\profiles\\profile-1788363335680.sparkprofile",
-        "recovered_profile_sha256": "30ec49cfd9bebe9b451b244d6b6e34e3262f7ec8d25763bd01f40fb254bd6cde",
-        "recovered_profile_viewer_url": "https://spark.lucko.me/m1Lro2emSD"
+        "recovered_profile_path": null,
+        "recovered_profile_sha256": null,
+        "recovered_profile_viewer_url": null
       },
       "shutdown_status": "controlled_crash_for_recovery",
       "soak": {
@@ -402,33 +354,7 @@
         "rss_growth_bytes": null,
         "rss_peak_bytes": null,
         "rss_start_bytes": null,
-        "samples": [
-          {
-            "elapsed_seconds": 0,
-            "rss_bytes": 619089920,
-            "threads": 56
-          },
-          {
-            "elapsed_seconds": 60,
-            "rss_bytes": 620331008,
-            "threads": 47
-          },
-          {
-            "elapsed_seconds": 120,
-            "rss_bytes": 508833792,
-            "threads": 46
-          },
-          {
-            "elapsed_seconds": 180,
-            "rss_bytes": 290582528,
-            "threads": 44
-          },
-          {
-            "elapsed_seconds": 240,
-            "rss_bytes": 180011008,
-            "threads": 46
-          }
-        ],
+        "samples": [],
         "thread_delta": null,
         "threads_end": null,
         "threads_peak": null,
