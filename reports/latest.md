@@ -1,21 +1,21 @@
 # Latest BDS integration test
 
-- Lab commit: `2e0719da866c2838bfcadb876824c163dc00d5a2`
-- Lab Actions: [33621841637](https://github.com/ReallocAll/bds-test-lab/actions/runs/33621841637)
-- State: **PASS**
+- Lab commit: `2468e92b476aecfa4b8504e0d1e32f3c84445ed5`
+- Lab Actions: [33624700490](https://github.com/ReallocAll/bds-test-lab/actions/runs/33624700490)
+- State: **FAIL**
 - Spark SHA: `653e6821a45f5b5de5e8d22671960c2024db18be`
 - Endstone SHA: `46eff9f125f52eac76472d84339ead8fbf51fcd2`
-- Completed: `2026-09-02T11:26:39.811136Z`
+- Completed: `2026-09-02T11:31:15.165436Z`
 
 ## Platforms
 
 | Platform | Result | BDS | Shutdown | Crash replay | Soak | Execution | Allocation | Recovery |
 |---|---|---|---|---|---|---|---|---|
-| Windows | **PASS** | `26.45` | `graceful` | `PASS` | `30m` | [viewer](https://spark.lucko.me/24oZKZYYAa) | [viewer](https://spark.lucko.me/EutQ1Sf7h8) | [viewer](https://spark.lucko.me/if1N6ptAJ3) |
+| Windows | **running** | `26.45` | `controlled_crash_for_recovery` | `PASS` | `30m` | [viewer](https://spark.lucko.me/nnY9cgse2z) | [viewer](https://spark.lucko.me/eebNDwSo8n) | [viewer](https://spark.lucko.me/zB9evVHydp) |
 
-- windows soak RSS: start `617144320`, end `59076608`, peak `618819584`
-- windows soak threads: start `56`, end `40`, peak `56`
-| Linux | **PASS** | `26.45` | `graceful` | `PASS` | `30m` | [viewer](https://spark.lucko.me/LtyZnolEMg) | [viewer](https://spark.lucko.me/zYAqPYCpf1) | [viewer](https://spark.lucko.me/cXHRqfFRAw) |
+- windows soak RSS: start `None`, end `None`, peak `None`
+- windows soak threads: start `None`, end `None`, peak `None`
+| Linux | **running** | `26.45` | `controlled_crash_for_recovery` | `PASS` | `30m` | [viewer](https://spark.lucko.me/J3lszfQLhM) | [viewer](https://spark.lucko.me/mhmUaHhShc) | [viewer](https://spark.lucko.me/hJP969GjJN) |
 
-- linux soak RSS: start `855560192`, end `863191040`, peak `863191040`
-- linux soak threads: start `27`, end `28`, peak `28`
+- linux soak RSS: start `None`, end `None`, peak `None`
+- linux soak threads: start `None`, end `None`, peak `None`
