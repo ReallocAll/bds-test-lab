@@ -1,0 +1,262 @@
+name: Spark repository final audit v2
+
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/spark-repo-final-audit-v2.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ secrets.REPO_PAT }}
+      TARGET_REPO: ReallocAll/spark
+      BASE_SHA: 53b556eae4e66ff280a50d6c926258fcbc73b3bc
+      OLD_DEV_SHA: 9a0838c7e68f334b1d73e8ebde0017f7dd90a939
+      CLEAN_DEV_SHA: 6cbda71cf858eab29f59fd9243ea94f2110f5637
+      FINAL_MAIN_SHA: 58d40317f97594fbb6d31a93086aed5c0460acce
+      FINAL_DEV_SHA: 8cb5c2b651a8c9808da397e6957526f87c1fe712
+      BAD_RELEASE_SHA: 3c5cbdfc664912e3b87202c068ec04d8fe95c039
+      BUILD_RUN: '33649335945'
+      PYTHON_RUN: '33649334455'
+      IAT_RUN: '33649337139'
+    steps:
+      - name: Verify final repository state
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/spark-final-audit
+          main=$(gh api repos/$TARGET_REPO/git/ref/heads/main --jq .object.sha)
+          dev=$(gh api repos/$TARGET_REPO/git/ref/heads/develop --jq .object.sha)
+          exp=$(gh api repos/$TARGET_REPO/git/ref/heads/exp/windows-stable-entry-hooks --jq .object.sha)
+          test "$main" = "$FINAL_MAIN_SHA"
+          test "$dev" = "$FINAL_DEV_SHA"
+          if gh api repos/$TARGET_REPO/releases/tags/v0.6.0 >/dev/null 2>&1; then exit 1; fi
+          if gh api repos/$TARGET_REPO/git/ref/tags/v0.6.0 >/dev/null 2>&1; then exit 1; fi
+          test "$(gh pr list --repo "$TARGET_REPO" --state open --limit 100 --json number --jq length)" = 0
+          mapfile -t branches < <(gh api --paginate "repos/$TARGET_REPO/branches?per_page=100" --jq '.[].name' | sort)
+          test "${#branches[@]}" -eq 3
+          test "${branches[0]}" = develop
+          test "${branches[1]}" = exp/windows-stable-entry-hooks
+          test "${branches[2]}" = main
+          {
+            echo "main=$main"
+            echo "develop=$dev"
+            echo "experiment=$exp"
+            printf 'branches=%s\n' "${branches[*]}"
+            echo 'open_prs=0'
+            echo 'v0.6.0_release=absent'
+            echo 'v0.6.0_tag=absent'
+          } | tee /tmp/spark-final-audit/final-state.txt
+
+      - name: Clone clean graph and verify hardening
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --no-checkout "https://x-access-token:${GH_TOKEN}@github.com/${TARGET_REPO}.git" spark-check
+          cd spark-check
+          git fetch origin '+refs/heads/*:refs/remotes/origin/*' --tags
+          test "$(git rev-parse refs/remotes/origin/main^)" = "$BASE_SHA"
+          test "$(git rev-parse refs/remotes/origin/develop^)" = "$CLEAN_DEV_SHA"
+          old_tree=$(gh api "repos/$TARGET_REPO/git/commits/$OLD_DEV_SHA" --jq .tree.sha)
+          clean_tree=$(git rev-parse "$CLEAN_DEV_SHA^{tree}")
+          test "$old_tree" = "$clean_tree"
+          test "$(git diff --name-only "$BASE_SHA" "$FINAL_MAIN_SHA")" = '.github/workflows/release.yml'
+          test "$(git diff --name-only "$CLEAN_DEV_SHA" "$FINAL_DEV_SHA")" = '.github/workflows/release.yml'
+          git show "$FINAL_MAIN_SHA:.github/workflows/release.yml" | grep -A4 -F '      dry_run:' | grep -F 'default: true'
+          git show "$FINAL_DEV_SHA:.github/workflows/release.yml" | grep -A4 -F '      dry_run:' | grep -F 'default: true'
+          ! git log --format='%s' "$BASE_SHA"..refs/remotes/origin/develop | grep -E '\(#[0-9]+\)$|^Merge pull request #[0-9]+'
+          ! git log --format='%B' "$BASE_SHA"..refs/remotes/origin/develop | grep -Ei '^Co-authored-by:\s*github-actions\[bot\]|^(PR|Pull Request):'
+          ! git log --format='%s' "$BASE_SHA"..refs/remotes/origin/exp/windows-stable-entry-hooks | grep -E '\(#[0-9]+\)$|^Merge pull request #[0-9]+'
+          ! git log --format='%B' "$BASE_SHA"..refs/remotes/origin/exp/windows-stable-entry-hooks | grep -Ei '^Co-authored-by:\s*github-actions\[bot\]|^(PR|Pull Request):'
+          {
+            echo "old_dev_tree=$old_tree"
+            echo "clean_dev_tree=$clean_tree"
+            echo 'main_delta=.github/workflows/release.yml'
+            echo 'develop_delta=.github/workflows/release.yml'
+            echo 'history_pollution_scan=PASS'
+          } | tee /tmp/spark-final-audit/tree-equivalence.txt
+
+      - name: Match complete old DAG to actual clean DAG
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd spark-check
+          python - <<'PY'
+          import datetime as dt
+          import os, re, requests, subprocess
+          from collections import defaultdict
+
+          repo=os.environ['TARGET_REPO']; token=os.environ['GH_TOKEN']
+          base=os.environ['BASE_SHA']; old_tip=os.environ['OLD_DEV_SHA']; clean_tip=os.environ['CLEAN_DEV_SHA']
+          sess=requests.Session(); sess.headers.update({'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'})
+          api=f'https://api.github.com/repos/{repo}'
+
+          def git(*args, text=True):
+              return subprocess.check_output(['git',*args], text=text).rstrip('\n') if text else subprocess.check_output(['git',*args])
+          def instant(s): return int(dt.datetime.fromisoformat(s.replace('Z','+00:00')).timestamp())
+          def clean_message(msg):
+              if re.match(r'^Merge pull request #\d+ from [^\n]+\n\n',msg): msg=msg.split('\n\n',1)[1]
+              lines=msg.splitlines()
+              if lines: lines[0]=re.sub(r'\s+(?:\(#[0-9]+\)|#[0-9]+|PR\s+#[0-9]+)$','',lines[0],flags=re.I)
+              out=[]
+              for line in lines:
+                  if re.match(r'(?i)^Co-authored-by:\s*github-actions\[bot\](?:\s|<|$)',line): continue
+                  if re.match(r'(?i)^(?:PR|Pull Request):\s*#?[0-9]+\s*$',line): continue
+                  out.append(line)
+              while out and not out[-1].strip(): out.pop()
+              if out and out[-1].strip()=='---------':
+                  out.pop()
+                  while out and not out[-1].strip(): out.pop()
+              return '\n'.join(out).rstrip('\n')
+          def raw_message(sha):
+              obj=git('cat-file','commit',sha,text=False)
+              return obj.split(b'\n\n',1)[1].decode('utf-8','surrogateescape').rstrip('\n')
+
+          base_anc=set(git('rev-list',base).splitlines())
+          old_cache={}
+          def get_old(sha):
+              if sha not in old_cache:
+                  r=sess.get(f'{api}/git/commits/{sha}',timeout=30); r.raise_for_status(); old_cache[sha]=r.json()
+              return old_cache[sha]
+
+          # Parent-first DFS of the retired production DAG, stopping at the v0.5.3 ancestry.
+          old_order=[]; seen=set()
+          def visit(sha):
+              if sha in base_anc or sha in seen: return
+              seen.add(sha); c=get_old(sha)
+              for p in c['parents']: visit(p['sha'])
+              old_order.append(sha)
+          visit(old_tip)
+          if len(old_order)!=172: raise SystemExit(f'old DAG count {len(old_order)} != 172')
+
+          new_shas=git('rev-list',f'{base}..{clean_tip}').splitlines()
+          if len(new_shas)!=172: raise SystemExit(f'clean DAG count {len(new_shas)} != 172')
+
+          new_meta={}
+          for sha in new_shas:
+              vals=git('show','-s','--format=%T%x00%an%x00%ae%x00%at%x00%cn%x00%ce%x00%ct%x00%P',sha).split('\x00')
+              tree,an,ae,at,cn,ce,ct,parents=vals
+              new_meta[sha]={
+                  'tree':tree,'an':an,'ae':ae,'at':int(at),'cn':cn,'ce':ce,'ct':int(ct),
+                  'parents':parents.split(),'msg':raw_message(sha)
+              }
+
+          # Coarse index reduces candidate search; exact parent topology disambiguates merges/equal trees.
+          index=defaultdict(list)
+          for sha,n in new_meta.items():
+              key=(n['tree'],n['an'],n['ae'],n['at'],n['cn'],n['ce'],n['ct'],n['msg'])
+              index[key].append(sha)
+
+          mapping={}; used=set(); rows=[]
+          for old in old_order:
+              c=get_old(old); msg=clean_message(c['message'])
+              parents=[mapping.get(p['sha'],p['sha']) for p in c['parents']]
+              key=(c['tree']['sha'],c['author']['name'],c['author']['email'],instant(c['author']['date']),
+                   c['committer']['name'],c['committer']['email'],instant(c['committer']['date']),msg)
+              candidates=[sha for sha in index.get(key,[]) if sha not in used and new_meta[sha]['parents']==parents]
+              if len(candidates)!=1:
+                  raise SystemExit(f'old {old}: expected 1 exact candidate, got {len(candidates)}: {candidates}')
+              new=candidates[0]; mapping[old]=new; used.add(new)
+              old_subject=c['message'].splitlines()[0] if c['message'].splitlines() else ''
+              new_subject=new_meta[new]['msg'].splitlines()[0] if new_meta[new]['msg'].splitlines() else ''
+              rows.append((old,new,old_subject,new_subject,c['tree']['sha']))
+
+          if mapping[old_tip]!=clean_tip: raise SystemExit(f'tip map mismatch {mapping[old_tip]} != {clean_tip}')
+          if len(mapping)!=172 or len(used)!=172: raise SystemExit('mapping not bijective')
+          if set(used)!=set(new_shas): raise SystemExit('clean DAG has unmapped commits')
+
+          with open('/tmp/spark-final-audit/production-old-to-new.tsv','w',encoding='utf-8') as f:
+              f.write('old_sha\tnew_sha\told_subject\tnew_subject\ttree_sha\n')
+              f.write(f'{base}\t{base}\tBASE v0.5.3\tBASE v0.5.3\tUNCHANGED\n')
+              for r in rows: f.write('\t'.join(r)+'\n')
+              f.write(f"{os.environ['BAD_RELEASE_SHA']}\tDROPPED\tchore: release v0.6.0\tDROPPED\tDROPPED\n")
+          with open('/tmp/spark-final-audit/mapping-summary.txt','w') as f:
+              f.write(f'rewritten_commits=172\nold_develop={old_tip}\nclean_develop={mapping[old_tip]}\nrelease_commit={os.environ["BAD_RELEASE_SHA"]}->DROPPED\n')
+          print(f'Exact DAG mapping PASS: 172/172, {old_tip} -> {mapping[old_tip]}')
+          PY
+
+      - name: Verify required final CI
+        shell: bash
+        run: |
+          set -euo pipefail
+          check_run() {
+            id="$1"; label="$2"
+            for _ in $(seq 1 180); do
+              status=$(gh api "repos/$TARGET_REPO/actions/runs/$id" --jq .status)
+              if [[ "$status" = completed ]]; then
+                conclusion=$(gh api "repos/$TARGET_REPO/actions/runs/$id" --jq .conclusion)
+                echo "$label=$conclusion" | tee -a /tmp/spark-final-audit/ci.txt
+                test "$conclusion" = success
+                return
+              fi
+              sleep 10
+            done
+            exit 1
+          }
+          check_run "$BUILD_RUN" build
+          check_run "$PYTHON_RUN" python_attribution
+          check_run "$IAT_RUN" windows_iat_hook_safety
+          gh api --paginate "repos/$TARGET_REPO/actions/runs/$BUILD_RUN/jobs?per_page=100&filter=latest" --jq '.jobs[] | [.name,.status,.conclusion] | @tsv' | tee /tmp/spark-final-audit/build-jobs.tsv
+          test "$(gh api --paginate "repos/$TARGET_REPO/actions/runs/$BUILD_RUN/jobs?per_page=100&filter=latest" --jq '[.jobs[] | select(.conclusion != "success")] | length' | awk '{s+=$1} END{print s+0}')" = 0
+
+      - name: Record real BDS applicability
+        shell: bash
+        run: |
+          set -euo pipefail
+          old_tree=$(gh api "repos/$TARGET_REPO/git/commits/$OLD_DEV_SHA" --jq .tree.sha)
+          clean_tree=$(gh api "repos/$TARGET_REPO/git/commits/$CLEAN_DEV_SHA" --jq .tree.sha)
+          test "$old_tree" = "$clean_tree"
+          {
+            echo "old_dev=$OLD_DEV_SHA"
+            echo "clean_dev=$CLEAN_DEV_SHA"
+            echo "old_dev_tree=$old_tree"
+            echo "clean_dev_tree=$clean_tree"
+            echo 'production_tree_change_from_history_cleanup=none'
+            echo 'final_post-cleanup_change=.github/workflows/release.yml only'
+            echo 'new_real_bds_required=no (tree-equivalent source; workflow-only final delta)'
+          } | tee /tmp/spark-final-audit/bds-applicability.txt
+
+      - name: Remove temporary lab branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh api repos/ReallocAll/bds-test-lab/git/ref/heads/ci/spark-phase2 >/dev/null 2>&1; then
+            gh api --method DELETE repos/ReallocAll/bds-test-lab/git/refs/heads/ci/spark-phase2
+          fi
+          if gh api repos/ReallocAll/bds-test-lab/git/ref/heads/ci/spark-phase2 >/dev/null 2>&1; then exit 1; fi
+          echo 'ci/spark-phase2=deleted' | tee /tmp/spark-final-audit/lab-cleanup.txt
+
+      - name: Upload final audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: spark-final-maintenance-audit
+          path: /tmp/spark-final-audit
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Remove one-shot maintenance workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/ReallocAll/bds-test-lab.git" lab-clean
+          cd lab-clean
+          git config user.name ReallocAll
+          git config user.email '63277109+ReallocAll@users.noreply.github.com'
+          for f in \
+            .github/workflows/spark-repo-maintenance.yml \
+            .github/workflows/spark-repo-finalize.yml \
+            .github/workflows/spark-repo-phase2.yml \
+            .github/workflows/spark-repo-phase3.yml \
+            .github/workflows/spark-repo-phase4.yml \
+            .github/workflows/spark-repo-final-audit.yml \
+            .github/workflows/spark-repo-final-audit-v2.yml \
+            .github/workflows/spark-build-retry.yml; do
+            [[ -e "$f" ]] && git rm "$f" || true
+          done
+          git diff --cached --quiet && exit 1
+          git commit -m 'ci: remove completed Spark maintenance workflows'
+          git push origin HEAD:main
