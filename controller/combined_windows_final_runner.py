@@ -26,7 +26,7 @@ def _command_control_path(server: exact._FrameworkShutdownServerProcess) -> Path
         marker = "command-control="
         if "ci lifecycle control enabled;" not in lowered or marker not in lowered:
             continue
-        raw = line[lowered.index(marker) + len(marker) :].strip()
+        raw = line[lowered.index(marker) + len(marker) :].split(";", 1)[0].strip()
         path = Path(raw)
         if not path.is_absolute():
             path = (server.cwd / path).resolve()
