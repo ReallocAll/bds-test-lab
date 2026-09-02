@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
+import time
+import uuid
 from pathlib import Path
 
 # Importing the exact runner installs the exact-artifact, Windows lifecycle,
 # behavior-pack state-oracle, and provenance adapters before we replace only
-# the Windows bootstrap choreography below.
+# the Windows bootstrap and hosted command transports below.
 from controller import combined_pack_gamerule_fleet_exact_runner as exact
 from controller.bot_validation import patch_server_properties
 from controller.combined_pack_gamerule_fleet_validation import (
@@ -14,6 +17,71 @@ from controller.combined_pack_gamerule_fleet_validation import (
 from controller.fleet_spark_validation import set_server_property
 
 _ORIGINAL_BOOTSTRAP_SCENARIO_WORLD = CombinedPackGameruleFleetValidation.bootstrap_scenario_world
+_ORIGINAL_WAIT_COMMAND_OUTPUT = exact._FrameworkShutdownServerProcess.wait_command_output
+
+
+def _command_control_path(server: exact._FrameworkShutdownServerProcess) -> Path:
+    for line in reversed(server.snapshot()):
+        lowered = line.casefold()
+        marker = "command-control="
+        if "ci lifecycle control enabled;" not in lowered or marker not in lowered:
+            continue
+        raw = line[lowered.index(marker) + len(marker) :].strip()
+        path = Path(raw)
+        if not path.is_absolute():
+            path = (server.cwd / path).resolve()
+        return path
+    raise RuntimeError("CI command file control was not registered by Endstone")
+
+
+def _file_control_command(self: exact._FrameworkShutdownServerProcess, command: str) -> int:
+    if not self.is_alive():
+        raise RuntimeError(f"Cannot send command to stopped server: {command}")
+    request_path = _command_control_path(self)
+    if request_path.exists():
+        raise RuntimeError(f"previous CI command request is still pending: {request_path}")
+    start = len(self.snapshot())
+    token = uuid.uuid4().hex
+    pending = getattr(self, "_pending_file_commands", None)
+    if pending is None:
+        pending = {}
+        self._pending_file_commands = pending
+    pending[start] = token
+    payload = {"token": token, "command": command}
+    print(f"> {command} [file-trigger token={token}]", flush=True)
+    request_path.parent.mkdir(parents=True, exist_ok=True)
+    request_path.write_text(json.dumps(payload, separators=(",", ":")) + "\n", encoding="utf-8")
+    return start
+
+
+def _wait_file_control_command_output(
+    self: exact._FrameworkShutdownServerProcess,
+    start_index: int,
+    timeout: float = 8.0,
+) -> list[str]:
+    pending = getattr(self, "_pending_file_commands", {})
+    token = pending.get(start_index)
+    if token is None:
+        return _ORIGINAL_WAIT_COMMAND_OUTPUT(self, start_index, timeout)
+
+    completion = f"ci command dispatch completed; token={token}; dispatched=".casefold()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        lines = self.snapshot()[start_index:]
+        matched = next((line for line in lines if completion in line.casefold()), None)
+        if matched is not None:
+            pending.pop(start_index, None)
+            if "dispatched=true" not in matched.casefold():
+                raise RuntimeError(f"Endstone rejected CI command transport request: {matched}")
+            return lines
+        if not self.is_alive():
+            raise RuntimeError("BDS exited before CI command dispatch acknowledgement")
+        time.sleep(0.05)
+    raise TimeoutError(f"Timed out after {timeout:.0f}s waiting for CI command dispatch acknowledgement: {token}")
+
+
+exact._FrameworkShutdownServerProcess.command = _file_control_command
+exact._FrameworkShutdownServerProcess.wait_command_output = _wait_file_control_command_output
 
 
 def _world_directories(server_dir: Path) -> dict[str, Path]:
