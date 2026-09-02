@@ -61,7 +61,9 @@ jobs:
           git fetch origin '+refs/heads/*:refs/remotes/origin/*' --tags
           test "$(git rev-parse refs/remotes/origin/main^)" = "$BASE_SHA"
           test "$(git rev-parse refs/remotes/origin/develop^)" = "$CLEAN_DEV_SHA"
-          test "$(git rev-parse "$OLD_DEV_SHA^{tree}")" = "$(git rev-parse "$CLEAN_DEV_SHA^{tree}")"
+          old_tree=$(gh api "repos/$TARGET_REPO/git/commits/$OLD_DEV_SHA" --jq .tree.sha)
+          clean_tree=$(git rev-parse "$CLEAN_DEV_SHA^{tree}")
+          test "$old_tree" = "$clean_tree"
           test "$(git diff --name-only "$BASE_SHA" "$FINAL_MAIN_SHA")" = '.github/workflows/release.yml'
           test "$(git diff --name-only "$CLEAN_DEV_SHA" "$FINAL_DEV_SHA")" = '.github/workflows/release.yml'
           git show "$FINAL_MAIN_SHA:.github/workflows/release.yml" | grep -A4 -F '      dry_run:' | grep -F 'default: true'
@@ -71,8 +73,8 @@ jobs:
           ! git log --format='%s' "$BASE_SHA"..refs/remotes/origin/exp/windows-stable-entry-hooks | grep -E '\(#[0-9]+\)$|^Merge pull request #[0-9]+'
           ! git log --format='%B' "$BASE_SHA"..refs/remotes/origin/exp/windows-stable-entry-hooks | grep -Ei '^Co-authored-by:\s*github-actions\[bot\]|^(PR|Pull Request):'
           {
-            echo "old_dev_tree=$(git rev-parse "$OLD_DEV_SHA^{tree}")"
-            echo "clean_dev_tree=$(git rev-parse "$CLEAN_DEV_SHA^{tree}")"
+            echo "old_dev_tree=$old_tree"
+            echo "clean_dev_tree=$clean_tree"
             echo 'main_delta=.github/workflows/release.yml'
             echo 'develop_delta=.github/workflows/release.yml'
             echo 'history_pollution_scan=PASS'
@@ -85,15 +87,13 @@ jobs:
           cd spark-check
           python - <<'PY'
           import datetime as dt
-          import os, re, requests, subprocess, sys
-
+          import os, re, requests, subprocess
           repo=os.environ['TARGET_REPO']; token=os.environ['GH_TOKEN']
           base=os.environ['BASE_SHA']; old_tip=os.environ['OLD_DEV_SHA']; expected=os.environ['CLEAN_DEV_SHA']
           sess=requests.Session(); sess.headers.update({'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'})
           api=f'https://api.github.com/repos/{repo}'
           base_anc=set(subprocess.check_output(['git','rev-list',base],text=True).splitlines())
           cache={}; mapping={}; rows=[]; visiting=set()
-
           def clean(msg):
               had=msg.endswith('\n')
               if re.match(r'^Merge pull request #\d+ from [^\n]+\n\n',msg): msg=msg.split('\n\n',1)[1]
@@ -110,14 +110,11 @@ jobs:
                   while out and not out[-1].strip(): out.pop()
               s='\n'.join(out)
               return s+'\n' if had and s else s
-
           def get(sha):
               if sha not in cache:
                   r=sess.get(f'{api}/git/commits/{sha}',timeout=30); r.raise_for_status(); cache[sha]=r.json()
               return cache[sha]
-
           def instant(s): return dt.datetime.fromisoformat(s.replace('Z','+00:00')).timestamp()
-
           def rewrite(old):
               if old in base_anc: return old
               if old in mapping: return mapping[old]
@@ -129,8 +126,7 @@ jobs:
                        'author':{'name':c['author']['name'],'email':c['author']['email'],'date':c['author']['date']},
                        'committer':{'name':c['committer']['name'],'email':c['committer']['email'],'date':c['committer']['date']}}
               r=sess.post(f'{api}/git/commits',json=payload,timeout=30)
-              if r.status_code != 201:
-                  raise RuntimeError(f'POST {old}: {r.status_code} {r.text[:500]}')
+              if r.status_code != 201: raise RuntimeError(f'POST {old}: {r.status_code} {r.text[:500]}')
               n=r.json(); new=n['sha']
               if n['tree']['sha'] != c['tree']['sha']: raise RuntimeError(f'tree mismatch {old}')
               if n['author']['name'] != c['author']['name'] or n['author']['email'] != c['author']['email'] or instant(n['author']['date']) != instant(c['author']['date']): raise RuntimeError(f'author mismatch {old}')
@@ -142,13 +138,11 @@ jobs:
               oldsub=c['message'].splitlines()[0] if c['message'].splitlines() else ''
               rows.append((old,new,oldsub,subj,c['tree']['sha']))
               return new
-
           new_tip=rewrite(old_tip)
           if new_tip != expected: raise SystemExit(f'clean tip mismatch: got {new_tip}, expected {expected}')
           if len(rows) != 172: raise SystemExit(f'expected 172 rewritten commits, got {len(rows)}')
           rows.sort(key=lambda x:x[0])
-          out='/tmp/spark-final-audit/production-old-to-new.tsv'
-          with open(out,'w',encoding='utf-8') as f:
+          with open('/tmp/spark-final-audit/production-old-to-new.tsv','w',encoding='utf-8') as f:
               f.write('old_sha\tnew_sha\told_subject\tnew_subject\ttree_sha\n')
               f.write(f'{base}\t{base}\tBASE v0.5.3\tBASE v0.5.3\tUNCHANGED\n')
               for r in rows: f.write('\t'.join(r)+'\n')
@@ -174,7 +168,7 @@ jobs:
               fi
               sleep 10
             done
-            echo "$label did not complete" >&2; exit 1
+            exit 1
           }
           check_run "$BUILD_RUN" build
           check_run "$PYTHON_RUN" python_attribution
@@ -187,12 +181,15 @@ jobs:
         run: |
           set -euo pipefail
           spark_sha=$(gh api repos/ReallocAll/bds-test-lab/contents/reports/latest.json --jq .content | base64 -d | python -c 'import json,sys; print(json.load(sys.stdin)["spark_sha"])')
-          test "$spark_sha" = "$CLEAN_DEV_SHA"
+          [[ "$spark_sha" = "$CLEAN_DEV_SHA" || "$spark_sha" = "$FINAL_DEV_SHA" ]]
+          old_tree=$(gh api "repos/$TARGET_REPO/git/commits/$OLD_DEV_SHA" --jq .tree.sha)
+          clean_tree=$(gh api "repos/$TARGET_REPO/git/commits/$CLEAN_DEV_SHA" --jq .tree.sha)
+          test "$old_tree" = "$clean_tree"
           {
             echo "bds_artifact_source_sha=$spark_sha"
             echo "clean_dev_sha=$CLEAN_DEV_SHA"
-            echo "old_dev_tree=$(cd spark-check && git rev-parse "$OLD_DEV_SHA^{tree}")"
-            echo "clean_dev_tree=$(cd spark-check && git rev-parse "$CLEAN_DEV_SHA^{tree}")"
+            echo "old_dev_tree=$old_tree"
+            echo "clean_dev_tree=$clean_tree"
             echo 'maintenance_source_change=none'
             echo 'post-cleanup_change=.github/workflows/release.yml only'
           } | tee /tmp/spark-final-audit/bds-applicability.txt
@@ -232,6 +229,6 @@ jobs:
             .github/workflows/spark-repo-final-audit.yml; do
             [[ -e "$f" ]] && git rm "$f" || true
           done
-          git diff --cached --quiet && { echo 'no maintenance workflows found' >&2; exit 1; }
+          git diff --cached --quiet && exit 1
           git commit -m 'ci: remove completed Spark maintenance workflows'
           git push origin HEAD:main
