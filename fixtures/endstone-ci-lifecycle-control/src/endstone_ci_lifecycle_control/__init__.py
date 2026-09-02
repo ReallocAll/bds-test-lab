@@ -45,8 +45,7 @@ class CiLifecycleControl(Plugin):
         if self._file_control_task is None:
             raise RuntimeError("Endstone did not schedule the CI lifecycle file control")
         self.logger.info(
-            "CI lifecycle control enabled; cishutdown registered; file-control=%s",
-            self._request_path.resolve(),
+            f"CI lifecycle control enabled; cishutdown registered; file-control={self._request_path.resolve()}"
         )
 
     def on_disable(self) -> None:
@@ -69,7 +68,7 @@ class CiLifecycleControl(Plugin):
             return
         if self._file_control_task is not None and not self._file_control_task.is_cancelled:
             self._file_control_task.cancel()
-        self.logger.info("CI lifecycle shutdown requested via file; token=%s", token)
+        self.logger.info(f"CI lifecycle shutdown requested via file; token={token}")
         self.server.shutdown()
 
     def on_command(self, sender: CommandSender, command: Command, args: list[str]) -> bool:
