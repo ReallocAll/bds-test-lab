@@ -50,7 +50,7 @@ class CiLifecycleControl(Plugin):
             raise RuntimeError("Endstone did not schedule the CI file control")
         self.logger.info(
             "CI lifecycle control enabled; cishutdown registered; "
-            f"file-control={self._request_path.resolve()}; command-control={self._command_path.resolve()}"
+            f"command-control={self._command_path.resolve()}; file-control={self._request_path.resolve()}"
         )
 
     def on_disable(self) -> None:
