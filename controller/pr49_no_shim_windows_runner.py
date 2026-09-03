@@ -93,5 +93,77 @@ run_test.IntegrationTest.install_artifacts = _install_shimless_windows_artifacts
 from controller import combined_windows_final_runner as combined  # noqa: E402
 
 
+_ORIGINAL_ASSERT_20_PLAYERS = combined.CombinedPackGameruleFleetValidation.assert_20_players
+
+
+def _assert_20_players_with_real_hot_reload(
+    self: combined.CombinedPackGameruleFleetValidation,
+    phase: str,
+) -> None:
+    _ORIGINAL_ASSERT_20_PLAYERS(self, phase)
+    if self.platform != "windows" or phase != "before-public-reports" or self.result.get("hot_reload_completed"):
+        return
+
+    if self.server is None or not self.server.is_alive():
+        raise RuntimeError("BDS is not alive before PR49 real hot-reload stress")
+
+    cycles = 10
+    evidence: list[dict[str, Any]] = []
+    for cycle in range(1, cycles + 1):
+        start = self.server.command("reload")
+        self.server.wait_command_output(start, timeout=20)
+
+        def spark_reenabled(lines: list[str]) -> bool:
+            return any(
+                "spark" in line.lower() and any(hint in line.lower() for hint in run_test.SPARK_LOAD_HINTS)
+                for line in lines[start:]
+            )
+
+        lines = self.server.wait_for(spark_reenabled, 90, f"Spark re-enable after /reload cycle {cycle}")
+        recent = lines[start:]
+        lowered = "\n".join(recent).casefold()
+        fatal_markers = (
+            "failed to load c++ plugin",
+            "access violation",
+            "unhandled exception",
+            "fatal error",
+        )
+        observed_fatal = next((marker for marker in fatal_markers if marker in lowered), None)
+        if observed_fatal is not None:
+            raise RuntimeError(f"fatal marker after /reload cycle {cycle}: {observed_fatal}")
+        if not self.server.is_alive():
+            raise RuntimeError(f"BDS exited during /reload cycle {cycle}")
+
+        self.command_check(
+            f"windows-no-shim-hot-reload-{cycle}-spark-command",
+            "spark profiler info",
+            timeout=15,
+        )
+        _ORIGINAL_ASSERT_20_PLAYERS(self, f"hot-reload-{cycle}")
+        evidence.append(
+            {
+                "cycle": cycle,
+                "spark_reenabled": True,
+                "players": 20,
+                "server_alive": True,
+            }
+        )
+
+    self.result["hot_reload_completed"] = True
+    self.result["hot_reload_cycles"] = cycles
+    self.result["hot_reload_evidence"] = evidence
+    self._write_results()
+    self.check(
+        "windows-no-shim-real-dll-hot-reload",
+        "PASS",
+        "10 Endstone /reload cycles completed under 20-player chunk-walk load; each cycle re-enabled Spark and retained all players",
+        cycles=cycles,
+        mechanism="Endstone reload -> clearPlugins -> CppPluginLoader owner destruction -> FreeLibrary -> loadPlugins",
+    )
+
+
+combined.CombinedPackGameruleFleetValidation.assert_20_players = _assert_20_players_with_real_hot_reload
+
+
 if __name__ == "__main__":
     raise SystemExit(combined.exact.main())
