@@ -18,9 +18,9 @@ permissions:
 env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
-  EXPECTED_SPARK_SHA: "fa1910687a9c51b5475abd043d807910a0cdd34e"
-  EXPECTED_SPARK_RUN_ID: "33777788557"
-  EXPECTED_SPARK_ARTIFACT_ID: "9902471289"
+  EXPECTED_SPARK_SHA: "59902d7bb6df4827e224d2263ba334c88dd99868"
+  EXPECTED_SPARK_RUN_ID: "33782798897"
+  EXPECTED_SPARK_ARTIFACT_ID: "9904352940"
   EXPECTED_ENDSTONE_SHA: "46eff9f125f52eac76472d84339ead8fbf51fcd2"
   EXPECTED_ENDSTONE_RUN_ID: "33567087207"
   EXPECTED_ENDSTONE_ARTIFACT_ID: "9824065779"
@@ -111,7 +111,7 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          python -c "import json,pathlib; m=json.load(open('metadata.json')); s=m['components']['spark']; assert s['sha']=='fa1910687a9c51b5475abd043d807910a0cdd34e'; assert s['run_id']==33777788557; assert s['artifact']['id']==9902471289; assert s['workflow']=='Windows No-Shim Real Plugin Experiment'; root=pathlib.Path('work/windows/bedrock_server/plugins'); assert (root/'endstone_spark.dll').is_file(); assert not list(root.rglob('spark_allocation_shim.*')); d=json.load(open('fleet-spark-result.json')); assert d.get('status')=='PASS',d.get('error_summary'); assert d.get('local_metadata_players')==20; assert d.get('health_upload_viewer_url'); assert d.get('execution_profile_viewer_url'); assert d.get('allocation_profile_viewer_url'); ev=d.get('shutdown_lifecycle_events') or []; assert ev and all(x.get('wrapper_return_code')==0 and x.get('process_tree_verification')=='clean' and not x.get('forced') for x in ev); print('PR49 exact no-shim Windows BDS PASS')"
+          python -c "import json,pathlib; m=json.load(open('metadata.json')); s=m['components']['spark']; assert s['sha']=='59902d7bb6df4827e224d2263ba334c88dd99868'; assert s['run_id']==33782798897; assert s['artifact']['id']==9904352940; assert s['workflow']=='Windows No-Shim Real Plugin Experiment'; root=pathlib.Path('work/windows/bedrock_server/plugins'); assert (root/'endstone_spark.dll').is_file(); assert not list(root.rglob('spark_allocation_shim.*')); d=json.load(open('fleet-spark-result.json')); assert d.get('status')=='PASS',d.get('error_summary'); assert d.get('local_metadata_players')==20; assert d.get('health_upload_viewer_url'); assert d.get('execution_profile_viewer_url'); assert d.get('allocation_profile_viewer_url'); ev=d.get('shutdown_lifecycle_events') or []; assert ev and all(x.get('wrapper_return_code')==0 and x.get('process_tree_verification')=='clean' and not x.get('forced') for x in ev); print('PR49 exact no-shim Windows BDS PASS')"
 
       - name: Upload PR49 no-shim Windows evidence
         if: always()
