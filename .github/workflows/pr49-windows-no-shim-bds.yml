@@ -1,0 +1,135 @@
+name: PR49 Windows no-shim BDS validation
+
+on:
+  push:
+    branches:
+      - "exp/pr49-windows-no-shim"
+    paths:
+      - ".github/workflows/pr49-windows-no-shim-bds.yml"
+      - "controller/pr49_no_shim_windows_runner.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+  EXPECTED_SPARK_SHA: "dd69b1729de585b7b58bc1c532f8ed2ba4b60397"
+  EXPECTED_ENDSTONE_SHA: "46eff9f125f52eac76472d84339ead8fbf51fcd2"
+  EXPECTED_ENDSTONE_RUN_ID: "33567087207"
+  EXPECTED_ENDSTONE_ARTIFACT_ID: "9824065779"
+  EXPECTED_ENDSTONE_VERSION: "0.11.11.dev396"
+  EXPECTED_BDS_VERSION: "1.26.45.1"
+  BOT_REF: "f175e4a6551d1973628b5ca926a497e9962c1302"
+
+jobs:
+  windows-no-shim-bds:
+    runs-on: windows-2025
+    timeout-minutes: 55
+
+    steps:
+      - name: Checkout exact lab head
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Wait for exact no-shim Spark artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 120); do
+            json="$(gh api "repos/ReallocAll/spark/actions/runs?head_sha=${EXPECTED_SPARK_SHA}&per_page=100")"
+            state="$(jq -r '[.workflow_runs[] | select(.name == "Windows No-Shim Real Plugin Experiment")][0] | (.conclusion // .status // "")' <<<"$json")"
+            echo "attempt ${attempt}: no-shim workflow=${state:-pending}"
+            if [[ "$state" == success ]]; then exit 0; fi
+            if [[ "$state" == failure || "$state" == cancelled || "$state" == timed_out || "$state" == action_required ]]; then exit 1; fi
+            sleep 15
+          done
+          exit 1
+
+      - name: Checkout exact bot
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/bds-test-bot
+          ref: ${{ env.BOT_REF }}
+          path: bot-src
+          persist-credentials: false
+
+      - name: Set up Go 1.25
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Build exact bot
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd bot-src
+          test "$(git rev-parse HEAD)" = "$BOT_REF"
+          go mod download
+          go test ./...
+          go build -trimpath -o ../dist/bds-test-bot.exe ./cmd/bds-test-bot
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install validation dependencies and lifecycle control
+        run: >-
+          python -m pip install --disable-pip-version-check
+          psutil packaging
+          ./fixtures/endstone-ci-lifecycle-control
+
+      - name: Run exact Windows no-shim combined E2E
+        run: >-
+          python -m controller.pr49_no_shim_windows_runner
+          --platform windows
+          --bot dist/bds-test-bot.exe
+          --profile-seconds 30
+
+      - name: Verify no-shim and lifecycle evidence
+        if: always()
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "fleet-spark-result.json")) {
+            throw "fleet-spark-result.json was not produced"
+          }
+          python -c "import json; d=json.load(open('fleet-spark-result.json')); assert d.get('status')=='PASS',d.get('error_summary'); assert d.get('local_metadata_players')==20; assert d.get('health_upload_viewer_url'); assert d.get('execution_profile_viewer_url'); assert d.get('allocation_profile_viewer_url'); ev=d.get('shutdown_lifecycle_events') or []; assert ev and all(x.get('wrapper_return_code')==0 and x.get('process_tree_verification')=='clean' and not x.get('forced') for x in ev); checks={x.get('name'):x for x in d.get('checks',[])}; assert checks.get('spark-no-shim-artifact-selected',{}).get('status')=='PASS'; assert checks.get('spark-allocation-shim-absent',{}).get('status')=='PASS'; print('PR49 Windows no-shim combined PASS')"
+          if (Test-Path "work/windows/bedrock_server/plugins/spark_allocation_shim.dll") {
+            throw "spark_allocation_shim.dll exists in measured BDS plugin directory"
+          }
+
+      - name: Verify bStats evidence
+        if: always()
+        run: >-
+          python -m controller.verify_bstats_evidence
+          --result test-results.json
+          --result fleet-spark-result.json
+
+      - name: Upload PR49 Windows no-shim evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pr49-windows-no-shim-bds-${{ github.run_id }}
+          path: |
+            metadata.json
+            bds.log
+            endstone.log
+            spark.log
+            fleet-windows-20-chunk-walk-local.log
+            fleet-windows-20-chunk-walk-public.log
+            test-results.json
+            fleet-spark-result.json
+            bstats-config.toml
+            failure-diagnostics.txt
+            combined-health-capture-windows/
+            work/windows/bedrock_server/server.properties
+            work/windows/bedrock_server/version.txt
+          if-no-files-found: warn
+          retention-days: 30
