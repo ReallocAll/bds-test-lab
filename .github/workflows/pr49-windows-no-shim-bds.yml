@@ -93,14 +93,14 @@ jobs:
           --bot dist/bds-test-bot.exe
           --profile-seconds 30
 
-      - name: Verify no-shim and lifecycle evidence
+      - name: Verify no-shim, hot-reload, and lifecycle evidence
         if: always()
         shell: pwsh
         run: |
           if (-not (Test-Path "fleet-spark-result.json")) {
             throw "fleet-spark-result.json was not produced"
           }
-          python -c "import json; d=json.load(open('fleet-spark-result.json')); assert d.get('status')=='PASS',d.get('error_summary'); assert d.get('local_metadata_players')==20; assert d.get('health_upload_viewer_url'); assert d.get('execution_profile_viewer_url'); assert d.get('allocation_profile_viewer_url'); ev=d.get('shutdown_lifecycle_events') or []; assert ev and all(x.get('wrapper_return_code')==0 and x.get('process_tree_verification')=='clean' and not x.get('forced') for x in ev); checks={x.get('name'):x for x in d.get('checks',[])}; assert checks.get('spark-no-shim-artifact-selected',{}).get('status')=='PASS'; assert checks.get('spark-allocation-shim-absent',{}).get('status')=='PASS'; print('PR49 Windows no-shim combined PASS')"
+          python -c "import json; d=json.load(open('fleet-spark-result.json')); assert d.get('status')=='PASS',d.get('error_summary'); assert d.get('local_metadata_players')==20; assert d.get('health_upload_viewer_url'); assert d.get('execution_profile_viewer_url'); assert d.get('allocation_profile_viewer_url'); assert d.get('hot_reload_completed') is True; assert d.get('hot_reload_cycles')==10; hre=d.get('hot_reload_evidence') or []; assert len(hre)==10 and all(x.get('spark_reenabled') and x.get('players')==20 and x.get('server_alive') for x in hre); ev=d.get('shutdown_lifecycle_events') or []; assert ev and all(x.get('wrapper_return_code')==0 and x.get('process_tree_verification')=='clean' and not x.get('forced') for x in ev); checks={x.get('name'):x for x in d.get('checks',[])}; assert checks.get('spark-no-shim-artifact-selected',{}).get('status')=='PASS'; assert checks.get('spark-allocation-shim-absent',{}).get('status')=='PASS'; assert checks.get('windows-no-shim-real-dll-hot-reload',{}).get('status')=='PASS'; print('PR49 Windows no-shim hot-reload combined PASS')"
           if (Test-Path "work/windows/bedrock_server/plugins/spark_allocation_shim.dll") {
             throw "spark_allocation_shim.dll exists in measured BDS plugin directory"
           }
