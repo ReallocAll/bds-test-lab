@@ -57,7 +57,10 @@ jobs:
           PY
 
       - name: Run focused unit tests
-        run: python -m unittest tests.test_pr49_no_shim_windows_runner
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check psutil packaging
+          python -m unittest tests.test_pr49_no_shim_windows_runner
 
       - name: Commit fix and remove one-shot workflow
         shell: bash
