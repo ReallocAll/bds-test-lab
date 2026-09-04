@@ -23,10 +23,10 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install controller unit-test dependencies
-        run: python -m pip install --disable-pip-version-check psutil packaging requests
+      - name: Install patch validation dependencies
+        run: python -m pip install --disable-pip-version-check psutil packaging requests pyyaml
 
-      - name: Patch exact candidate, true reload gate, and protobuf metadata gate
+      - name: Patch exact candidate and final real-BDS gates
         shell: bash
         run: |
           python - <<'PY'
@@ -34,15 +34,8 @@ jobs:
 
           runner_path = Path("controller/pr49_no_shim_windows_runner.py")
           text = runner_path.read_text(encoding="utf-8")
-          needle = '''SPARK_REPOSITORY = "ReallocAll/spark"
-          NO_SHIM_WORKFLOW = "Windows No-Shim Real Plugin Experiment"
-          _ORIGINAL_RUN_PROFILER = CombinedPackGameruleFleetValidation.run_profiler
-          '''
-          replacement = '''SPARK_REPOSITORY = "ReallocAll/spark"
-          NO_SHIM_WORKFLOW = "Windows No-Shim Real Plugin Experiment"
-          HOT_RELOAD_CYCLES = 3
-          _ORIGINAL_RUN_PROFILER = CombinedPackGameruleFleetValidation.run_profiler
-          '''
+          needle = 'NO_SHIM_WORKFLOW = "Windows No-Shim Real Plugin Experiment"\n_ORIGINAL_RUN_PROFILER = CombinedPackGameruleFleetValidation.run_profiler\n'
+          replacement = 'NO_SHIM_WORKFLOW = "Windows No-Shim Real Plugin Experiment"\nHOT_RELOAD_CYCLES = 3\n_ORIGINAL_RUN_PROFILER = CombinedPackGameruleFleetValidation.run_profiler\n'
           assert text.count(needle) == 1
           text = text.replace(needle, replacement)
 
@@ -168,15 +161,16 @@ jobs:
                   viewer_url = _run_reload_allocation_probe(self, cycle)
                   self.assert_20_players(f"after-hot-reload-{cycle}")
 
-                  row = {
-                      "cycle": cycle,
-                      "bds_pid": observed_identity[0],
-                      "bds_create_time": observed_identity[1],
-                      "same_bds_identity": True,
-                      "allocation_profile_viewer_url": viewer_url,
-                      "reload_output_tail": reload_lines[-20:],
-                  }
-                  evidence.append(row)
+                  evidence.append(
+                      {
+                          "cycle": cycle,
+                          "bds_pid": observed_identity[0],
+                          "bds_create_time": observed_identity[1],
+                          "same_bds_identity": True,
+                          "allocation_profile_viewer_url": viewer_url,
+                          "reload_output_tail": reload_lines[-20:],
+                      }
+                  )
                   self._write_results()
 
               self.check(
@@ -202,9 +196,9 @@ jobs:
           assert text.count(old) == 1
           runner_path.write_text(text.replace(old, new), encoding="utf-8")
 
-          test_path = Path("tests/test_pr49_no_shim_windows_runner.py")
-          tests = test_path.read_text(encoding="utf-8")
-          marker = '''\n\nif __name__ == "__main__":\n    unittest.main()\n'''
+          tests_path = Path("tests/test_pr49_no_shim_windows_runner.py")
+          tests = tests_path.read_text(encoding="utf-8")
+          marker = '\n\nif __name__ == "__main__":\n    unittest.main()\n'
           added = '''
               def test_select_live_bds_identity_requires_one_verified_bds_process(self) -> None:
                   records = [
@@ -237,8 +231,108 @@ jobs:
                       runner._validate_post_reload_profiler_info(["The profiler isn't running."])
           '''
           assert tests.count(marker) == 1
-          tests = tests.replace(marker, "\n" + added + marker)
-          test_path.write_text(tests, encoding="utf-8")
+          tests_path.write_text(tests.replace(marker, "\n" + added + marker), encoding="utf-8")
+
+          verifier = '''from __future__ import annotations
+
+          import gzip
+          import json
+          from pathlib import Path
+          import sys
+
+          import requests
+          from google.protobuf.message import DecodeError
+
+          EXPECTED_CYCLES = 3
+          EXPECTED_ENGINE = "native-ucrt/permanent-iat"
+          EXPECTED_BACKEND = "Windows UCRT/permanent IAT gateway"
+
+
+          def _load_sampler(viewer_url: str):
+              sys.path.insert(0, str(Path("generated").resolve()))
+              from spark import spark_sampler_pb2
+
+              key = viewer_url.rstrip("/").rsplit("/", 1)[-1]
+              response = requests.get(f"https://spark-usercontent.lucko.me/{key}", timeout=30)
+              response.raise_for_status()
+              payload = response.content
+              if payload[:2] == b"\\x1f\\x8b":
+                  payload = gzip.decompress(payload)
+              sampler = spark_sampler_pb2.SamplerData()
+              try:
+                  sampler.ParseFromString(payload)
+              except DecodeError as exc:
+                  raise RuntimeError(f"unable to decode SamplerData for {viewer_url}") from exc
+              return sampler
+
+
+          def _backend_value(raw: str) -> str:
+              try:
+                  value = json.loads(raw)
+              except json.JSONDecodeError:
+                  return raw
+              return value if isinstance(value, str) else raw
+
+
+          def main() -> int:
+              data = json.loads(Path("fleet-spark-result.json").read_text(encoding="utf-8"))
+              if data.get("status") != "PASS":
+                  raise RuntimeError(f"real-BDS scenario is not PASS: {data.get('error_summary')}")
+
+              cycles = data.get("hot_reload_cycles") or []
+              if len(cycles) != EXPECTED_CYCLES:
+                  raise RuntimeError(f"expected {EXPECTED_CYCLES} true hot reload cycles, got {len(cycles)}")
+              if not all(row.get("same_bds_identity") is True for row in cycles):
+                  raise RuntimeError(f"hot reload changed BDS identity: {cycles}")
+              identities = {(row.get("bds_pid"), row.get("bds_create_time")) for row in cycles}
+              if len(identities) != 1:
+                  raise RuntimeError(f"hot reload cycles disagree on BDS process identity: {identities}")
+
+              profiles = [
+                  ("main-allocation", data.get("allocation_profile_viewer_url")),
+                  ("live-only", data.get("allocation_live_only_profile_viewer_url")),
+              ]
+              profiles.extend(
+                  (f"hot-reload-{row.get('cycle')}", row.get("allocation_profile_viewer_url")) for row in cycles
+              )
+
+              evidence = []
+              for label, raw_url in profiles:
+                  viewer_url = str(raw_url or "").strip()
+                  if not viewer_url:
+                      raise RuntimeError(f"missing allocation profile viewer URL for {label}")
+                  sampler = _load_sampler(viewer_url)
+                  metadata = sampler.metadata
+                  if metadata.sampler_mode != 1:
+                      raise RuntimeError(f"{label}: expected ALLOCATION sampler_mode=1, got {metadata.sampler_mode}")
+                  engine = metadata.sampler_engine_version
+                  if EXPECTED_ENGINE not in engine or "funchook" in engine.casefold():
+                      raise RuntimeError(f"{label}: incorrect no-shim sampler engine version: {engine!r}")
+                  backend = _backend_value(metadata.extra_platform_metadata.get("Allocation backend", ""))
+                  if backend != EXPECTED_BACKEND:
+                      raise RuntimeError(f"{label}: incorrect Allocation backend metadata: {backend!r}")
+                  evidence.append(
+                      {
+                          "label": label,
+                          "viewer_url": viewer_url,
+                          "sampler_mode": metadata.sampler_mode,
+                          "sampler_engine_version": engine,
+                          "allocation_backend": backend,
+                      }
+                  )
+
+              Path("allocation-backend-metadata-evidence.json").write_text(
+                  json.dumps(evidence, indent=2, sort_keys=True), encoding="utf-8"
+              )
+              print(json.dumps(evidence, indent=2, sort_keys=True))
+              return 0
+
+
+          if __name__ == "__main__":
+              raise SystemExit(main())
+          '''
+          verifier = "\n".join(line[10:] if line.startswith("          ") else line for line in verifier.splitlines()) + "\n"
+          Path("controller/pr49_profile_metadata_verifier.py").write_text(verifier, encoding="utf-8")
 
           workflow_path = Path(".github/workflows/pr49-no-shim-windows-bds.yml")
           workflow = workflow_path.read_text(encoding="utf-8")
@@ -249,136 +343,57 @@ jobs:
               "assert s['sha']=='d805707d121561c684d97c2db499b74ac14e6762'": "assert s['sha']=='65e38810fad41f3c089ff069b419752d02ff74ad'",
               "assert s['run_id']==33919015413": "assert s['run_id']==33923533104",
               "assert s['artifact']['id']==9954369755": "assert s['artifact']['id']==9956022120",
+              '      - "controller/pr49_no_shim_windows_runner.py"\n': '      - "controller/pr49_no_shim_windows_runner.py"\n      - "controller/pr49_profile_metadata_verifier.py"\n',
           }
           for before, after in replacements.items():
               assert workflow.count(before) == 1, before
               workflow = workflow.replace(before, after)
 
-          proto_old = '''          python -m grpc_tools.protoc \\
-              -I spark-src/proto \\
-              --python_out=generated \\
-              spark-src/proto/spark/spark.proto
-          '''
-          proto_new = '''          python -m grpc_tools.protoc \\
-              -I spark-src/proto \\
-              --python_out=generated \\
-              spark-src/proto/spark/spark.proto \\
-              spark-src/proto/spark/spark_sampler.proto
-          '''
-          assert workflow.count(proto_old) == 1
-          workflow = workflow.replace(proto_old, proto_new)
+          proto_marker = '            spark-src/proto/spark/spark.proto\n\n      - name: Verify no-shim allocation rate protobuf semantics\n'
+          proto_replacement = '            spark-src/proto/spark/spark.proto \\\n            spark-src/proto/spark/spark_sampler.proto\n\n      - name: Verify no-shim allocation backend metadata after real profiles and reloads\n        run: python -m controller.pr49_profile_metadata_verifier\n\n      - name: Verify no-shim allocation rate protobuf semantics\n'
+          assert workflow.count(proto_marker) == 1
+          workflow = workflow.replace(proto_marker, proto_replacement)
 
-          insertion_marker = '''      - name: Verify no-shim allocation rate protobuf semantics
-          '''
-          metadata_step = r'''      - name: Verify no-shim allocation backend metadata after real profiles and reloads
-                shell: bash
-                run: |
-                  python - <<'PY'
-                  import gzip
-                  import json
-                  from pathlib import Path
-                  import sys
-
-                  import requests
-                  from google.protobuf.message import DecodeError
-
-                  sys.path.insert(0, str(Path("generated").resolve()))
-                  from spark import spark_sampler_pb2
-
-                  data = json.loads(Path("fleet-spark-result.json").read_text(encoding="utf-8"))
-                  if data.get("status") != "PASS":
-                      raise SystemExit(f"real-BDS scenario is not PASS: {data.get('error_summary')}")
-
-                  cycles = data.get("hot_reload_cycles") or []
-                  if len(cycles) != 3:
-                      raise SystemExit(f"expected exactly 3 true hot reload cycles, got {len(cycles)}")
-                  if not all(row.get("same_bds_identity") is True for row in cycles):
-                      raise SystemExit(f"hot reload changed BDS identity: {cycles}")
-
-                  profiles = [("main-allocation", data.get("allocation_profile_viewer_url"))]
-                  profiles.extend(
-                      (f"hot-reload-{row.get('cycle')}", row.get("allocation_profile_viewer_url")) for row in cycles
-                  )
-                  evidence = []
-                  for label, viewer_url in profiles:
-                      viewer_url = str(viewer_url or "").strip()
-                      if not viewer_url:
-                          raise SystemExit(f"missing allocation profile viewer URL for {label}")
-                      key = viewer_url.rstrip("/").rsplit("/", 1)[-1]
-                      response = requests.get(f"https://spark-usercontent.lucko.me/{key}", timeout=30)
-                      response.raise_for_status()
-                      payload = response.content
-                      sampler = spark_sampler_pb2.SamplerData()
-                      try:
-                          sampler.ParseFromString(payload)
-                      except DecodeError:
-                          sampler.ParseFromString(gzip.decompress(payload))
-
-                      metadata = sampler.metadata
-                      if metadata.sampler_mode != 1:
-                          raise SystemExit(f"{label}: expected ALLOCATION sampler_mode=1, got {metadata.sampler_mode}")
-                      engine = metadata.sampler_engine_version
-                      if "native-ucrt/permanent-iat" not in engine or "funchook" in engine.casefold():
-                          raise SystemExit(f"{label}: incorrect no-shim sampler engine version: {engine!r}")
-                      raw_backend = metadata.extra_platform_metadata.get("Allocation backend", "")
-                      try:
-                          backend = json.loads(raw_backend)
-                      except json.JSONDecodeError:
-                          backend = raw_backend
-                      if backend != "Windows UCRT/permanent IAT gateway":
-                          raise SystemExit(f"{label}: incorrect Allocation backend metadata: {backend!r}")
-                      evidence.append(
-                          {
-                              "label": label,
-                              "viewer_url": viewer_url,
-                              "sampler_mode": metadata.sampler_mode,
-                              "sampler_engine_version": engine,
-                              "allocation_backend": backend,
-                          }
-                      )
-
-                  Path("allocation-backend-metadata-evidence.json").write_text(
-                      json.dumps(evidence, indent=2, sort_keys=True), encoding="utf-8"
-                  )
-                  print(json.dumps(evidence, indent=2, sort_keys=True))
-                  PY
-
-          '''
-          # Fix indentation introduced by embedding this YAML fragment in Python source.
-          metadata_step = metadata_step.replace("            shell:", "        shell:").replace("            run:", "        run:")
-          assert workflow.count(insertion_marker) == 1
-          workflow = workflow.replace(insertion_marker, metadata_step + insertion_marker)
-
-          independent_old = "assert d.get('allocation_live_only_profile_viewer_url'); ev=d.get('shutdown_lifecycle_events') or [];"
+          independent = "assert d.get('allocation_live_only_profile_viewer_url'); ev=d.get('shutdown_lifecycle_events') or [];"
           independent_new = "assert d.get('allocation_live_only_profile_viewer_url'); hot=d.get('hot_reload_cycles') or []; assert len(hot)==3 and all(x.get('same_bds_identity') is True and x.get('allocation_profile_viewer_url') for x in hot); ev=d.get('shutdown_lifecycle_events') or [];"
-          assert workflow.count(independent_old) == 1
-          workflow = workflow.replace(independent_old, independent_new)
+          assert workflow.count(independent) == 1
+          workflow = workflow.replace(independent, independent_new)
 
-          upload_old = '''            allocation-rate-evidence.json
-          '''
-          upload_new = '''            allocation-rate-evidence.json
-                      allocation-backend-metadata-evidence.json
-          '''
-          # normalize intentionally after exact replacement below
-          assert workflow.count(upload_old) == 1
-          workflow = workflow.replace(upload_old, upload_new.replace("                      allocation", "            allocation"))
+          upload_marker = '            allocation-rate-evidence.json\n'
+          assert workflow.count(upload_marker) == 1
+          workflow = workflow.replace(
+              upload_marker,
+              upload_marker + '            allocation-backend-metadata-evidence.json\n',
+          )
           workflow_path.write_text(workflow, encoding="utf-8")
           PY
 
-      - name: Validate patched controller
-        run: |
-          python -m py_compile controller/pr49_no_shim_windows_runner.py
-          python -m unittest tests.test_pr49_no_shim_windows_runner
-
-      - name: Commit validated patch and remove helper
+      - name: Validate patched files
         shell: bash
         run: |
           set -euo pipefail
+          python -m py_compile controller/pr49_no_shim_windows_runner.py controller/pr49_profile_metadata_verifier.py
+          python -m unittest tests.test_pr49_no_shim_windows_runner
+          python - <<'PY'
+          import yaml
+          from pathlib import Path
+          data = yaml.safe_load(Path('.github/workflows/pr49-no-shim-windows-bds.yml').read_text(encoding='utf-8'))
+          assert isinstance(data, dict) and 'jobs' in data
+          assert 'windows-no-shim-bds' in data['jobs']
+          PY
+          grep -F 'EXPECTED_SPARK_SHA: "65e38810fad41f3c089ff069b419752d02ff74ad"' .github/workflows/pr49-no-shim-windows-bds.yml
+          grep -F 'spark-src/proto/spark/spark_sampler.proto' .github/workflows/pr49-no-shim-windows-bds.yml
+          grep -F 'python -m controller.pr49_profile_metadata_verifier' .github/workflows/pr49-no-shim-windows-bds.yml
           git diff --check
+
+      - name: Commit validated final gates and remove helper
+        shell: bash
+        run: |
+          set -euo pipefail
           git rm .github/workflows/pr49-one-shot-final-gates.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -u
+          git add controller/pr49_no_shim_windows_runner.py controller/pr49_profile_metadata_verifier.py tests/test_pr49_no_shim_windows_runner.py .github/workflows/pr49-no-shim-windows-bds.yml
           git diff --cached --check
           git diff --cached --stat
           git commit -m "test: gate PR49 true BDS reload and backend metadata"
