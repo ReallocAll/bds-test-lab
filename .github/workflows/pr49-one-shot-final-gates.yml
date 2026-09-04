@@ -1,0 +1,385 @@
+name: PR49 One-shot Final Gates
+
+on:
+  push:
+    branches:
+      - research/pr49-no-shim-windows-bds
+    paths:
+      - ".github/workflows/pr49-one-shot-final-gates.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: research/pr49-no-shim-windows-bds
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install controller unit-test dependencies
+        run: python -m pip install --disable-pip-version-check psutil packaging requests
+
+      - name: Patch exact candidate, true reload gate, and protobuf metadata gate
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          runner_path = Path("controller/pr49_no_shim_windows_runner.py")
+          text = runner_path.read_text(encoding="utf-8")
+          needle = '''SPARK_REPOSITORY = "ReallocAll/spark"
+          NO_SHIM_WORKFLOW = "Windows No-Shim Real Plugin Experiment"
+          _ORIGINAL_RUN_PROFILER = CombinedPackGameruleFleetValidation.run_profiler
+          '''
+          replacement = '''SPARK_REPOSITORY = "ReallocAll/spark"
+          NO_SHIM_WORKFLOW = "Windows No-Shim Real Plugin Experiment"
+          HOT_RELOAD_CYCLES = 3
+          _ORIGINAL_RUN_PROFILER = CombinedPackGameruleFleetValidation.run_profiler
+          '''
+          assert text.count(needle) == 1
+          text = text.replace(needle, replacement)
+
+          old = '''def _run_pr49_profiler(self: CombinedPackGameruleFleetValidation, allocation: bool) -> str | None:
+              url = _ORIGINAL_RUN_PROFILER(self, allocation)
+              if allocation:
+                  _run_live_only_allocation_profile(self)
+                  self.assert_20_players("after-live-only-allocation-profile")
+              return url
+          '''
+          new = '''def _select_live_bds_identity(records: list[dict[str, Any]]) -> tuple[int, float]:
+              candidates = [
+                  record
+                  for record in records
+                  if record.get("alive") is True
+                  and record.get("identity_match") is True
+                  and "bedrock_server" in str(record.get("name") or "").casefold()
+              ]
+              if len(candidates) != 1:
+                  raise RuntimeError(f"expected exactly one verified live bedrock_server process, observed={candidates!r}")
+              candidate = candidates[0]
+              pid = int(candidate.get("pid") or 0)
+              create_time = candidate.get("create_time")
+              if pid <= 0 or not isinstance(create_time, (int, float)) or create_time <= 0:
+                  raise RuntimeError(f"invalid bedrock_server process identity: {candidate!r}")
+              return pid, float(create_time)
+
+
+          def _validate_reload_output(lines: list[str]) -> None:
+              joined = "\\n".join(lines).casefold()
+              if "reload complete." not in joined:
+                  raise RuntimeError("Endstone /reload did not report completion")
+              if "failed to load c++ plugin from" in joined and "endstone_spark" in joined:
+                  raise RuntimeError("Endstone failed to reload the Spark C++ plugin")
+              if "error occurred when enabling spark" in joined:
+                  raise RuntimeError("Spark reported an enable failure after Endstone /reload")
+
+
+          def _validate_post_reload_profiler_info(lines: list[str]) -> None:
+              joined = "\\n".join(lines).casefold()
+              required = ("profiler is already running", "started automatically when spark enabled")
+              missing = [marker for marker in required if marker not in joined]
+              if missing:
+                  raise RuntimeError(f"Spark did not restore its background profiler after reload: missing={missing!r}")
+
+
+          def _wait_reload_complete(
+              self: CombinedPackGameruleFleetValidation, start_index: int, cycle: int
+          ) -> list[str]:
+              assert self.server is not None
+              deadline = time.monotonic() + 60
+              while time.monotonic() < deadline:
+                  lines = self.server.snapshot()[start_index:]
+                  if any("reload complete." in line.casefold() for line in lines):
+                      _validate_reload_output(lines)
+                      return lines
+                  if not self.server.is_alive():
+                      raise RuntimeError(f"BDS exited during Endstone /reload cycle {cycle}")
+                  time.sleep(0.25)
+              raise RuntimeError(f"Endstone /reload cycle {cycle} did not complete within 60s")
+
+
+          def _run_reload_allocation_probe(
+              self: CombinedPackGameruleFleetValidation, cycle: int
+          ) -> str:
+              assert self.server is not None
+              start = self.server.command("spark profiler start --timeout 5 --alloc")
+              deadline = time.monotonic() + 45
+              url: str | None = None
+              while time.monotonic() < deadline:
+                  lines = self.server.snapshot()
+                  recent = "\\n".join(lines[start:]).casefold()
+                  if "allocation profiler status: failed" in recent or "incomplete profile data was discarded" in recent:
+                      raise RuntimeError(f"allocation profiler failed after hot reload cycle {cycle}")
+                  url = self._viewer_url(lines, start)
+                  if url:
+                      break
+                  if not self.server.is_alive():
+                      raise RuntimeError(f"BDS exited during post-reload allocation probe cycle {cycle}")
+                  time.sleep(0.5)
+              if url is None:
+                  stop_at = self.server.command("spark profiler stop")
+                  deadline = time.monotonic() + 60
+                  while time.monotonic() < deadline:
+                      lines = self.server.snapshot()
+                      url = self._viewer_url(lines, min(start, stop_at))
+                      if url:
+                          break
+                      if not self.server.is_alive():
+                          raise RuntimeError(f"BDS exited while finalizing post-reload allocation probe cycle {cycle}")
+                      time.sleep(0.5)
+              if url is None:
+                  raise RuntimeError(f"post-reload allocation probe cycle {cycle} produced no spark viewer URL")
+              return url
+
+
+          def _run_true_hot_reload_cycles(self: CombinedPackGameruleFleetValidation) -> None:
+              assert self.server is not None
+              baseline_identity = _select_live_bds_identity(self.server.process_tree_snapshot())
+              evidence: list[dict[str, Any]] = []
+              self.result["hot_reload_cycles"] = evidence
+              self._write_results()
+
+              for cycle in range(1, HOT_RELOAD_CYCLES + 1):
+                  self.assert_20_players(f"before-hot-reload-{cycle}")
+                  start = self.server.command("reload")
+                  reload_lines = _wait_reload_complete(self, start, cycle)
+
+                  observed_identity = _select_live_bds_identity(self.server.process_tree_snapshot())
+                  if observed_identity != baseline_identity:
+                      raise RuntimeError(
+                          f"bedrock_server process identity changed across hot reload cycle {cycle}: "
+                          f"baseline={baseline_identity!r} observed={observed_identity!r}"
+                      )
+
+                  plugin_dir = self.server_dir / "plugins"
+                  if any(path.name.casefold().startswith("spark_allocation_shim.") for path in plugin_dir.rglob("*")):
+                      raise RuntimeError(f"spark_allocation_shim appeared after hot reload cycle {cycle}")
+
+                  info_at = self.server.command("spark profiler info")
+                  info = self.server.wait_command_output(info_at, 12)
+                  _validate_post_reload_profiler_info(info)
+                  viewer_url = _run_reload_allocation_probe(self, cycle)
+                  self.assert_20_players(f"after-hot-reload-{cycle}")
+
+                  row = {
+                      "cycle": cycle,
+                      "bds_pid": observed_identity[0],
+                      "bds_create_time": observed_identity[1],
+                      "same_bds_identity": True,
+                      "allocation_profile_viewer_url": viewer_url,
+                      "reload_output_tail": reload_lines[-20:],
+                  }
+                  evidence.append(row)
+                  self._write_results()
+
+              self.check(
+                  "pr49-true-endstone-hot-reload",
+                  "PASS",
+                  "same bedrock_server process survived three Endstone /reload cycles; Spark re-enabled and produced a fresh allocation profile after every true C++ plugin unload/reload",
+                  cycles=HOT_RELOAD_CYCLES,
+                  bds_pid=baseline_identity[0],
+                  bds_create_time=baseline_identity[1],
+                  allocation_profile_viewer_urls=[row["allocation_profile_viewer_url"] for row in evidence],
+              )
+
+
+          def _run_pr49_profiler(self: CombinedPackGameruleFleetValidation, allocation: bool) -> str | None:
+              url = _ORIGINAL_RUN_PROFILER(self, allocation)
+              if allocation:
+                  _run_live_only_allocation_profile(self)
+                  self.assert_20_players("after-live-only-allocation-profile")
+                  _run_true_hot_reload_cycles(self)
+                  self.assert_20_players("after-true-hot-reload-cycles")
+              return url
+          '''
+          assert text.count(old) == 1
+          runner_path.write_text(text.replace(old, new), encoding="utf-8")
+
+          test_path = Path("tests/test_pr49_no_shim_windows_runner.py")
+          tests = test_path.read_text(encoding="utf-8")
+          marker = '''\n\nif __name__ == "__main__":\n    unittest.main()\n'''
+          added = '''
+              def test_select_live_bds_identity_requires_one_verified_bds_process(self) -> None:
+                  records = [
+                      {"pid": 100, "name": "python.exe", "alive": True, "identity_match": True, "create_time": 10.0},
+                      {"pid": 200, "name": "bedrock_server.exe", "alive": True, "identity_match": True, "create_time": 20.0},
+                  ]
+                  self.assertEqual(runner._select_live_bds_identity(records), (200, 20.0))
+                  with self.assertRaisesRegex(RuntimeError, "exactly one"):
+                      runner._select_live_bds_identity(records[:1])
+                  with self.assertRaisesRegex(RuntimeError, "exactly one"):
+                      runner._select_live_bds_identity(records + [dict(records[1], pid=201)])
+
+              def test_reload_output_requires_completion_and_rejects_spark_load_failure(self) -> None:
+                  runner._validate_reload_output(["Reloading...", "Reload complete."])
+                  with self.assertRaisesRegex(RuntimeError, "did not report completion"):
+                      runner._validate_reload_output(["Reloading..."])
+                  with self.assertRaisesRegex(RuntimeError, "failed to reload"):
+                      runner._validate_reload_output(
+                          ["Failed to load c++ plugin from plugins/endstone_spark.dll", "Reload complete."]
+                      )
+
+              def test_post_reload_profiler_info_requires_auto_resumed_background_profiler(self) -> None:
+                  runner._validate_post_reload_profiler_info(
+                      [
+                          "Profiler is already running!",
+                          "It was started automatically when spark enabled and has been running in the background for 1s.",
+                      ]
+                  )
+                  with self.assertRaisesRegex(RuntimeError, "restore its background profiler"):
+                      runner._validate_post_reload_profiler_info(["The profiler isn't running."])
+          '''
+          assert tests.count(marker) == 1
+          tests = tests.replace(marker, "\n" + added + marker)
+          test_path.write_text(tests, encoding="utf-8")
+
+          workflow_path = Path(".github/workflows/pr49-no-shim-windows-bds.yml")
+          workflow = workflow_path.read_text(encoding="utf-8")
+          replacements = {
+              'EXPECTED_SPARK_SHA: "d805707d121561c684d97c2db499b74ac14e6762"': 'EXPECTED_SPARK_SHA: "65e38810fad41f3c089ff069b419752d02ff74ad"',
+              'EXPECTED_SPARK_RUN_ID: "33919015413"': 'EXPECTED_SPARK_RUN_ID: "33923533104"',
+              'EXPECTED_SPARK_ARTIFACT_ID: "9954369755"': 'EXPECTED_SPARK_ARTIFACT_ID: "9956022120"',
+              "assert s['sha']=='d805707d121561c684d97c2db499b74ac14e6762'": "assert s['sha']=='65e38810fad41f3c089ff069b419752d02ff74ad'",
+              "assert s['run_id']==33919015413": "assert s['run_id']==33923533104",
+              "assert s['artifact']['id']==9954369755": "assert s['artifact']['id']==9956022120",
+          }
+          for before, after in replacements.items():
+              assert workflow.count(before) == 1, before
+              workflow = workflow.replace(before, after)
+
+          proto_old = '''          python -m grpc_tools.protoc \\
+              -I spark-src/proto \\
+              --python_out=generated \\
+              spark-src/proto/spark/spark.proto
+          '''
+          proto_new = '''          python -m grpc_tools.protoc \\
+              -I spark-src/proto \\
+              --python_out=generated \\
+              spark-src/proto/spark/spark.proto \\
+              spark-src/proto/spark/spark_sampler.proto
+          '''
+          assert workflow.count(proto_old) == 1
+          workflow = workflow.replace(proto_old, proto_new)
+
+          insertion_marker = '''      - name: Verify no-shim allocation rate protobuf semantics
+          '''
+          metadata_step = r'''      - name: Verify no-shim allocation backend metadata after real profiles and reloads
+                shell: bash
+                run: |
+                  python - <<'PY'
+                  import gzip
+                  import json
+                  from pathlib import Path
+                  import sys
+
+                  import requests
+                  from google.protobuf.message import DecodeError
+
+                  sys.path.insert(0, str(Path("generated").resolve()))
+                  from spark import spark_sampler_pb2
+
+                  data = json.loads(Path("fleet-spark-result.json").read_text(encoding="utf-8"))
+                  if data.get("status") != "PASS":
+                      raise SystemExit(f"real-BDS scenario is not PASS: {data.get('error_summary')}")
+
+                  cycles = data.get("hot_reload_cycles") or []
+                  if len(cycles) != 3:
+                      raise SystemExit(f"expected exactly 3 true hot reload cycles, got {len(cycles)}")
+                  if not all(row.get("same_bds_identity") is True for row in cycles):
+                      raise SystemExit(f"hot reload changed BDS identity: {cycles}")
+
+                  profiles = [("main-allocation", data.get("allocation_profile_viewer_url"))]
+                  profiles.extend(
+                      (f"hot-reload-{row.get('cycle')}", row.get("allocation_profile_viewer_url")) for row in cycles
+                  )
+                  evidence = []
+                  for label, viewer_url in profiles:
+                      viewer_url = str(viewer_url or "").strip()
+                      if not viewer_url:
+                          raise SystemExit(f"missing allocation profile viewer URL for {label}")
+                      key = viewer_url.rstrip("/").rsplit("/", 1)[-1]
+                      response = requests.get(f"https://spark-usercontent.lucko.me/{key}", timeout=30)
+                      response.raise_for_status()
+                      payload = response.content
+                      sampler = spark_sampler_pb2.SamplerData()
+                      try:
+                          sampler.ParseFromString(payload)
+                      except DecodeError:
+                          sampler.ParseFromString(gzip.decompress(payload))
+
+                      metadata = sampler.metadata
+                      if metadata.sampler_mode != 1:
+                          raise SystemExit(f"{label}: expected ALLOCATION sampler_mode=1, got {metadata.sampler_mode}")
+                      engine = metadata.sampler_engine_version
+                      if "native-ucrt/permanent-iat" not in engine or "funchook" in engine.casefold():
+                          raise SystemExit(f"{label}: incorrect no-shim sampler engine version: {engine!r}")
+                      raw_backend = metadata.extra_platform_metadata.get("Allocation backend", "")
+                      try:
+                          backend = json.loads(raw_backend)
+                      except json.JSONDecodeError:
+                          backend = raw_backend
+                      if backend != "Windows UCRT/permanent IAT gateway":
+                          raise SystemExit(f"{label}: incorrect Allocation backend metadata: {backend!r}")
+                      evidence.append(
+                          {
+                              "label": label,
+                              "viewer_url": viewer_url,
+                              "sampler_mode": metadata.sampler_mode,
+                              "sampler_engine_version": engine,
+                              "allocation_backend": backend,
+                          }
+                      )
+
+                  Path("allocation-backend-metadata-evidence.json").write_text(
+                      json.dumps(evidence, indent=2, sort_keys=True), encoding="utf-8"
+                  )
+                  print(json.dumps(evidence, indent=2, sort_keys=True))
+                  PY
+
+          '''
+          # Fix indentation introduced by embedding this YAML fragment in Python source.
+          metadata_step = metadata_step.replace("            shell:", "        shell:").replace("            run:", "        run:")
+          assert workflow.count(insertion_marker) == 1
+          workflow = workflow.replace(insertion_marker, metadata_step + insertion_marker)
+
+          independent_old = "assert d.get('allocation_live_only_profile_viewer_url'); ev=d.get('shutdown_lifecycle_events') or [];"
+          independent_new = "assert d.get('allocation_live_only_profile_viewer_url'); hot=d.get('hot_reload_cycles') or []; assert len(hot)==3 and all(x.get('same_bds_identity') is True and x.get('allocation_profile_viewer_url') for x in hot); ev=d.get('shutdown_lifecycle_events') or [];"
+          assert workflow.count(independent_old) == 1
+          workflow = workflow.replace(independent_old, independent_new)
+
+          upload_old = '''            allocation-rate-evidence.json
+          '''
+          upload_new = '''            allocation-rate-evidence.json
+                      allocation-backend-metadata-evidence.json
+          '''
+          # normalize intentionally after exact replacement below
+          assert workflow.count(upload_old) == 1
+          workflow = workflow.replace(upload_old, upload_new.replace("                      allocation", "            allocation"))
+          workflow_path.write_text(workflow, encoding="utf-8")
+          PY
+
+      - name: Validate patched controller
+        run: |
+          python -m py_compile controller/pr49_no_shim_windows_runner.py
+          python -m unittest tests.test_pr49_no_shim_windows_runner
+
+      - name: Commit validated patch and remove helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          git rm .github/workflows/pr49-one-shot-final-gates.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -u
+          git diff --cached --check
+          git diff --cached --stat
+          git commit -m "test: gate PR49 true BDS reload and backend metadata"
+          git push origin HEAD:research/pr49-no-shim-windows-bds
