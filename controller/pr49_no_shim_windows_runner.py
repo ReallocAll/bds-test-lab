@@ -141,6 +141,19 @@ def _validate_live_only_info_output(lines: list[str]) -> None:
         raise RuntimeError(f"live-only allocation profiler info did not confirm retained semantics: missing={missing!r}")
 
 
+def _validate_live_only_post_stop_output(lines: list[str]) -> bool:
+    joined = "\n".join(lines).casefold()
+    if "results are still being finalized" in joined:
+        return False
+    if "retained allocation profiler is already running" in joined:
+        raise RuntimeError("live-only allocation profiler retained session is still active after finalization")
+    if "the profiler isn't running" in joined:
+        return True
+    if "profiler is already running" in joined and "started automatically when spark enabled" in joined:
+        return True
+    raise RuntimeError("live-only allocation profiler reached an unexpected profiler state after finalization")
+
+
 def _run_live_only_allocation_profile(self: CombinedPackGameruleFleetValidation) -> str:
     assert self.server is not None
     start = self.server.command("spark profiler start --alloc-live-only")
@@ -175,25 +188,22 @@ def _run_live_only_allocation_profile(self: CombinedPackGameruleFleetValidation)
     if url is None:
         raise RuntimeError("live-only allocation profiler produced no spark viewer URL")
 
-    idle_deadline = time.monotonic() + 20
-    while time.monotonic() < idle_deadline:
+    settled_deadline = time.monotonic() + 20
+    while time.monotonic() < settled_deadline:
         info_at = self.server.command("spark profiler info")
         state = self.server.wait_command_output(info_at, 12)
-        joined = "\n".join(state).casefold()
-        if "the profiler isn't running" in joined:
+        if _validate_live_only_post_stop_output(state):
             break
-        if "results are still being finalized" not in joined:
-            raise RuntimeError("live-only allocation profiler did not return to an idle state after finalization")
         time.sleep(0.5)
     else:
-        raise RuntimeError("live-only allocation profiler export did not become idle")
+        raise RuntimeError("live-only allocation profiler export did not settle after finalization")
 
     self.result["allocation_live_only_profile_viewer_url"] = url
     self._write_results()
     self.check(
         "pr49-allocation-live-only-profiler",
         "PASS",
-        "retained allocation mode started, reported live lifecycle semantics, finalized, and returned idle",
+        "retained allocation mode started, reported live lifecycle semantics, finalized, released the retained session, and restored background/idle state",
         viewer_url=url,
     )
     return url

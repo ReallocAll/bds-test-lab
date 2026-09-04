@@ -129,5 +129,24 @@ class Pr49NoShimWindowsRunnerTest(unittest.TestCase):
             runner._validate_live_only_info_output(["Allocation Profiler is already running!"])
 
 
+    def test_live_only_post_stop_accepts_idle_or_resumed_background(self) -> None:
+        self.assertTrue(runner._validate_live_only_post_stop_output(["The profiler isn't running."]))
+        self.assertTrue(
+            runner._validate_live_only_post_stop_output(
+                [
+                    "Profiler is already running!",
+                    "It was started automatically when spark enabled and has been running in the background for 0s.",
+                ]
+            )
+        )
+        self.assertFalse(
+            runner._validate_live_only_post_stop_output(["Results are still being finalized, please wait..."])
+        )
+        with self.assertRaisesRegex(RuntimeError, "retained session"):
+            runner._validate_live_only_post_stop_output(["Retained Allocation Profiler is already running!"])
+        with self.assertRaisesRegex(RuntimeError, "unexpected profiler state"):
+            runner._validate_live_only_post_stop_output(["Profiler is already running!"])
+
+
 if __name__ == "__main__":
     unittest.main()
