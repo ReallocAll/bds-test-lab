@@ -4,11 +4,13 @@ import os
 import pathlib
 import shutil
 import sys
+import time
 from typing import Any
 
 # Importing the final Windows runner first installs the exact-artifact lifecycle,
 # behavior-pack state oracle, restart-safe command transport, and one-bootstrap
-# Windows adapter. This module replaces only artifact installation.
+# Windows adapter. This module replaces only artifact installation and adds
+# PR49-specific allocation semantic gates.
 from controller import combined_windows_final_runner  # noqa: F401
 from controller.combined_pack_gamerule_fleet_validation import CombinedPackGameruleFleetValidation, main
 from controller.python_evidence_provenance import (
@@ -20,6 +22,7 @@ from providers import artifact_provider
 
 SPARK_REPOSITORY = "ReallocAll/spark"
 NO_SHIM_WORKFLOW = "Windows No-Shim Real Plugin Experiment"
+_ORIGINAL_RUN_PROFILER = CombinedPackGameruleFleetValidation.run_profiler
 
 
 def _positive_env(name: str) -> int:
@@ -113,6 +116,95 @@ def _assert_no_shim_payload(root: pathlib.Path) -> None:
     target_text = targets.read_text(encoding="utf-8", errors="replace").casefold()
     if "spark_allocation_shim" in target_text:
         raise RuntimeError("no-shim target evidence still exposes spark_allocation_shim")
+
+
+def _validate_live_only_start_output(lines: list[str]) -> None:
+    joined = "\n".join(lines).casefold()
+    required = (
+        "retained allocation profiler is now running",
+        "only sampled allocations still live when profiling stops",
+    )
+    missing = [marker for marker in required if marker not in joined]
+    if missing:
+        raise RuntimeError(f"live-only allocation profiler did not confirm retained mode: missing={missing!r}")
+
+
+def _validate_live_only_info_output(lines: list[str]) -> None:
+    joined = "\n".join(lines).casefold()
+    required = (
+        "retained allocation profiler is already running",
+        "tracked sampled allocations still live process-wide",
+        "process-wide tracked lifecycle:",
+    )
+    missing = [marker for marker in required if marker not in joined]
+    if missing:
+        raise RuntimeError(f"live-only allocation profiler info did not confirm retained semantics: missing={missing!r}")
+
+
+def _run_live_only_allocation_profile(self: CombinedPackGameruleFleetValidation) -> str:
+    assert self.server is not None
+    start = self.server.command("spark profiler start --alloc-live-only")
+    startup = self.server.wait_command_output(start, 12)
+    _validate_live_only_start_output(startup)
+
+    info_at = self.server.command("spark profiler info")
+    info = self.server.wait_command_output(info_at, 12)
+    _validate_live_only_info_output(info)
+
+    time.sleep(5)
+    stop_at = self.server.command("spark profiler stop")
+    stop_output = self.server.wait_command_output(stop_at, 12)
+    stop_joined = "\n".join(stop_output).casefold()
+    if "there isn't an active profiler running" in stop_joined:
+        raise RuntimeError("live-only allocation profiler stopped before the explicit finalization gate")
+
+    search_start = min(start, stop_at)
+    deadline = time.monotonic() + 60
+    url: str | None = None
+    while time.monotonic() < deadline:
+        lines = self.server.snapshot()
+        recent = "\n".join(lines[search_start:]).casefold()
+        if "allocation profiler status: failed" in recent or "incomplete profile data was discarded" in recent:
+            raise RuntimeError("live-only allocation profiler reported backend failure during real BDS validation")
+        url = self._viewer_url(lines, search_start)
+        if url:
+            break
+        if not self.server.is_alive():
+            raise RuntimeError("BDS exited while finalizing the live-only allocation profile")
+        time.sleep(0.5)
+    if url is None:
+        raise RuntimeError("live-only allocation profiler produced no spark viewer URL")
+
+    idle_deadline = time.monotonic() + 20
+    while time.monotonic() < idle_deadline:
+        info_at = self.server.command("spark profiler info")
+        state = self.server.wait_command_output(info_at, 12)
+        joined = "\n".join(state).casefold()
+        if "the profiler isn't running" in joined:
+            break
+        if "results are still being finalized" not in joined:
+            raise RuntimeError("live-only allocation profiler did not return to an idle state after finalization")
+        time.sleep(0.5)
+    else:
+        raise RuntimeError("live-only allocation profiler export did not become idle")
+
+    self.result["allocation_live_only_profile_viewer_url"] = url
+    self._write_results()
+    self.check(
+        "pr49-allocation-live-only-profiler",
+        "PASS",
+        "retained allocation mode started, reported live lifecycle semantics, finalized, and returned idle",
+        viewer_url=url,
+    )
+    return url
+
+
+def _run_pr49_profiler(self: CombinedPackGameruleFleetValidation, allocation: bool) -> str | None:
+    url = _ORIGINAL_RUN_PROFILER(self, allocation)
+    if allocation:
+        _run_live_only_allocation_profile(self)
+        self.assert_20_players("after-live-only-allocation-profile")
+    return url
 
 
 def _install_pr49_no_shim_artifacts(self: CombinedPackGameruleFleetValidation) -> None:
@@ -224,6 +316,7 @@ def _install_pr49_no_shim_artifacts(self: CombinedPackGameruleFleetValidation) -
 
 
 CombinedPackGameruleFleetValidation.install_artifacts = _install_pr49_no_shim_artifacts
+CombinedPackGameruleFleetValidation.run_profiler = _run_pr49_profiler
 
 
 if __name__ == "__main__":

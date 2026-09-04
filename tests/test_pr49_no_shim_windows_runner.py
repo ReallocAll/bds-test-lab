@@ -108,6 +108,26 @@ class Pr49NoShimWindowsRunnerTest(unittest.TestCase):
         self.assertIs(observed_run, run)
         self.assertIs(observed_artifact, artifact)
 
+    def test_live_only_mode_requires_retained_start_and_info_semantics(self) -> None:
+        runner._validate_live_only_start_output(
+            [
+                "Retained Allocation Profiler is now running! (async)",
+                "The result will contain only sampled allocations still live when profiling stops.",
+            ]
+        )
+        runner._validate_live_only_info_output(
+            [
+                "Retained Allocation Profiler is already running!",
+                "So far it has profiled for 5s (12 tracked sampled allocations still live process-wide, 64 KiB estimated).",
+                "Process-wide tracked lifecycle: 8 freed, 12 still live (64 KiB).",
+            ]
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "retained mode"):
+            runner._validate_live_only_start_output(["Allocation Profiler is now running!"])
+        with self.assertRaisesRegex(RuntimeError, "retained semantics"):
+            runner._validate_live_only_info_output(["Allocation Profiler is already running!"])
+
 
 if __name__ == "__main__":
     unittest.main()
