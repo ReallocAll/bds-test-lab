@@ -1,0 +1,72 @@
+name: PR49 One-shot Live-only State Fix
+
+on:
+  push:
+    branches:
+      - research/pr49-no-shim-windows-bds
+    paths:
+      - ".github/workflows/pr49-one-shot-live-only-state-fix.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: research/pr49-no-shim-windows-bds
+          fetch-depth: 0
+
+      - name: Apply evidence-driven state fix
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          runner = Path("controller/pr49_no_shim_windows_runner.py")
+          text = runner.read_text(encoding="utf-8")
+
+          anchor = '''def _run_live_only_allocation_profile(self: CombinedPackGameruleFleetValidation) -> str:\n'''
+          helper = '''def _validate_live_only_post_stop_output(lines: list[str]) -> bool:\n    joined = "\\n".join(lines).casefold()\n    if "results are still being finalized" in joined:\n        return False\n    if "retained allocation profiler is already running" in joined:\n        raise RuntimeError("live-only allocation profiler retained session is still active after finalization")\n    if "the profiler isn't running" in joined:\n        return True\n    if "profiler is already running" in joined and "started automatically when spark enabled" in joined:\n        return True\n    raise RuntimeError("live-only allocation profiler reached an unexpected profiler state after finalization")\n\n\n'''
+          if text.count(anchor) != 1:
+              raise SystemExit(f"runner helper anchor count={text.count(anchor)}")
+          text = text.replace(anchor, helper + anchor, 1)
+
+          old = '''    idle_deadline = time.monotonic() + 20\n    while time.monotonic() < idle_deadline:\n        info_at = self.server.command("spark profiler info")\n        state = self.server.wait_command_output(info_at, 12)\n        joined = "\\n".join(state).casefold()\n        if "the profiler isn't running" in joined:\n            break\n        if "results are still being finalized" not in joined:\n            raise RuntimeError("live-only allocation profiler did not return to an idle state after finalization")\n        time.sleep(0.5)\n    else:\n        raise RuntimeError("live-only allocation profiler export did not become idle")\n'''
+          new = '''    settled_deadline = time.monotonic() + 20\n    while time.monotonic() < settled_deadline:\n        info_at = self.server.command("spark profiler info")\n        state = self.server.wait_command_output(info_at, 12)\n        if _validate_live_only_post_stop_output(state):\n            break\n        time.sleep(0.5)\n    else:\n        raise RuntimeError("live-only allocation profiler export did not settle after finalization")\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f"runner state block count={text.count(old)}")
+          text = text.replace(old, new, 1)
+          text = text.replace(
+              '"retained allocation mode started, reported live lifecycle semantics, finalized, and returned idle",',
+              '"retained allocation mode started, reported live lifecycle semantics, finalized, released the retained session, and restored background/idle state",',
+              1,
+          )
+          runner.write_text(text, encoding="utf-8")
+
+          tests = Path("tests/test_pr49_no_shim_windows_runner.py")
+          test_text = tests.read_text(encoding="utf-8")
+          test_anchor = '''\n\nif __name__ == "__main__":\n'''
+          test_case = '''\n    def test_live_only_post_stop_accepts_idle_or_resumed_background(self) -> None:\n        self.assertTrue(runner._validate_live_only_post_stop_output(["The profiler isn't running."]))\n        self.assertTrue(\n            runner._validate_live_only_post_stop_output(\n                [\n                    "Profiler is already running!",\n                    "It was started automatically when spark enabled and has been running in the background for 0s.",\n                ]\n            )\n        )\n        self.assertFalse(\n            runner._validate_live_only_post_stop_output(["Results are still being finalized, please wait..."])\n        )\n        with self.assertRaisesRegex(RuntimeError, "retained session"):\n            runner._validate_live_only_post_stop_output(["Retained Allocation Profiler is already running!"])\n        with self.assertRaisesRegex(RuntimeError, "unexpected profiler state"):\n            runner._validate_live_only_post_stop_output(["Profiler is already running!"])\n'''
+          if test_text.count(test_anchor) != 1:
+              raise SystemExit(f"test anchor count={test_text.count(test_anchor)}")
+          test_text = test_text.replace(test_anchor, "\n" + test_case + test_anchor, 1)
+          tests.write_text(test_text, encoding="utf-8")
+          PY
+
+      - name: Run focused unit tests
+        run: python -m unittest tests.test_pr49_no_shim_windows_runner
+
+      - name: Commit fix and remove one-shot workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/pr49-one-shot-live-only-state-fix.yml
+          git add controller/pr49_no_shim_windows_runner.py tests/test_pr49_no_shim_windows_runner.py
+          git diff --cached --check
+          git diff --cached
+          git commit -m "test: accept resumed background profiler after live-only"
+          git push origin HEAD:research/pr49-no-shim-windows-bds
