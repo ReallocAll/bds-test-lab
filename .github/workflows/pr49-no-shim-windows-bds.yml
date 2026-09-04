@@ -55,6 +55,15 @@ jobs:
           test "$(jq -r '.name' <<<"$artifact")" = "spark-windows-no-shim-${EXPECTED_SPARK_SHA}"
           test "$(jq -r '.expired' <<<"$artifact")" = "false"
 
+      - name: Checkout exact Spark protobuf schema
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/spark
+          ref: ${{ env.EXPECTED_SPARK_SHA }}
+          path: spark-src
+          persist-credentials: false
+          sparse-checkout: proto
+
       - name: Checkout exact bot
         uses: actions/checkout@v7
         with:
@@ -87,7 +96,7 @@ jobs:
       - name: Install validation dependencies and lifecycle control
         run: >-
           python -m pip install --disable-pip-version-check
-          psutil packaging
+          psutil packaging requests protobuf grpcio-tools
           ./fixtures/endstone-ci-lifecycle-control
 
       - name: Run no-shim provenance unit tests
@@ -99,6 +108,120 @@ jobs:
           --platform windows
           --bot dist/bds-test-bot.exe
           --profile-seconds 30
+
+      - name: Generate exact Spark protobuf bindings
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p generated/spark
+          touch generated/spark/__init__.py
+          python -m grpc_tools.protoc \
+            -I spark-src/proto \
+            --python_out=generated \
+            spark-src/proto/spark/spark.proto
+
+      - name: Verify no-shim allocation rate protobuf semantics
+        shell: bash
+        run: |
+          python - <<'PY'
+          import gzip
+          import json
+          import math
+          import os
+          from pathlib import Path
+          import sys
+
+          import requests
+          from google.protobuf.message import DecodeError
+
+          sys.path.insert(0, str(Path("generated").resolve()))
+          from spark import spark_pb2
+
+          data = json.loads(Path("fleet-spark-result.json").read_text(encoding="utf-8"))
+          metadata = json.loads(Path("metadata.json").read_text(encoding="utf-8"))
+          expected_sha = os.environ["EXPECTED_SPARK_SHA"]
+          actual_sha = (((metadata.get("components") or {}).get("spark") or {}).get("sha"))
+          if actual_sha != expected_sha:
+              raise SystemExit(f"Spark SHA mismatch: {actual_sha} != {expected_sha}")
+          if data.get("status") != "PASS":
+              raise SystemExit(f"real-BDS scenario is not PASS: {data.get('error_summary')}")
+          if int(data.get("local_metadata_players") or 0) != 20:
+              raise SystemExit(f"expected 20 metadata players, got {data.get('local_metadata_players')}")
+          packs = data.get("behavior_pack_metadata") or []
+          if len(packs) != 3:
+              raise SystemExit(f"expected 3 active behavior packs, got {len(packs)}")
+          rules = data.get("validated_gamerules") or {}
+          if len(rules) < 6:
+              raise SystemExit(f"expected modified gamerule evidence, got {rules}")
+
+          viewer_url = str(data.get("health_upload_viewer_url") or "").strip()
+          if not viewer_url:
+              raise SystemExit("missing public health viewer URL")
+          key = viewer_url.rstrip("/").rsplit("/", 1)[-1]
+          response = requests.get(f"https://spark-usercontent.lucko.me/{key}", timeout=30)
+          response.raise_for_status()
+          payload = response.content
+          health = spark_pb2.HealthData()
+          try:
+              health.ParseFromString(payload)
+          except DecodeError:
+              health.ParseFromString(gzip.decompress(payload))
+
+          series = health.metadata.metrics.memory_allocation
+          values = list(series.values)
+          deltas = list(series.timestamp_deltas_ms)
+          if len(values) < 2:
+              raise SystemExit(f"Metrics.memory_allocation field 7 has only {len(values)} samples")
+          if series.start_timestamp_ms <= 0:
+              raise SystemExit(f"invalid allocation series start timestamp: {series.start_timestamp_ms}")
+          if len(deltas) != len(values):
+              raise SystemExit(f"timestamp delta count mismatch: values={len(values)} deltas={len(deltas)}")
+          if not deltas or deltas[0] != 0 or any(delta <= 0 for delta in deltas[1:]):
+              raise SystemExit(f"invalid timestamp delta(s): {deltas}")
+          if any(not math.isfinite(v) or v < 0 for v in values):
+              raise SystemExit(f"invalid allocation rates: {values}")
+          if max(values) <= 0:
+              raise SystemExit("real active no-shim BDS produced no positive allocation-rate sample")
+
+          memory = health.metadata.platform_statistics.memory
+          rolling = {}
+          for field in ("alloc_bps_last1m", "alloc_bps_last5m", "alloc_bps_last15m"):
+              if not memory.HasField(field):
+                  raise SystemExit(f"PlatformStatistics.Memory.{field} is absent")
+              stats = getattr(memory, field)
+              vals = [stats.mean, stats.max, stats.min, stats.median, stats.percentile95]
+              if any(not math.isfinite(v) or v < 0 for v in vals):
+                  raise SystemExit(f"{field} contains invalid values: {vals}")
+              if stats.mean <= 0 or stats.max <= 0:
+                  raise SystemExit(f"{field} is not positive under real active load: mean={stats.mean} max={stats.max}")
+              if not (stats.min <= stats.median <= stats.percentile95 <= stats.max):
+                  raise SystemExit(
+                      f"{field} distribution ordering invalid: min={stats.min} median={stats.median} "
+                      f"p95={stats.percentile95} max={stats.max}"
+                  )
+              rolling[field] = {
+                  "mean": stats.mean,
+                  "max": stats.max,
+                  "min": stats.min,
+                  "median": stats.median,
+                  "p95": stats.percentile95,
+              }
+
+          evidence = {
+              "platform": data.get("platform"),
+              "spark_sha": actual_sha,
+              "health_viewer_url": viewer_url,
+              "players": data.get("local_metadata_players"),
+              "memory_allocation_samples": len(values),
+              "memory_allocation_values": values,
+              "timestamp_deltas_ms": deltas,
+              "rolling": rolling,
+          }
+          Path("allocation-rate-evidence.json").write_text(
+              json.dumps(evidence, indent=2, sort_keys=True), encoding="utf-8"
+          )
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
 
       - name: Verify bStats evidence
         if: always()
@@ -127,6 +250,7 @@ jobs:
             fleet-windows-20-chunk-walk-public.log
             test-results.json
             fleet-spark-result.json
+            allocation-rate-evidence.json
             bstats-config.toml
             failure-diagnostics.txt
             combined-health-capture-windows/
