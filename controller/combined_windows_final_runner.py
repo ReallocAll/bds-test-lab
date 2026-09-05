@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+import sys
 from pathlib import Path
 
 # Importing the exact runner installs the exact-artifact, Windows lifecycle,
@@ -12,14 +14,86 @@ from controller.combined_pack_gamerule_fleet_validation import (
     CombinedPackGameruleFleetValidation,
 )
 from controller.fleet_spark_validation import set_server_property
+from controller.python_evidence_provenance import (
+    validate_component_provenance,
+    validate_endstone_runtime_version,
+)
+from controller.run_test import locate_one, run_checked
+from providers.artifact_provider import resolve_artifacts
 
 _ORIGINAL_BOOTSTRAP_SCENARIO_WORLD = CombinedPackGameruleFleetValidation.bootstrap_scenario_world
+_ORIGINAL_EXACT_INSTALL_ARTIFACTS = CombinedPackGameruleFleetValidation.install_artifacts
+
 
 def _world_directories(server_dir: Path) -> dict[str, Path]:
     worlds_root = server_dir / "worlds"
     if not worlds_root.exists():
         return {}
     return {path.name: path for path in worlds_root.iterdir() if path.is_dir()}
+
+
+def _install_windows_no_shim_artifacts(self: CombinedPackGameruleFleetValidation) -> None:
+    if self.platform != "windows":
+        _ORIGINAL_EXACT_INSTALL_ARTIFACTS(self)
+        return
+
+    self.disable_bstats = True
+    self.metadata = resolve_artifacts(self.platform, self.downloads, self.metadata_path)
+    self.check("artifact-discovery", "PASS")
+
+    endstone_root = self.downloads / "endstone" / "payload"
+    wheel = locate_one(endstone_root, ["endstone-*-cp313-cp313-*.whl", "endstone-*.whl"])
+    self.check("endstone-wheel-located", "PASS", str(wheel.relative_to(self.root)))
+    run_checked(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "--force-reinstall",
+            str(wheel),
+        ],
+        timeout=300,
+    )
+
+    spark_root = self.downloads / "spark" / "payload"
+    spark_binary = locate_one(spark_root, ["endstone_spark.dll"])
+    shim_payloads = list(spark_root.rglob("spark_allocation_shim.dll"))
+    if shim_payloads:
+        raise RuntimeError(
+            "shimless Windows research selected an artifact containing spark_allocation_shim.dll: "
+            + ", ".join(str(path.relative_to(self.root)) for path in shim_payloads)
+        )
+
+    self.server_dir.mkdir(parents=True, exist_ok=True)
+    plugin_dir = self.server_dir / "plugins"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    self._prepare_bstats_before_start()
+    target = plugin_dir / spark_binary.name
+    shutil.copy2(spark_binary, target)
+    self.check("spark-plugin-deployed", "PASS", str(target.relative_to(self.root)))
+    self.check(
+        "spark-allocation-shim-absent",
+        "PASS",
+        "selected artifact and deployed plugin directory contain no spark_allocation_shim.dll",
+    )
+
+    spark = validate_component_provenance(self.metadata, "spark")
+    endstone = validate_component_provenance(self.metadata, "endstone")
+    runtime_version = validate_endstone_runtime_version()
+    self.check(
+        "exact-artifact-provenance",
+        "PASS",
+        spark_sha=spark.get("sha"),
+        spark_run_id=spark.get("run_id"),
+        spark_workflow=spark.get("workflow"),
+        spark_artifact_name=(spark.get("artifact") or {}).get("name"),
+        endstone_sha=endstone.get("sha"),
+        endstone_run_id=endstone.get("run_id"),
+        endstone_artifact_id=(endstone.get("artifact") or {}).get("id"),
+        endstone_runtime_version=runtime_version,
+    )
 
 
 def _bootstrap_windows_from_provisioned_world(self: CombinedPackGameruleFleetValidation) -> None:
@@ -86,6 +160,7 @@ def _bootstrap_windows_from_provisioned_world(self: CombinedPackGameruleFleetVal
     )
 
 
+CombinedPackGameruleFleetValidation.install_artifacts = _install_windows_no_shim_artifacts
 CombinedPackGameruleFleetValidation.bootstrap_scenario_world = _bootstrap_windows_from_provisioned_world
 
 
