@@ -94,6 +94,9 @@ jobs:
           ./fixtures/endstone-ci-lifecycle-control
 
       - name: Test research provenance selector
+        env:
+          EXPECTED_SPARK_WORKFLOW: ""
+          EXPECTED_SPARK_ARTIFACT_PREFIX: ""
         run: >-
           python -m unittest
           tests.test_artifact_provider
