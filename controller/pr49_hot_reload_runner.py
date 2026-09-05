@@ -9,6 +9,7 @@ from controller import pr49_no_shim_windows_runner as base
 from controller.combined_pack_gamerule_fleet_validation import CombinedPackGameruleFleetValidation
 
 HOT_RELOAD_CYCLES = 3
+HOT_RELOAD_ALLOCATION_TIMEOUT_SECONDS = 12
 _ORIGINAL_PR49_RUN_PROFILER = CombinedPackGameruleFleetValidation.run_profiler
 _ORIGINAL_EXACT_COMMAND = exact._FrameworkShutdownServerProcess.command
 _ORIGINAL_EXACT_WAIT_COMMAND_OUTPUT = exact._FrameworkShutdownServerProcess.wait_command_output
@@ -100,6 +101,14 @@ def _validate_post_reload_profiler_info(lines: list[str]) -> None:
         raise RuntimeError(f"Spark did not restore its background profiler after reload: missing={missing!r}")
 
 
+def _validate_reload_allocation_start(lines: list[str], cycle: int) -> None:
+    joined = "\n".join(lines).casefold()
+    if "timeout is too short for useful results" in joined:
+        raise RuntimeError(f"post-reload allocation profiler start was rejected in cycle {cycle}: timeout too short")
+    if "allocation profiler is now running" not in joined:
+        raise RuntimeError(f"post-reload allocation profiler did not confirm a successful start in cycle {cycle}")
+
+
 def _wait_reload_complete(
     self: CombinedPackGameruleFleetValidation, start_index: int, cycle: int
 ) -> list[str]:
@@ -122,9 +131,13 @@ def _run_reload_allocation_probe(
     self: CombinedPackGameruleFleetValidation, cycle: int
 ) -> str:
     assert self.server is not None
-    start = self.server.command("spark profiler start --timeout 5 --alloc")
-    deadline = time.monotonic() + 45
-    url: str | None = None
+    start = self.server.command(
+        f"spark profiler start --timeout {HOT_RELOAD_ALLOCATION_TIMEOUT_SECONDS} --alloc"
+    )
+    startup = self.server.wait_command_output(start, 12)
+    _validate_reload_allocation_start(startup, cycle)
+
+    deadline = time.monotonic() + HOT_RELOAD_ALLOCATION_TIMEOUT_SECONDS + 45
     while time.monotonic() < deadline:
         lines = self.server.snapshot()
         recent = "\n".join(lines[start:]).casefold()
@@ -132,24 +145,11 @@ def _run_reload_allocation_probe(
             raise RuntimeError(f"allocation profiler failed after hot reload cycle {cycle}")
         url = self._viewer_url(lines, start)
         if url:
-            break
+            return url
         if not self.server.is_alive():
             raise RuntimeError(f"BDS exited during post-reload allocation probe cycle {cycle}")
         time.sleep(0.5)
-    if url is None:
-        stop_at = self.server.command("spark profiler stop")
-        deadline = time.monotonic() + 60
-        while time.monotonic() < deadline:
-            lines = self.server.snapshot()
-            url = self._viewer_url(lines, min(start, stop_at))
-            if url:
-                break
-            if not self.server.is_alive():
-                raise RuntimeError(f"BDS exited while finalizing post-reload allocation probe cycle {cycle}")
-            time.sleep(0.5)
-    if url is None:
-        raise RuntimeError(f"post-reload allocation probe cycle {cycle} produced no spark viewer URL")
-    return url
+    raise RuntimeError(f"post-reload allocation probe cycle {cycle} produced no spark viewer URL")
 
 
 def _run_true_hot_reload_cycles(self: CombinedPackGameruleFleetValidation) -> None:

@@ -116,6 +116,43 @@ class Pr49HotReloadRunnerTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "restore its background profiler"):
             runner._validate_post_reload_profiler_info(["The profiler isn't running."])
 
+    def test_reload_allocation_start_requires_allocation_profiler_confirmation(self) -> None:
+        runner._validate_reload_allocation_start(
+            [
+                "Stopping the background profiler before starting... please wait",
+                "Allocation Profiler is now running! (async)",
+                "Results will be returned automatically after 12s.",
+            ],
+            1,
+        )
+        with self.assertRaisesRegex(RuntimeError, "timeout too short"):
+            runner._validate_reload_allocation_start(
+                ["The timeout is too short for useful results - choose a value over 10 seconds."],
+                1,
+            )
+        with self.assertRaisesRegex(RuntimeError, "did not confirm a successful start"):
+            runner._validate_reload_allocation_start(
+                ["Profiler is already running!", "It was started automatically when spark enabled."],
+                1,
+            )
+
+    def test_reload_allocation_probe_fails_closed_on_rejected_start(self) -> None:
+        server = mock.Mock()
+        server.command.return_value = 17
+        server.wait_command_output.return_value = [
+            "The timeout is too short for useful results - choose a value over 10 seconds.",
+            "CI command transport acknowledged; token=abc123",
+        ]
+        validator = mock.Mock()
+        validator.server = server
+
+        with self.assertRaisesRegex(RuntimeError, "timeout too short"):
+            runner._run_reload_allocation_probe(validator, 2)
+
+        server.command.assert_called_once_with("spark profiler start --timeout 12 --alloc")
+        server.wait_command_output.assert_called_once_with(17, 12)
+        server.snapshot.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
