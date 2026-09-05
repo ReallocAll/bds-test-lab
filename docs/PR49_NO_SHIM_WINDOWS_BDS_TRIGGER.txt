@@ -1,0 +1,1 @@
+This file exists only to make the auxiliary research branch visibly distinct for the validation PR.

@@ -1,0 +1,277 @@
+name: PR49 No-Shim Windows BDS
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/pr49-no-shim-windows-bds.yml"
+      - "controller/pr49_no_shim_windows_runner.py"
+      - "controller/pr49_hot_reload_runner.py"
+      - "controller/pr49_profile_metadata_verifier.py"
+      - "controller/combined_pack_gamerule_fleet_exact_runner.py"
+      - "controller/combined_windows_final_runner.py"
+      - "fixtures/endstone-ci-lifecycle-control/**"
+      - "tests/test_pr49_no_shim_windows_runner.py"
+      - "tests/test_pr49_hot_reload_runner.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+  EXPECTED_SPARK_SHA: "65e38810fad41f3c089ff069b419752d02ff74ad"
+  EXPECTED_SPARK_RUN_ID: "33923533104"
+  EXPECTED_SPARK_ARTIFACT_ID: "9956022120"
+  EXPECTED_ENDSTONE_SHA: "46eff9f125f52eac76472d84339ead8fbf51fcd2"
+  EXPECTED_ENDSTONE_RUN_ID: "33567087207"
+  EXPECTED_ENDSTONE_ARTIFACT_ID: "9824065779"
+  EXPECTED_ENDSTONE_VERSION: "0.11.11.dev396"
+  EXPECTED_BDS_VERSION: "1.26.45.1"
+  BOT_REF: "f175e4a6551d1973628b5ca926a497e9962c1302"
+
+jobs:
+  windows-no-shim-bds:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: windows-2025
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout exact lab head
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact Spark no-shim provenance is still available
+        shell: bash
+        run: |
+          set -euo pipefail
+          run="$(gh api "repos/ReallocAll/spark/actions/runs/${EXPECTED_SPARK_RUN_ID}")"
+          test "$(jq -r '.head_sha' <<<"$run")" = "$EXPECTED_SPARK_SHA"
+          test "$(jq -r '.conclusion' <<<"$run")" = "success"
+          test "$(jq -r '.name' <<<"$run")" = "Windows No-Shim Real Plugin Experiment"
+          artifact="$(gh api "repos/ReallocAll/spark/actions/artifacts/${EXPECTED_SPARK_ARTIFACT_ID}")"
+          test "$(jq -r '.workflow_run.id' <<<"$artifact")" = "$EXPECTED_SPARK_RUN_ID"
+          test "$(jq -r '.workflow_run.head_sha' <<<"$artifact")" = "$EXPECTED_SPARK_SHA"
+          test "$(jq -r '.name' <<<"$artifact")" = "spark-windows-no-shim-${EXPECTED_SPARK_SHA}"
+          test "$(jq -r '.expired' <<<"$artifact")" = "false"
+
+      - name: Checkout exact Spark protobuf schema
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/spark
+          ref: ${{ env.EXPECTED_SPARK_SHA }}
+          path: spark-src
+          persist-credentials: false
+          sparse-checkout: proto
+
+      - name: Checkout exact bot
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/bds-test-bot
+          ref: ${{ env.BOT_REF }}
+          path: bot-src
+          persist-credentials: false
+
+      - name: Set up Go 1.25
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Build exact bot
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd bot-src
+          test "$(git rev-parse HEAD)" = "$BOT_REF"
+          go mod download
+          go test ./...
+          go build -trimpath -o ../dist/bds-test-bot.exe ./cmd/bds-test-bot
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install validation dependencies and lifecycle control
+        run: >-
+          python -m pip install --disable-pip-version-check
+          psutil packaging requests protobuf grpcio-tools
+          ./fixtures/endstone-ci-lifecycle-control
+
+      - name: Run no-shim provenance and hot-reload unit tests
+        run: >-
+          python -m unittest
+          tests.test_pr49_no_shim_windows_runner
+          tests.test_pr49_hot_reload_runner
+
+      - name: Run exact Windows no-shim 20-player E2E with true Endstone reload cycles
+        run: >-
+          python -m controller.pr49_hot_reload_runner
+          --platform windows
+          --bot dist/bds-test-bot.exe
+          --profile-seconds 30
+
+      - name: Generate exact Spark protobuf bindings
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p generated/spark
+          touch generated/spark/__init__.py
+          python -m grpc_tools.protoc \
+            -I spark-src/proto \
+            --python_out=generated \
+            spark-src/proto/spark/spark.proto \
+            spark-src/proto/spark/spark_sampler.proto
+
+      - name: Verify no-shim allocation backend metadata after real profiles and reloads
+        run: python -m controller.pr49_profile_metadata_verifier
+
+      - name: Verify no-shim allocation rate protobuf semantics
+        shell: bash
+        run: |
+          python - <<'PY'
+          import gzip
+          import json
+          import math
+          import os
+          from pathlib import Path
+          import sys
+
+          import requests
+          from google.protobuf.message import DecodeError
+
+          sys.path.insert(0, str(Path("generated").resolve()))
+          from spark import spark_pb2
+
+          data = json.loads(Path("fleet-spark-result.json").read_text(encoding="utf-8"))
+          metadata = json.loads(Path("metadata.json").read_text(encoding="utf-8"))
+          expected_sha = os.environ["EXPECTED_SPARK_SHA"]
+          actual_sha = (((metadata.get("components") or {}).get("spark") or {}).get("sha"))
+          if actual_sha != expected_sha:
+              raise SystemExit(f"Spark SHA mismatch: {actual_sha} != {expected_sha}")
+          if data.get("status") != "PASS":
+              raise SystemExit(f"real-BDS scenario is not PASS: {data.get('error_summary')}")
+          if int(data.get("local_metadata_players") or 0) != 20:
+              raise SystemExit(f"expected 20 metadata players, got {data.get('local_metadata_players')}")
+          packs = data.get("behavior_pack_metadata") or []
+          if len(packs) != 3:
+              raise SystemExit(f"expected 3 active behavior packs, got {len(packs)}")
+          rules = data.get("validated_gamerules") or {}
+          if len(rules) < 6:
+              raise SystemExit(f"expected modified gamerule evidence, got {rules}")
+
+          viewer_url = str(data.get("health_upload_viewer_url") or "").strip()
+          if not viewer_url:
+              raise SystemExit("missing public health viewer URL")
+          key = viewer_url.rstrip("/").rsplit("/", 1)[-1]
+          response = requests.get(f"https://spark-usercontent.lucko.me/{key}", timeout=30)
+          response.raise_for_status()
+          payload = response.content
+          health = spark_pb2.HealthData()
+          try:
+              health.ParseFromString(payload)
+          except DecodeError:
+              health.ParseFromString(gzip.decompress(payload))
+
+          series = health.metadata.metrics.memory_allocation
+          values = list(series.values)
+          deltas = list(series.timestamp_deltas_ms)
+          if len(values) < 2:
+              raise SystemExit(f"Metrics.memory_allocation field 7 has only {len(values)} samples")
+          if series.start_timestamp_ms <= 0:
+              raise SystemExit(f"invalid allocation series start timestamp: {series.start_timestamp_ms}")
+          if len(deltas) != len(values):
+              raise SystemExit(f"timestamp delta count mismatch: values={len(values)} deltas={len(deltas)}")
+          if not deltas or deltas[0] != 0 or any(delta <= 0 for delta in deltas[1:]):
+              raise SystemExit(f"invalid timestamp delta(s): {deltas}")
+          if any(not math.isfinite(v) or v < 0 for v in values):
+              raise SystemExit(f"invalid allocation rates: {values}")
+          if max(values) <= 0:
+              raise SystemExit("real active no-shim BDS produced no positive allocation-rate sample")
+
+          memory = health.metadata.platform_statistics.memory
+          rolling = {}
+          for field in ("alloc_bps_last1m", "alloc_bps_last5m", "alloc_bps_last15m"):
+              if not memory.HasField(field):
+                  raise SystemExit(f"PlatformStatistics.Memory.{field} is absent")
+              stats = getattr(memory, field)
+              vals = [stats.mean, stats.max, stats.min, stats.median, stats.percentile95]
+              if any(not math.isfinite(v) or v < 0 for v in vals):
+                  raise SystemExit(f"{field} contains invalid values: {vals}")
+              if stats.mean <= 0 or stats.max <= 0:
+                  raise SystemExit(f"{field} is not positive under real active load: mean={stats.mean} max={stats.max}")
+              if not (stats.min <= stats.median <= stats.percentile95 <= stats.max):
+                  raise SystemExit(
+                      f"{field} distribution ordering invalid: min={stats.min} median={stats.median} "
+                      f"p95={stats.percentile95} max={stats.max}"
+                  )
+              rolling[field] = {
+                  "mean": stats.mean,
+                  "max": stats.max,
+                  "min": stats.min,
+                  "median": stats.median,
+                  "p95": stats.percentile95,
+              }
+
+          evidence = {
+              "platform": data.get("platform"),
+              "spark_sha": actual_sha,
+              "health_viewer_url": viewer_url,
+              "players": data.get("local_metadata_players"),
+              "memory_allocation_samples": len(values),
+              "memory_allocation_values": values,
+              "timestamp_deltas_ms": deltas,
+              "rolling": rolling,
+          }
+          Path("allocation-rate-evidence.json").write_text(
+              json.dumps(evidence, indent=2, sort_keys=True), encoding="utf-8"
+          )
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+
+      - name: Verify bStats evidence
+        if: always()
+        run: >-
+          python -m controller.verify_bstats_evidence
+          --result test-results.json
+          --result fleet-spark-result.json
+
+      - name: Independent no-shim, hot-reload, and lifecycle checks
+        if: always()
+        shell: pwsh
+        run: |
+          python -c "import json,pathlib; m=json.load(open('metadata.json')); s=m['components']['spark']; assert s['sha']=='65e38810fad41f3c089ff069b419752d02ff74ad'; assert s['run_id']==33923533104; assert s['artifact']['id']==9956022120; assert s['workflow']=='Windows No-Shim Real Plugin Experiment'; root=pathlib.Path('work/windows/bedrock_server/plugins'); assert (root/'endstone_spark.dll').is_file(); assert not list(root.rglob('spark_allocation_shim.*')); d=json.load(open('fleet-spark-result.json')); assert d.get('status')=='PASS',d.get('error_summary'); assert d.get('local_metadata_players')==20; assert d.get('health_upload_viewer_url'); assert d.get('execution_profile_viewer_url'); assert d.get('allocation_profile_viewer_url'); assert d.get('allocation_live_only_profile_viewer_url'); hot=d.get('hot_reload_cycles') or []; assert len(hot)==3 and all(x.get('same_bds_identity') is True and x.get('allocation_profile_viewer_url') for x in hot); assert len({(x.get('bds_pid'),x.get('bds_create_time')) for x in hot})==1; ev=d.get('shutdown_lifecycle_events') or []; assert ev and all(x.get('wrapper_return_code')==0 and x.get('process_tree_verification')=='clean' and not x.get('forced') for x in ev); print('PR49 exact no-shim Windows BDS + true hot reload PASS')"
+
+      - name: Upload PR49 no-shim Windows evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pr49-no-shim-windows-bds-${{ github.run_id }}
+          path: |
+            metadata.json
+            bds.log
+            endstone.log
+            spark.log
+            fleet-windows-20-chunk-walk-local.log
+            fleet-windows-20-chunk-walk-public.log
+            test-results.json
+            fleet-spark-result.json
+            allocation-rate-evidence.json
+            allocation-backend-metadata-evidence.json
+            bstats-config.toml
+            failure-diagnostics.txt
+            combined-health-capture-windows/
+            downloads/spark/payload/endstone_spark-dependents.txt
+            downloads/spark/payload/no-shim-targets.txt
+            work/windows/bedrock_server/server.properties
+            work/windows/bedrock_server/version.txt
+            work/windows/bedrock_server/worlds/SparkCombinedValidation/world_behavior_packs.json
+            work/windows/bedrock_server/behavior_packs/spark_probe_alpha/
+            work/windows/bedrock_server/behavior_packs/spark_probe_beta/
+            work/windows/bedrock_server/behavior_packs/spark_probe_gamma/
+          if-no-files-found: warn
+          retention-days: 30
