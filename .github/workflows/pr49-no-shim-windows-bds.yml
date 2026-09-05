@@ -21,9 +21,9 @@ permissions:
 env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
-  EXPECTED_SPARK_SHA: "65e38810fad41f3c089ff069b419752d02ff74ad"
-  EXPECTED_SPARK_RUN_ID: "33923533104"
-  EXPECTED_SPARK_ARTIFACT_ID: "9956022120"
+  EXPECTED_SPARK_SHA: "88ec6467a3d0fffa33689d487ad20975f094bc3d"
+  EXPECTED_SPARK_RUN_ID: "33987442905"
+  EXPECTED_SPARK_ARTIFACT_ID: "9975662344"
   EXPECTED_ENDSTONE_SHA: "46eff9f125f52eac76472d84339ead8fbf51fcd2"
   EXPECTED_ENDSTONE_RUN_ID: "33567087207"
   EXPECTED_ENDSTONE_ARTIFACT_ID: "9824065779"
@@ -244,7 +244,7 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          python -c "import json,pathlib; m=json.load(open('metadata.json')); s=m['components']['spark']; assert s['sha']=='65e38810fad41f3c089ff069b419752d02ff74ad'; assert s['run_id']==33923533104; assert s['artifact']['id']==9956022120; assert s['workflow']=='Windows No-Shim Real Plugin Experiment'; root=pathlib.Path('work/windows/bedrock_server/plugins'); assert (root/'endstone_spark.dll').is_file(); assert not list(root.rglob('spark_allocation_shim.*')); d=json.load(open('fleet-spark-result.json')); assert d.get('status')=='PASS',d.get('error_summary'); assert d.get('local_metadata_players')==20; assert d.get('health_upload_viewer_url'); assert d.get('execution_profile_viewer_url'); assert d.get('allocation_profile_viewer_url'); assert d.get('allocation_live_only_profile_viewer_url'); hot=d.get('hot_reload_cycles') or []; assert len(hot)==3 and all(x.get('same_bds_identity') is True and x.get('allocation_profile_viewer_url') for x in hot); assert len({(x.get('bds_pid'),x.get('bds_create_time')) for x in hot})==1; ev=d.get('shutdown_lifecycle_events') or []; assert ev and all(x.get('wrapper_return_code')==0 and x.get('process_tree_verification')=='clean' and not x.get('forced') for x in ev); print('PR49 exact no-shim Windows BDS + true hot reload PASS')"
+          python -c "import json,pathlib; m=json.load(open('metadata.json')); s=m['components']['spark']; assert s['sha']=='88ec6467a3d0fffa33689d487ad20975f094bc3d'; assert s['run_id']==33987442905; assert s['artifact']['id']==9975662344; assert s['workflow']=='Windows No-Shim Real Plugin Experiment'; root=pathlib.Path('work/windows/bedrock_server/plugins'); assert (root/'endstone_spark.dll').is_file(); assert not list(root.rglob('spark_allocation_shim.*')); d=json.load(open('fleet-spark-result.json')); assert d.get('status')=='PASS',d.get('error_summary'); assert d.get('local_metadata_players')==20; assert d.get('health_upload_viewer_url'); assert d.get('execution_profile_viewer_url'); assert d.get('allocation_profile_viewer_url'); assert d.get('allocation_live_only_profile_viewer_url'); hot=d.get('hot_reload_cycles') or []; assert len(hot)==3 and all(x.get('same_bds_identity') is True and x.get('allocation_profile_viewer_url') for x in hot); assert len({(x.get('bds_pid'),x.get('bds_create_time')) for x in hot})==1; ev=d.get('shutdown_lifecycle_events') or []; assert ev and all(x.get('wrapper_return_code')==0 and x.get('process_tree_verification')=='clean' and not x.get('forced') for x in ev); print('PR49 exact no-shim Windows BDS + true hot reload PASS')"
 
       - name: Upload PR49 no-shim Windows evidence
         if: always()
