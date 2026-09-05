@@ -4,7 +4,8 @@ Discovery deliberately runs inside the GitHub Actions runner and uses GH_TOKEN.
 No artifact name is hard-coded: artifacts are ranked for the current platform.
 By default, development artifacts come from the configured branch. Release and
 pre-merge validation can pin either component to an exact successful workflow
-head SHA.
+head SHA. Research validation can additionally constrain the Spark workflow and
+artifact-name prefix so two different builds at one SHA cannot be confused.
 """
 
 from __future__ import annotations
@@ -116,10 +117,21 @@ def _artifact_score(component: str, platform_name: str, artifact: dict[str, Any]
 
 
 def _select_from_run(
-    component: str, platform_name: str, repo: str, run: dict[str, Any]
+    component: str,
+    platform_name: str,
+    repo: str,
+    run: dict[str, Any],
+    artifact_name_prefix: str | None = None,
 ) -> dict[str, Any] | None:
     data = _get_json(f"/repos/{repo}/actions/runs/{run['id']}/artifacts?per_page=100")
     artifacts = data.get("artifacts") or []
+    prefix = (artifact_name_prefix or "").strip().lower()
+    if prefix:
+        artifacts = [
+            artifact
+            for artifact in artifacts
+            if str(artifact.get("name", "")).lower().startswith(prefix)
+        ]
     ranked = sorted(
         (
             (_artifact_score(component, platform_name, artifact), artifact)
@@ -137,11 +149,15 @@ def discover(
     component: str,
     platform_name: str,
     expected_sha: str | None = None,
+    expected_workflow: str | None = None,
+    artifact_name_prefix: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     config = COMPONENTS[component]
     repo = config["repo"]
     branch = config["branch"]
     exact_sha = (expected_sha or "").strip()
+    exact_workflow = (expected_workflow or "").strip()
+    exact_artifact_prefix = (artifact_name_prefix or "").strip()
 
     query_fields: dict[str, Any] = {"status": "success", "per_page": 100}
     if exact_sha:
@@ -159,16 +175,30 @@ def discover(
                 continue
         elif run.get("head_branch") != branch:
             continue
-        artifact = _select_from_run(component, platform_name, repo, run)
+        if exact_workflow and str(run.get("name") or "") != exact_workflow:
+            continue
+        artifact = _select_from_run(
+            component,
+            platform_name,
+            repo,
+            run,
+            artifact_name_prefix=exact_artifact_prefix or None,
+        )
         if artifact is not None:
             return run, artifact
 
+    constraints = []
+    if exact_workflow:
+        constraints.append(f"workflow={exact_workflow!r}")
+    if exact_artifact_prefix:
+        constraints.append(f"artifact_prefix={exact_artifact_prefix!r}")
+    suffix = f" ({', '.join(constraints)})" if constraints else ""
     if exact_sha:
         raise ArtifactResolutionError(
-            f"No successful {repo}@{exact_sha} run with a {platform_name} {component} artifact was found"
+            f"No successful {repo}@{exact_sha} run with a {platform_name} {component} artifact was found{suffix}"
         )
     raise ArtifactResolutionError(
-        f"No successful {repo}@{branch} run with a {platform_name} {component} artifact was found"
+        f"No successful {repo}@{branch} run with a {platform_name} {component} artifact was found{suffix}"
     )
 
 
@@ -242,12 +272,20 @@ def resolve_artifacts(
     metadata_path: pathlib.Path | str = "metadata.json",
     spark_sha: str | None = None,
     endstone_sha: str | None = None,
+    spark_workflow: str | None = None,
+    spark_artifact_prefix: str | None = None,
 ) -> dict[str, Any]:
     if platform_name not in {"linux", "windows"}:
         raise ValueError(f"Unsupported platform: {platform_name}")
 
     exact_spark_sha = (spark_sha or os.environ.get("EXPECTED_SPARK_SHA", "")).strip() or None
     exact_endstone_sha = (endstone_sha or os.environ.get("EXPECTED_ENDSTONE_SHA", "")).strip() or None
+    exact_spark_workflow = (
+        spark_workflow or os.environ.get("EXPECTED_SPARK_WORKFLOW", "")
+    ).strip() or None
+    exact_spark_artifact_prefix = (
+        spark_artifact_prefix or os.environ.get("EXPECTED_SPARK_ARTIFACT_PREFIX", "")
+    ).strip() or None
     root = pathlib.Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
     result: dict[str, Any] = {"platform": platform_name, "components": {}}
@@ -257,11 +295,12 @@ def resolve_artifacts(
         "spark": exact_spark_sha,
     }
     for component, config in COMPONENTS.items():
-        run, artifact = discover(
-            component,
-            platform_name,
-            expected_sha=expected_shas[component],
-        )
+        discover_kwargs: dict[str, Any] = {"expected_sha": expected_shas[component]}
+        if component == "spark" and exact_spark_workflow is not None:
+            discover_kwargs["expected_workflow"] = exact_spark_workflow
+        if component == "spark" and exact_spark_artifact_prefix is not None:
+            discover_kwargs["artifact_name_prefix"] = exact_spark_artifact_prefix
+        run, artifact = discover(component, platform_name, **discover_kwargs)
         info = _metadata(component, config["repo"], run, artifact)
         result["components"][component] = info
         save_metadata(result, metadata_path)
@@ -270,7 +309,7 @@ def resolve_artifacts(
         save_metadata(result, metadata_path)
         print(
             f"[artifact] {component}: {info['sha']} run={info['run_id']} "
-            f"artifact={info['artifact']['name']}"
+            f"workflow={info['workflow']} artifact={info['artifact']['name']}"
         )
 
     return result
@@ -284,6 +323,8 @@ if __name__ == "__main__":
     parser.add_argument("--output-dir", default="downloads")
     parser.add_argument("--spark-sha", default=None)
     parser.add_argument("--endstone-sha", default=None)
+    parser.add_argument("--spark-workflow", default=None)
+    parser.add_argument("--spark-artifact-prefix", default=None)
     args = parser.parse_args()
     print(
         json.dumps(
@@ -292,6 +333,8 @@ if __name__ == "__main__":
                 args.output_dir,
                 spark_sha=args.spark_sha,
                 endstone_sha=args.endstone_sha,
+                spark_workflow=args.spark_workflow,
+                spark_artifact_prefix=args.spark_artifact_prefix,
             ),
             indent=2,
         )
