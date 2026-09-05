@@ -1,13 +1,67 @@
 from __future__ import annotations
 
 import time
+import uuid
 from typing import Any
 
+from controller import combined_pack_gamerule_fleet_exact_runner as exact
 from controller import pr49_no_shim_windows_runner as base
 from controller.combined_pack_gamerule_fleet_validation import CombinedPackGameruleFleetValidation
 
 HOT_RELOAD_CYCLES = 3
 _ORIGINAL_PR49_RUN_PROFILER = CombinedPackGameruleFleetValidation.run_profiler
+_ORIGINAL_EXACT_COMMAND = exact._FrameworkShutdownServerProcess.command
+_ORIGINAL_EXACT_WAIT_COMMAND_OUTPUT = exact._FrameworkShutdownServerProcess.wait_command_output
+
+
+def _native_console_command(self: exact._FrameworkShutdownServerProcess, command: str) -> int:
+    """Queue commands through Endstone's native console, then an ordered framework ACK."""
+
+    if not self.is_alive() or self.process is None or self.process.stdin is None:
+        raise RuntimeError(f"Cannot send command to stopped server: {command}")
+    start = len(self.snapshot())
+    token = uuid.uuid4().hex
+    pending = getattr(self, "_pending_native_console_commands", None)
+    if pending is None:
+        pending = {}
+        self._pending_native_console_commands = pending
+    pending[start] = token
+    print(f"> {command} [native-console token={token}]", flush=True)
+    self.process.stdin.write(command + "\n")
+    self.process.stdin.write(f"ciack {token}\n")
+    self.process.stdin.flush()
+    return start
+
+
+def _wait_native_console_command_output(
+    self: exact._FrameworkShutdownServerProcess,
+    start_index: int,
+    timeout: float = 8.0,
+) -> list[str]:
+    pending = getattr(self, "_pending_native_console_commands", {})
+    token = pending.get(start_index)
+    if token is None:
+        return _ORIGINAL_EXACT_WAIT_COMMAND_OUTPUT(self, start_index, timeout)
+    acknowledgement = f"ci command transport acknowledged; token={token}".casefold()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        lines = self.snapshot()[start_index:]
+        if any(acknowledgement in line.casefold() for line in lines):
+            pending.pop(start_index, None)
+            return lines
+        if not self.is_alive():
+            raise RuntimeError("BDS exited before native-console CI command acknowledgement")
+        time.sleep(0.05)
+    raise TimeoutError(
+        f"Timed out after {timeout:.0f}s waiting for native-console CI command acknowledgement: {token}"
+    )
+
+
+# Ordinary commands must enter through BDS's console queue. In particular, Endstone /reload
+# must not execute from the lifecycle plugin's own scheduler callback while that plugin is
+# being disabled and reloaded. Graceful shutdown remains on the independent file control.
+exact._FrameworkShutdownServerProcess.command = _native_console_command
+exact._FrameworkShutdownServerProcess.wait_command_output = _wait_native_console_command_output
 
 
 def _select_live_bds_identity(records: list[dict[str, Any]]) -> tuple[int, float]:
@@ -54,6 +108,8 @@ def _wait_reload_complete(
     while time.monotonic() < deadline:
         lines = self.server.snapshot()[start_index:]
         if any("reload complete." in line.casefold() for line in lines):
+            remaining = max(0.1, deadline - time.monotonic())
+            lines = self.server.wait_command_output(start_index, remaining)
             _validate_reload_output(lines)
             return lines
         if not self.server.is_alive():
