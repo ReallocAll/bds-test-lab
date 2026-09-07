@@ -21,6 +21,7 @@ from controller.run_test import locate_one, run_checked
 from providers import artifact_provider
 
 SPARK_REPOSITORY = "ReallocAll/spark"
+LAB_REPOSITORY = "ReallocAll/bds-test-lab"
 NO_SHIM_WORKFLOW = "Windows No-Shim Real Plugin"
 _ORIGINAL_RUN_PROFILER = CombinedPackGameruleFleetValidation.run_profiler
 
@@ -38,25 +39,29 @@ def _positive_env(name: str) -> int:
     return value
 
 
-def _expected_spark_sha() -> str:
-    value = os.environ.get("EXPECTED_SPARK_SHA", "").strip().lower()
+def _exact_sha_env(name: str) -> str:
+    value = os.environ.get(name, "").strip().lower()
     if len(value) != 40 or any(ch not in "0123456789abcdef" for ch in value):
-        raise RuntimeError("EXPECTED_SPARK_SHA must be an exact 40-character hexadecimal commit SHA")
+        raise RuntimeError(f"{name} must be an exact 40-character hexadecimal commit SHA")
     return value
 
 
-def _validate_no_shim_run(run: dict[str, Any], *, expected_sha: str, expected_run_id: int) -> None:
+def _expected_spark_sha() -> str:
+    return _exact_sha_env("EXPECTED_SPARK_SHA")
+
+
+def _validate_no_shim_run(run: dict[str, Any], *, expected_lab_sha: str, expected_run_id: int) -> None:
     if int(run.get("id") or 0) != expected_run_id:
-        raise RuntimeError(f"Spark workflow run mismatch: observed={run.get('id')!r} expected={expected_run_id}")
-    if str(run.get("head_sha") or "").strip().lower() != expected_sha:
+        raise RuntimeError(f"lab workflow run mismatch: observed={run.get('id')!r} expected={expected_run_id}")
+    if str(run.get("head_sha") or "").strip().lower() != expected_lab_sha:
         raise RuntimeError(
-            f"Spark workflow SHA mismatch: observed={run.get('head_sha')!r} expected={expected_sha!r}"
+            f"lab workflow SHA mismatch: observed={run.get('head_sha')!r} expected={expected_lab_sha!r}"
         )
     if run.get("conclusion") != "success":
-        raise RuntimeError(f"Spark no-shim workflow is not successful: conclusion={run.get('conclusion')!r}")
+        raise RuntimeError(f"lab no-shim workflow is not successful: conclusion={run.get('conclusion')!r}")
     if run.get("name") != NO_SHIM_WORKFLOW:
         raise RuntimeError(
-            f"Spark workflow mismatch: observed={run.get('name')!r} expected={NO_SHIM_WORKFLOW!r}"
+            f"lab workflow mismatch: observed={run.get('name')!r} expected={NO_SHIM_WORKFLOW!r}"
         )
 
 
@@ -66,7 +71,7 @@ def _select_no_shim_artifact(
     matches = [artifact for artifact in artifacts if int(artifact.get("id") or 0) == expected_artifact_id]
     if len(matches) != 1:
         raise RuntimeError(
-            f"Expected exactly one Spark artifact id={expected_artifact_id}, observed={len(matches)}"
+            f"Expected exactly one no-shim artifact id={expected_artifact_id}, observed={len(matches)}"
         )
     artifact = matches[0]
     expected_name = f"spark-windows-no-shim-{expected_sha}"
@@ -81,13 +86,14 @@ def _select_no_shim_artifact(
 
 def _resolve_exact_no_shim_spark() -> tuple[dict[str, Any], dict[str, Any]]:
     expected_sha = _expected_spark_sha()
+    expected_lab_sha = _exact_sha_env("EXPECTED_LAB_SHA")
     expected_run_id = _positive_env("EXPECTED_SPARK_RUN_ID")
     expected_artifact_id = _positive_env("EXPECTED_SPARK_ARTIFACT_ID")
 
-    run = artifact_provider._get_json(f"/repos/{SPARK_REPOSITORY}/actions/runs/{expected_run_id}")
-    _validate_no_shim_run(run, expected_sha=expected_sha, expected_run_id=expected_run_id)
+    run = artifact_provider._get_json(f"/repos/{LAB_REPOSITORY}/actions/runs/{expected_run_id}")
+    _validate_no_shim_run(run, expected_lab_sha=expected_lab_sha, expected_run_id=expected_run_id)
     artifacts = artifact_provider._get_json(
-        f"/repos/{SPARK_REPOSITORY}/actions/runs/{expected_run_id}/artifacts?per_page=100"
+        f"/repos/{LAB_REPOSITORY}/actions/runs/{expected_run_id}/artifacts?per_page=100"
     ).get("artifacts") or []
     artifact = _select_no_shim_artifact(
         artifacts,
@@ -116,6 +122,19 @@ def _assert_no_shim_payload(root: pathlib.Path) -> None:
     target_text = targets.read_text(encoding="utf-8", errors="replace").casefold()
     if "spark_allocation_shim" in target_text:
         raise RuntimeError("no-shim target evidence still exposes spark_allocation_shim")
+
+    candidate = locate_one(root, ["spark-candidate-sha.txt"])
+    observed_sha = candidate.read_text(encoding="ascii", errors="strict").strip().lower()
+    expected_sha = _expected_spark_sha()
+    if observed_sha != expected_sha:
+        raise RuntimeError(f"embedded Spark candidate SHA mismatch: observed={observed_sha!r} expected={expected_sha!r}")
+
+    source = locate_one(root, ["spark-source-repository.txt"])
+    observed_repository = source.read_text(encoding="ascii", errors="strict").strip()
+    if observed_repository != SPARK_REPOSITORY:
+        raise RuntimeError(
+            f"embedded Spark source repository mismatch: observed={observed_repository!r} expected={SPARK_REPOSITORY!r}"
+        )
 
 
 def _validate_live_only_start_output(lines: list[str]) -> None:
@@ -238,11 +257,22 @@ def _install_pr49_no_shim_artifacts(self: CombinedPackGameruleFleetValidation) -
 
     spark_run, spark_artifact = _resolve_exact_no_shim_spark()
     spark_payload = artifact_provider._download_artifact(
-        SPARK_REPOSITORY,
+        LAB_REPOSITORY,
         spark_artifact,
         self.downloads / "spark",
     )
     _assert_no_shim_payload(spark_payload)
+
+    spark_metadata = artifact_provider._metadata(
+        "spark",
+        LAB_REPOSITORY,
+        spark_run,
+        spark_artifact,
+    )
+    spark_metadata["carrier_repository"] = LAB_REPOSITORY
+    spark_metadata["carrier_sha"] = spark_run.get("head_sha")
+    spark_metadata["repository"] = SPARK_REPOSITORY
+    spark_metadata["sha"] = _expected_spark_sha()
 
     self.metadata = {
         "platform": "windows",
@@ -253,12 +283,7 @@ def _install_pr49_no_shim_artifacts(self: CombinedPackGameruleFleetValidation) -
                 endstone_run,
                 endstone_artifact,
             ),
-            "spark": artifact_provider._metadata(
-                "spark",
-                SPARK_REPOSITORY,
-                spark_run,
-                spark_artifact,
-            ),
+            "spark": spark_metadata,
         },
     }
     self.metadata["components"]["endstone"]["payload_dir"] = str(endstone_payload)
@@ -267,7 +292,9 @@ def _install_pr49_no_shim_artifacts(self: CombinedPackGameruleFleetValidation) -
     self.check(
         "artifact-discovery",
         "PASS",
-        "exact no-shim Spark workflow run and artifact selected",
+        "exact Spark candidate selected from lab-owned no-shim workflow artifact",
+        spark_sha=_expected_spark_sha(),
+        lab_sha=spark_run.get("head_sha"),
         spark_run_id=spark_run.get("id"),
         spark_artifact_id=spark_artifact.get("id"),
         spark_artifact_name=spark_artifact.get("name"),
@@ -317,6 +344,8 @@ def _install_pr49_no_shim_artifacts(self: CombinedPackGameruleFleetValidation) -
         spark_run_id=spark.get("run_id"),
         spark_artifact_id=(spark.get("artifact") or {}).get("id"),
         spark_workflow=spark.get("workflow"),
+        spark_carrier_repository=spark.get("carrier_repository"),
+        spark_carrier_sha=spark.get("carrier_sha"),
         endstone_sha=endstone.get("sha"),
         endstone_run_id=endstone.get("run_id"),
         endstone_artifact_id=(endstone.get("artifact") or {}).get("id"),
