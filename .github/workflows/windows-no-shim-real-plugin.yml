@@ -1,0 +1,199 @@
+name: Windows No-Shim Real Plugin
+
+on:
+  workflow_dispatch:
+    inputs:
+      spark_sha:
+        description: Exact ReallocAll/spark commit SHA to validate
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      spark_sha:
+        description: Exact ReallocAll/spark commit SHA to validate
+        required: true
+        type: string
+  pull_request:
+    paths:
+      - ".github/spark-windows-candidate.txt"
+      - ".github/workflows/windows-no-shim-real-plugin.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  real-no-shim-plugin:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout lab candidate metadata
+        uses: actions/checkout@v7
+        with:
+          path: lab
+          persist-credentials: false
+
+      - name: Resolve exact Spark candidate
+        id: candidate
+        shell: pwsh
+        run: |
+          $sha = "${{ inputs.spark_sha }}".Trim()
+          if (-not $sha) {
+            $candidateFile = "lab/.github/spark-windows-candidate.txt"
+            if (-not (Test-Path $candidateFile)) {
+              throw "spark_sha input is empty and $candidateFile does not exist"
+            }
+            $sha = (Get-Content $candidateFile -Raw).Trim()
+          }
+          if ($sha -notmatch '^[0-9a-fA-F]{40}$') {
+            throw "invalid Spark SHA: $sha"
+          }
+          $sha = $sha.ToLowerInvariant()
+          "sha=$sha" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "candidate_sha=$sha"
+
+      - name: Checkout exact Spark candidate
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/spark
+          ref: ${{ steps.candidate.outputs.sha }}
+          path: spark-src
+          persist-credentials: false
+
+      - name: Verify exact Spark checkout
+        shell: pwsh
+        working-directory: spark-src
+        run: |
+          $expected = "${{ steps.candidate.outputs.sha }}"
+          $checkout = (& git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($checkout -ne $expected) {
+            throw "checkout SHA mismatch: expected $expected, got $checkout"
+          }
+
+      - name: Set up MSVC environment
+        uses: TheMrMilchmann/setup-msvc-dev@v4
+        with:
+          arch: x64
+
+      - name: Select clang-cl 20
+        shell: pwsh
+        run: |
+          $llvmBin = "C:\Program Files\LLVM\bin"
+          $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $version = & "$llvmBin\clang-cl.exe" --version
+          $version
+          if (-not ($version | Select-String "clang version 20\.")) {
+            throw "clang-cl 20 is required"
+          }
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Conan
+        run: python -m pip install "conan>=2,<3"
+
+      - name: Cache Conan packages
+        uses: actions/cache@v5
+        with:
+          path: spark-src/.conan2
+          key: ${{ runner.os }}-clang20-conan-${{ hashFiles('spark-src/conanfile.py', 'spark-src/.conan2/profiles/default') }}
+
+      - name: Install dependencies
+        working-directory: spark-src
+        run: conan install . --build=missing
+
+      - name: Configure real no-shim plugin
+        working-directory: spark-src
+        run: >-
+          cmake --preset conan-relwithdebinfo
+          -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          -DENDSTONE_SPARK_BUILD_SELFTEST=ON
+
+      - name: Verify shim target is absent
+        shell: pwsh
+        working-directory: spark-src
+        run: |
+          $targets = & cmake --build --preset conan-relwithdebinfo --target help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $targets | Out-File -FilePath "build/RelWithDebInfo/no-shim-targets.txt" -Encoding utf8
+          if ($targets | Select-String -SimpleMatch "spark_allocation_shim") {
+            throw "production configuration still exposes the spark_allocation_shim target"
+          }
+
+      - name: Build complete no-shim target graph
+        working-directory: spark-src
+        run: cmake --build --preset conan-relwithdebinfo
+
+      - name: Run no-shim allocation semantic gates
+        shell: pwsh
+        working-directory: spark-src
+        run: |
+          ctest --test-dir build/RelWithDebInfo -C RelWithDebInfo --output-on-failure -R "^(spark_windows_allocation_unavailable_test|spark_allocation_count_only_test)$"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify permanent-IAT backend and no shim payload
+        shell: pwsh
+        working-directory: spark-src
+        run: |
+          $build = "build/RelWithDebInfo"
+          $plugin = Join-Path $build "endstone_spark.dll"
+          $pdb = Join-Path $build "endstone_spark.pdb"
+          $commands = Join-Path $build "compile_commands.json"
+
+          if (-not (Test-Path $plugin)) { throw "endstone_spark.dll was not produced" }
+          if (-not (Test-Path $pdb)) { throw "endstone_spark.pdb was not produced" }
+          if (-not (Select-String -Path $commands -SimpleMatch "windows_permanent_iat_funchook_compat.cpp")) {
+            throw "real Spark target did not compile the permanent-IAT compat source"
+          }
+          if (-not (Select-String -Path $commands -SimpleMatch "windows_permanent_iat_gateway.cpp")) {
+            throw "real Spark target did not compile the production permanent-IAT gateway source"
+          }
+          if (-not (Select-String -Path $commands -SimpleMatch "windows_permanent_iat_gateway_registry.cpp")) {
+            throw "real Spark target did not compile the production permanent-IAT registry source"
+          }
+          if (Select-String -Path $commands -SimpleMatch "windows_permanent_iat_gateway_experiment.cpp") {
+            throw "production target graph still compiled the experiment-named gateway source"
+          }
+          if (Select-String -Path $commands -SimpleMatch "windows_permanent_iat_gateway_registry_experiment.cpp") {
+            throw "production target graph still compiled the experiment-named registry source"
+          }
+          if (Select-String -Path $commands -SimpleMatch "windows_iat_funchook_compat.cpp") {
+            throw "real Spark target still compiled the removed pinned-shim compat source"
+          }
+          if (Select-String -Path $commands -SimpleMatch "windows_allocation_shim.cpp") {
+            throw "production target graph still compiled the removed shim source"
+          }
+
+          $shimFiles = @(Get-ChildItem $build -Recurse -File -Filter "spark_allocation_shim.*")
+          if ($shimFiles.Count -ne 0) {
+            $shimFiles | ForEach-Object { Write-Host $_.FullName }
+            throw "production build unexpectedly produced spark_allocation_shim payload"
+          }
+
+          $dependents = & dumpbin.exe /dependents $plugin
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $dependents | Out-File -FilePath "$build/endstone_spark-dependents.txt" -Encoding utf8
+          if ($dependents | Select-String -SimpleMatch "spark_allocation_shim.dll") {
+            throw "endstone_spark.dll still has a dynamic dependency on spark_allocation_shim.dll"
+          }
+
+          "${{ steps.candidate.outputs.sha }}" | Out-File -FilePath "$build/spark-candidate-sha.txt" -Encoding ascii -NoNewline
+          "ReallocAll/spark" | Out-File -FilePath "$build/spark-source-repository.txt" -Encoding ascii -NoNewline
+          Get-FileHash $plugin -Algorithm SHA256 | Format-List
+          Get-FileHash $pdb -Algorithm SHA256 | Format-List
+
+      - name: Upload real no-shim plugin artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: spark-windows-no-shim-${{ steps.candidate.outputs.sha }}
+          path: |
+            spark-src/build/RelWithDebInfo/endstone_spark.dll
+            spark-src/build/RelWithDebInfo/endstone_spark.pdb
+            spark-src/build/RelWithDebInfo/endstone_spark-dependents.txt
+            spark-src/build/RelWithDebInfo/no-shim-targets.txt
+            spark-src/build/RelWithDebInfo/spark-candidate-sha.txt
+            spark-src/build/RelWithDebInfo/spark-source-repository.txt
+          if-no-files-found: error
+          retention-days: 14
