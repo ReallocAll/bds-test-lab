@@ -21,9 +21,9 @@ permissions:
 env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
-  EXPECTED_SPARK_SHA: "88ec6467a3d0fffa33689d487ad20975f094bc3d"
-  EXPECTED_SPARK_RUN_ID: "33987442905"
-  EXPECTED_SPARK_ARTIFACT_ID: "9975662344"
+  EXPECTED_SPARK_SHA: "2b591107b7de8be7eb2ecbe9000c84268b2c4d4e"
+  EXPECTED_SPARK_RUN_ID: "34075035870"
+  EXPECTED_SPARK_ARTIFACT_ID: "10001835057"
   EXPECTED_ENDSTONE_SHA: "46eff9f125f52eac76472d84339ead8fbf51fcd2"
   EXPECTED_ENDSTONE_RUN_ID: "33567087207"
   EXPECTED_ENDSTONE_ARTIFACT_ID: "9824065779"
@@ -51,7 +51,7 @@ jobs:
           run="$(gh api "repos/ReallocAll/spark/actions/runs/${EXPECTED_SPARK_RUN_ID}")"
           test "$(jq -r '.head_sha' <<<"$run")" = "$EXPECTED_SPARK_SHA"
           test "$(jq -r '.conclusion' <<<"$run")" = "success"
-          test "$(jq -r '.name' <<<"$run")" = "Windows No-Shim Real Plugin Experiment"
+          test "$(jq -r '.name' <<<"$run")" = "Windows No-Shim Real Plugin"
           artifact="$(gh api "repos/ReallocAll/spark/actions/artifacts/${EXPECTED_SPARK_ARTIFACT_ID}")"
           test "$(jq -r '.workflow_run.id' <<<"$artifact")" = "$EXPECTED_SPARK_RUN_ID"
           test "$(jq -r '.workflow_run.head_sha' <<<"$artifact")" = "$EXPECTED_SPARK_SHA"
@@ -244,7 +244,7 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          python -c "import json,pathlib; m=json.load(open('metadata.json')); s=m['components']['spark']; assert s['sha']=='88ec6467a3d0fffa33689d487ad20975f094bc3d'; assert s['run_id']==33987442905; assert s['artifact']['id']==9975662344; assert s['workflow']=='Windows No-Shim Real Plugin Experiment'; root=pathlib.Path('work/windows/bedrock_server/plugins'); assert (root/'endstone_spark.dll').is_file(); assert not list(root.rglob('spark_allocation_shim.*')); d=json.load(open('fleet-spark-result.json')); assert d.get('status')=='PASS',d.get('error_summary'); assert d.get('local_metadata_players')==20; assert d.get('health_upload_viewer_url'); assert d.get('execution_profile_viewer_url'); assert d.get('allocation_profile_viewer_url'); assert d.get('allocation_live_only_profile_viewer_url'); hot=d.get('hot_reload_cycles') or []; assert len(hot)==3 and all(x.get('same_bds_identity') is True and x.get('allocation_profile_viewer_url') for x in hot); assert len({(x.get('bds_pid'),x.get('bds_create_time')) for x in hot})==1; ev=d.get('shutdown_lifecycle_events') or []; assert ev and all(x.get('wrapper_return_code')==0 and x.get('process_tree_verification')=='clean' and not x.get('forced') for x in ev); print('PR49 exact no-shim Windows BDS + true hot reload PASS')"
+          python -c "import json,os,pathlib; m=json.load(open('metadata.json')); s=m['components']['spark']; assert s['sha']==os.environ['EXPECTED_SPARK_SHA']; assert s['run_id']==int(os.environ['EXPECTED_SPARK_RUN_ID']); assert s['artifact']['id']==int(os.environ['EXPECTED_SPARK_ARTIFACT_ID']); assert s['workflow']=='Windows No-Shim Real Plugin'; root=pathlib.Path('work/windows/bedrock_server/plugins'); assert (root/'endstone_spark.dll').is_file(); assert not list(root.rglob('spark_allocation_shim.*')); d=json.load(open('fleet-spark-result.json')); assert d.get('status')=='PASS',d.get('error_summary'); assert d.get('local_metadata_players')==20; assert d.get('health_upload_viewer_url'); assert d.get('execution_profile_viewer_url'); assert d.get('allocation_profile_viewer_url'); assert d.get('allocation_live_only_profile_viewer_url'); hot=d.get('hot_reload_cycles') or []; assert len(hot)==3 and all(x.get('same_bds_identity') is True and x.get('allocation_profile_viewer_url') for x in hot); assert len({(x.get('bds_pid'),x.get('bds_create_time')) for x in hot})==1; ev=d.get('shutdown_lifecycle_events') or []; assert ev and all(x.get('wrapper_return_code')==0 and x.get('process_tree_verification')=='clean' and not x.get('forced') for x in ev); print('PR49 exact no-shim Windows BDS + true hot reload PASS')"
 
       - name: Upload PR49 no-shim Windows evidence
         if: always()
