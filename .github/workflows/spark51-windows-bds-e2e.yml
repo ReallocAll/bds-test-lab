@@ -1,0 +1,419 @@
+name: Spark #51 Windows BDS exact-candidate E2E
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/spark51-candidate.txt"
+      - ".github/workflows/spark51-windows-bds-e2e.yml"
+      - "controller/spark51_windows_bds_runner.py"
+      - "controller/combined_windows_final_runner.py"
+      - "controller/combined_pack_gamerule_fleet_exact_runner.py"
+      - "fixtures/endstone-ci-lifecycle-control/**"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_TOKEN: ${{ secrets.REPO_PAT }}
+  PYTHONUNBUFFERED: "1"
+  LAB_RUN_ID: ${{ github.run_id }}
+  EXPECTED_ENDSTONE_SHA: "46eff9f125f52eac76472d84339ead8fbf51fcd2"
+  EXPECTED_ENDSTONE_RUN_ID: "33567087207"
+  EXPECTED_ENDSTONE_ARTIFACT_ID: "9824065779"
+  EXPECTED_ENDSTONE_VERSION: "0.11.11.dev396"
+  EXPECTED_BDS_VERSION: "1.26.45.1"
+  BOT_REF: "f175e4a6551d1973628b5ca926a497e9962c1302"
+
+jobs:
+  windows-bds-e2e:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: windows-2025
+    timeout-minutes: 70
+    steps:
+      - name: Checkout exact lab revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve and assert exact Spark candidate
+        shell: pwsh
+        run: |
+          $candidate = (Get-Content -Raw -LiteralPath ".github/spark51-candidate.txt").Trim().ToLowerInvariant()
+          $expected = "6974323d5345d987d4ea7cc47067e20dc864384e"
+          if ($candidate -ne $expected) {
+            throw "Spark candidate pointer mismatch: observed $candidate, expected $expected"
+          }
+          Add-Content -Path $env:GITHUB_ENV -Value "EXPECTED_SPARK_SHA=$candidate"
+          Write-Host "Spark candidate: $candidate"
+
+      - name: Wait for exact Spark Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 80); do
+            json="$(gh api "repos/ReallocAll/spark/actions/runs?head_sha=${EXPECTED_SPARK_SHA}&per_page=30")"
+            build="$(jq -r '[.workflow_runs[] | select(.name == "Build")][0].conclusion // ""' <<<"$json")"
+            echo "attempt ${attempt}: Build=${build:-pending}"
+            if [[ "$build" == success ]]; then exit 0; fi
+            if [[ "$build" == failure || "$build" == cancelled || "$build" == timed_out ]]; then exit 1; fi
+            sleep 15
+          done
+          exit 1
+
+      - name: Checkout exact bot
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/bds-test-bot
+          ref: ${{ env.BOT_REF }}
+          path: bot-src
+          persist-credentials: false
+
+      - name: Set up Go 1.25
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Build exact bot
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cd bot-src
+          test "$(git rev-parse HEAD)" = "$BOT_REF"
+          go mod download
+          go test ./...
+          go build -trimpath -o ../dist/bds-test-bot.exe ./cmd/bds-test-bot
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install validation dependencies and lifecycle fixture
+        shell: pwsh
+        run: >-
+          python -m pip install --disable-pip-version-check
+          psutil packaging
+          ./fixtures/endstone-ci-lifecycle-control
+
+      - name: Require exact Spark Actions artifact
+        shell: pwsh
+        run: >-
+          python -m controller.assert_spark_artifact
+          --platform windows
+          --expected-sha $env:EXPECTED_SPARK_SHA
+
+      - name: Run exact-candidate Windows BDS E2E
+        shell: pwsh
+        run: >-
+          python -m controller.spark51_windows_bds_runner
+          --platform windows
+          --bot dist/bds-test-bot.exe
+          --profile-seconds 30
+
+      - name: Independently validate fleet result contract
+        if: always()
+        shell: pwsh
+        run: |
+          @'
+          # BEGIN SPARK51_RESULT_VALIDATOR
+          from __future__ import annotations
+
+          import json
+          import math
+          import re
+          from collections.abc import Mapping
+          from pathlib import Path
+          from urllib.parse import urlparse
+
+
+          _DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
+          _SPARK_SHA = "6974323d5345d987d4ea7cc47067e20dc864384e"
+          _REPOSITORIES = {"spark": "ReallocAll/spark", "endstone": "EndstoneMC/endstone"}
+          _PROFILE_COMMAND = "spark profiler start --timeout 30"
+          _ALLOCATION_COMMAND = f"{_PROFILE_COMMAND} --alloc --interval 4096"
+          _ENDSTONE_DISABLE_RE = re.compile(r"\[endstone\].*?\bdisabling\s+spark\b", re.IGNORECASE)
+          _ENDSTONE_ENABLE_RE = re.compile(r"\[endstone\].*?\benabling\s+spark\b", re.IGNORECASE)
+          _RELOAD_COMPLETE_RE = re.compile(r"\breload\s+complete\.", re.IGNORECASE)
+
+
+          def fail(message: str) -> None:
+              raise SystemExit(f"fleet-spark-result.json contract failure: {message}")
+
+
+          def need(condition: bool, message: str) -> None:
+              if not condition:
+                  fail(message)
+
+
+          def positive_int(value: object, label: str) -> int:
+              if isinstance(value, bool):
+                  fail(f"{label} is not a positive integer: {value!r}")
+              try:
+                  parsed = int(str(value).strip())
+              except (TypeError, ValueError):
+                  fail(f"{label} is not a positive integer: {value!r}")
+              if parsed <= 0:
+                  fail(f"{label} is not a positive integer: {value!r}")
+              return parsed
+
+
+          def normalized_evidence(value: object, label: str) -> str:
+              need(isinstance(value, str) and value.strip(), f"{label} evidence is missing")
+              text = " ".join(value.casefold().split())
+              need(
+                  not any(
+                      marker in text
+                      for marker in ("failed", "failure", "error", "unable", "rejected", "exception", "not ", "false")
+                  ),
+                  f"{label} evidence reports failure: {value!r}",
+              )
+              return text
+
+
+          def validate_result_contract(
+              result_path: Path, metadata_path: Path, env: Mapping[str, str]
+          ) -> None:
+              need(result_path.is_file(), "result file is missing")
+              try:
+                  result = json.loads(result_path.read_text(encoding="utf-8"))
+              except (OSError, json.JSONDecodeError) as exc:
+                  fail(f"result is not readable JSON: {exc}")
+              need(isinstance(result, dict), "result root is not an object")
+              need(result.get("status") == "PASS", f"status={result.get('status')!r}")
+              need(result.get("state") == "completed", f"state={result.get('state')!r}")
+
+              endstone_sha = env.get("EXPECTED_ENDSTONE_SHA", "").strip().lower()
+              endstone_run_id = positive_int(env.get("EXPECTED_ENDSTONE_RUN_ID"), "expected Endstone run")
+              endstone_artifact_id = positive_int(
+                  env.get("EXPECTED_ENDSTONE_ARTIFACT_ID"), "expected Endstone artifact"
+              )
+              endstone_version = env.get("EXPECTED_ENDSTONE_VERSION", "").strip()
+              bds_version = env.get("EXPECTED_BDS_VERSION", "").strip()
+              lab_run_id = positive_int(env.get("LAB_RUN_ID"), "lab run")
+              need(env.get("EXPECTED_SPARK_SHA", "").strip().lower() == _SPARK_SHA, "candidate SHA env drift")
+              need(endstone_sha == "46eff9f125f52eac76472d84339ead8fbf51fcd2", "Endstone SHA env drift")
+              need(endstone_version == "0.11.11.dev396", "Endstone version env drift")
+              need(bds_version == "1.26.45.1", "BDS version env drift")
+              need(result.get("spark_sha") == _SPARK_SHA, "result Spark SHA drift")
+              need(result.get("endstone_sha") == endstone_sha, "result Endstone SHA drift")
+              need(result.get("endstone_version") == endstone_version, "result Endstone version drift")
+              need(result.get("bds_full_version") == bds_version, "result BDS version drift")
+              need(result.get("lab_run_id") == lab_run_id, "result lab run ID drift")
+
+              provenance = result.get("artifact_provenance")
+              need(isinstance(provenance, dict), "artifact provenance is missing")
+              need(metadata_path.is_file(), "metadata.json is missing")
+              try:
+                  metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+              except (OSError, json.JSONDecodeError) as exc:
+                  fail(f"metadata is not readable JSON: {exc}")
+              components = metadata.get("components") if isinstance(metadata, dict) else None
+              need(isinstance(components, dict), "metadata component provenance is missing")
+              resolved: dict[str, dict[str, object]] = {}
+              for component, repository in _REPOSITORIES.items():
+                  record = provenance.get(component)
+                  need(isinstance(record, dict), f"{component} provenance is missing")
+                  metadata_record = components.get(component)
+                  need(isinstance(metadata_record, dict), f"metadata {component} provenance is missing")
+                  artifact = metadata_record.get("artifact")
+                  need(isinstance(artifact, dict), f"metadata {component} artifact is missing")
+                  expected_sha = _SPARK_SHA if component == "spark" else endstone_sha
+                  need(record.get("repository") == repository, f"{component} repository drift")
+                  need(metadata_record.get("repository") == repository, f"metadata {component} repository drift")
+                  need(record.get("sha") == expected_sha, f"{component} provenance SHA drift")
+                  need(metadata_record.get("sha") == expected_sha, f"metadata {component} SHA drift")
+                  run_id = positive_int(record.get("run_id"), f"{component} artifact run")
+                  need(metadata_record.get("run_id") == run_id, f"{component} run metadata drift")
+                  if component == "endstone":
+                      need(run_id == endstone_run_id, "Endstone run provenance drift")
+                  artifact_id = positive_int(record.get("artifact_id"), f"{component} artifact")
+                  need(artifact.get("id") == artifact_id, f"{component} artifact ID metadata drift")
+                  if component == "endstone":
+                      need(artifact_id == endstone_artifact_id, "Endstone artifact provenance drift")
+                  artifact_name = record.get("artifact_name")
+                  need(isinstance(artifact_name, str) and artifact_name.strip(), f"{component} artifact name is missing")
+                  need(artifact.get("name") == artifact_name, f"{component} artifact name metadata drift")
+                  run_url = record.get("run_url")
+                  expected_run_url = f"https://github.com/{repository}/actions/runs/{run_id}"
+                  need(run_url == expected_run_url, f"{component} run URL is not exact")
+                  need(metadata_record.get("run_url") == expected_run_url, f"metadata {component} run URL drift")
+                  digest = record.get("artifact_digest")
+                  metadata_digest = artifact.get("digest")
+                  need(isinstance(digest, str) and _DIGEST_RE.fullmatch(digest), f"{component} artifact digest is malformed")
+                  need(isinstance(metadata_digest, str) and _DIGEST_RE.fullmatch(metadata_digest),
+                       f"metadata {component} artifact digest is malformed")
+                  need(metadata_digest == digest, f"{component} artifact digest metadata drift")
+                  resolved[component] = record
+
+              spark_provenance = resolved["spark"]
+              endstone_provenance = resolved["endstone"]
+              expected_profiles = [
+                  ("cpu-baseline", 0, 0, None, _PROFILE_COMMAND),
+                  ("20-player-load", 20, 0, None, _PROFILE_COMMAND),
+                  ("allocation-4096", 20, 0, 4096, _ALLOCATION_COMMAND),
+                  ("post-reload-cycle-3", 20, 3, None, _PROFILE_COMMAND),
+              ]
+              profiles = result.get("profiles")
+              need(isinstance(profiles, list) and len(profiles) == len(expected_profiles), "profile count is not four")
+              urls: list[str] = []
+              for profile, (kind, players, reload_cycle, interval, command) in zip(profiles, expected_profiles):
+                  need(isinstance(profile, dict), f"{kind} profile is missing")
+                  need(profile.get("kind") == kind, f"profile order/kind mismatch: {profile!r}")
+                  url = profile.get("viewer_url")
+                  need(isinstance(url, str) and url.strip(), f"{kind} viewer URL is missing")
+                  need(url == url.strip() and not any(character.isspace() for character in url),
+                       f"{kind} viewer URL has whitespace")
+                  parsed_url = urlparse(url)
+                  need(parsed_url.scheme == "https" and parsed_url.netloc, f"{kind} viewer URL is not HTTPS")
+                  urls.append(url)
+                  need(profile.get("player_count") == players, f"{kind} player count drift")
+                  need(profile.get("reload_cycle") == reload_cycle, f"{kind} reload cycle drift")
+                  need(profile.get("allocation_interval") == interval, f"{kind} allocation interval drift")
+                  need(profile.get("command") == command, f"{kind} profile command drift")
+                  need(profile.get("lab_run_id") == lab_run_id, f"{kind} lab run drift")
+                  need(profile.get("spark_sha") == _SPARK_SHA, f"{kind} Spark provenance drift")
+                  need(profile.get("endstone_sha") == endstone_sha, f"{kind} Endstone provenance drift")
+                  need(profile.get("endstone_version") == endstone_version, f"{kind} Endstone version drift")
+                  need(profile.get("bds_full_version") == bds_version, f"{kind} BDS provenance drift")
+                  need(profile.get("spark_artifact_id") == spark_provenance["artifact_id"], f"{kind} Spark artifact drift")
+                  need(profile.get("spark_artifact_run_id") == spark_provenance["run_id"], f"{kind} Spark artifact run drift")
+                  need(profile.get("endstone_artifact_id") == endstone_provenance["artifact_id"], f"{kind} Endstone artifact drift")
+                  need(profile.get("endstone_artifact_run_id") == endstone_provenance["run_id"], f"{kind} Endstone artifact run drift")
+                  need(profile.get("spark_artifact_digest") == spark_provenance["artifact_digest"], f"{kind} Spark digest drift")
+                  need(profile.get("endstone_artifact_digest") == endstone_provenance["artifact_digest"], f"{kind} Endstone digest drift")
+              need(len(set(urls)) == 4, "profile viewer URLs are not distinct")
+
+              reloads = result.get("plugin_reload_cycles")
+              need(isinstance(reloads, list) and len(reloads) == 3, "reload record count is not three")
+              identity: tuple[int, float] | None = None
+              for cycle, record in enumerate(reloads, 1):
+                  need(isinstance(record, dict), f"reload {cycle} record is missing")
+                  need(record.get("cycle") == cycle, f"reload cycle order drift: {record!r}")
+                  need(record.get("command") == "reload", f"reload {cycle} command drift")
+                  need(record.get("command_acknowledged") is True, f"reload {cycle} was not acknowledged")
+                  need(record.get("reload_complete") is True, f"reload {cycle} did not complete")
+                  need(record.get("spark_enabled") is True, f"reload {cycle} did not re-enable Spark")
+                  need(record.get("same_bds_identity") is True, f"reload {cycle} changed BDS identity")
+                  need(record.get("player_count") == 20, f"reload {cycle} player count drift")
+                  acknowledgement = normalized_evidence(record.get("command_acknowledgement"), f"reload {cycle} command acknowledgement")
+                  need("ci command dispatch completed" in acknowledgement and "dispatched=true" in acknowledgement,
+                       f"reload {cycle} command acknowledgement evidence is not explicit")
+                  disable = normalized_evidence(record.get("spark_disable_evidence"), f"reload {cycle} Spark disable")
+                  enable = normalized_evidence(record.get("spark_enable_evidence"), f"reload {cycle} Spark enable")
+                  completion = normalized_evidence(record.get("reload_completion"), f"reload {cycle} completion")
+                  need(_ENDSTONE_DISABLE_RE.search(disable) is not None,
+                       f"reload {cycle} Spark disable evidence is not explicit Endstone output")
+                  need(_ENDSTONE_ENABLE_RE.search(enable) is not None,
+                       f"reload {cycle} Spark enable evidence is not explicit Endstone output")
+                  need(_RELOAD_COMPLETE_RE.search(completion) is not None,
+                       f"reload {cycle} completion evidence is not explicit")
+                  need(record.get("reload_evidence_order") == ["spark-disable", "spark-enable", "reload-complete"],
+                       f"reload {cycle} evidence order drift")
+                  evidence_lines = record.get("reload_evidence_lines")
+                  need(evidence_lines == [record.get("spark_disable_evidence"), record.get("spark_enable_evidence"), record.get("reload_completion")],
+                       f"reload {cycle} evidence lines drift")
+                  pid = positive_int(record.get("bds_pid"), f"reload {cycle} BDS PID")
+                  before_pid = positive_int(record.get("before_bds_pid"), f"reload {cycle} before BDS PID")
+                  try:
+                      create_time = float(record.get("bds_create_time"))
+                      before_create_time = float(record.get("before_bds_create_time"))
+                  except (TypeError, ValueError):
+                      fail(f"reload {cycle} BDS create time is invalid")
+                  need(math.isfinite(create_time) and create_time > 0, f"reload {cycle} BDS create time is invalid")
+                  need(math.isfinite(before_create_time) and before_create_time > 0, f"reload {cycle} before BDS create time is invalid")
+                  need((before_pid, before_create_time) == (pid, create_time), f"reload {cycle} pre/post BDS identity drift")
+                  if identity is None:
+                      identity = (pid, create_time)
+                  else:
+                      need(identity == (pid, create_time), f"reload {cycle} did not retain BDS identity")
+
+              events = result.get("shutdown_lifecycle_events")
+              need(isinstance(events, list) and events, "shutdown lifecycle evidence is missing")
+              for event in events:
+                  need(isinstance(event, dict), "shutdown lifecycle event is malformed")
+                  need(event.get("wrapper_outcome") == "exited", f"lifecycle wrapper outcome drift: {event!r}")
+                  need(event.get("wrapper_return_code") == 0, f"lifecycle wrapper return drift: {event!r}")
+                  need(event.get("process_tree_verification") == "clean", f"lifecycle tree is not clean: {event!r}")
+                  need(event.get("forced") is False, f"lifecycle event was forced: {event!r}")
+                  acknowledgement = event.get("acknowledgement_evidence")
+                  need(isinstance(acknowledgement, dict) and acknowledgement.get("observed") is True,
+                       f"lifecycle acknowledgement is missing: {event!r}")
+              need(events[-1].get("phase_name") == "candidate-final-shutdown", "final lifecycle phase drift")
+              shutdown = result.get("shutdown_evidence")
+              need(isinstance(shutdown, dict) and shutdown.get("graceful") is True, "graceful shutdown evidence is missing")
+
+          # END SPARK51_RESULT_VALIDATOR
+          validate_result_contract(Path("fleet-spark-result.json"), Path("metadata.json"), __import__("os").environ)
+          print("Spark #51 Windows exact-candidate result contract PASS")
+          '@ | python -
+
+      - name: Add exact-candidate summary
+        if: always()
+        shell: pwsh
+        run: |
+          $summary = @'
+          import json
+          from pathlib import Path
+
+          path = Path("fleet-spark-result.json")
+          if not path.is_file():
+              print("## Spark #51 Windows BDS exact-candidate E2E\n\nResult: `fleet-spark-result.json` missing")
+          else:
+              data = json.loads(path.read_text(encoding="utf-8"))
+              print("## Spark #51 Windows BDS exact-candidate E2E")
+              print()
+              print(f"Status: **{data.get('status')}**  |  State: **{data.get('state')}**")
+              print()
+              print("| Scenario | Spark SHA | Lab run | BDS | Endstone | Players | Reload | Interval | URL |")
+              print("| --- | --- | ---: | --- | --- | ---: | ---: | ---: | --- |")
+              for profile in data.get("profiles") or []:
+                  endstone = f"{profile.get('endstone_version')} / {profile.get('endstone_sha')}"
+                  print(
+                      f"| {profile.get('kind')} | `{profile.get('spark_sha')}` | {profile.get('lab_run_id')} | "
+                      f"{profile.get('bds_full_version')} | {endstone} | {profile.get('player_count')} | "
+                      f"{profile.get('reload_cycle')} | {profile.get('allocation_interval')} | {profile.get('viewer_url')} |"
+                  )
+              print()
+              print("Reload records:")
+              for record in data.get("plugin_reload_cycles") or []:
+                  print(
+                      f"- cycle {record.get('cycle')}: acknowledged={record.get('command_acknowledged')} "
+                      f"enabled={record.get('spark_enabled')} completed={record.get('reload_complete')} "
+                      f"pid={record.get('bds_pid')} create_time={record.get('bds_create_time')} "
+                      f"players={record.get('player_count')}"
+                  )
+          '@ | python | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload exact-candidate evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: spark51-windows-bds-e2e-${{ github.run_id }}
+          path: |
+            metadata.json
+            bds.log
+            endstone.log
+            spark.log
+            fleet-windows-20-chunk-walk-local.log
+            fleet-windows-20-chunk-walk-public.log
+            test-results.json
+            fleet-spark-result.json
+            bstats-config.toml
+            failure-diagnostics.txt
+            combined-health-capture-windows/
+            work/windows/bedrock_server/server.properties
+            work/windows/bedrock_server/version.txt
+            work/windows/bedrock_server/worlds/SparkCombinedValidation/world_behavior_packs.json
+            work/windows/bedrock_server/behavior_packs/spark_probe_alpha/
+            work/windows/bedrock_server/behavior_packs/spark_probe_beta/
+            work/windows/bedrock_server/behavior_packs/spark_probe_gamma/
+          if-no-files-found: warn
+          retention-days: 30

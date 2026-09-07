@@ -517,6 +517,7 @@ class ServerProcess:
 
 class IntegrationTest:
     disable_bstats = False
+    allow_missing_windows_allocation_shim = False
 
     def __init__(self, platform_name: str):
         self.platform = platform_name
@@ -583,7 +584,19 @@ class IntegrationTest:
         shutil.copy2(spark_binary, target)
         self.check("spark-plugin-deployed", "PASS", str(target.relative_to(self.root)))
         if self.platform == "windows":
-            allocation_shim = locate_one(spark_root, ["spark_allocation_shim.dll"])
+            shims = [path for path in spark_root.rglob("spark_allocation_shim.dll") if path.is_file()]
+            if not shims:
+                if not self.allow_missing_windows_allocation_shim:
+                    raise FileNotFoundError(
+                        f"No file matching ['spark_allocation_shim.dll'] under {spark_root}"
+                    )
+                self.check(
+                    "spark-allocation-shim-absent",
+                    "PASS",
+                    "candidate artifact is shimless; native Spark owns the Windows allocation backend",
+                )
+                return
+            allocation_shim = sorted(shims, key=lambda path: (len(path.parts), str(path)))[0]
             shim_target = plugin_dir / allocation_shim.name
             shutil.copy2(allocation_shim, shim_target)
             self.check("spark-allocation-shim-deployed", "PASS", str(shim_target.relative_to(self.root)))

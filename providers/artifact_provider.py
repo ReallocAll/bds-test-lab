@@ -226,6 +226,7 @@ def _metadata(component: str, repo: str, run: dict[str, Any], artifact: dict[str
         "artifact": {
             "id": artifact.get("id"),
             "name": artifact.get("name"),
+            "digest": artifact.get("digest"),
             "size_in_bytes": artifact.get("size_in_bytes"),
             "expires_at": artifact.get("expires_at"),
         },
