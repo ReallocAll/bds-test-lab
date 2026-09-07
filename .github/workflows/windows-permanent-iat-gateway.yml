@@ -246,7 +246,7 @@ jobs:
           src\native\alloc\windows_permanent_iat_gateway_registry.cpp
           src\native\alloc\windows_iat_hooks.cpp
           src\native\alloc\windows_iat_hooks_windows.cpp
-          src\native\alloc\windows_permanent_iat_funchook_compat.cpp
+          src\native\alloc\windows_allocation_iat_hooks.cpp
           tests\native\alloc\windows_permanent_iat_backend_plugin.cpp
           /Fe:windows_permanent_iat_backend_plugin.dll
           /link psapi.lib

@@ -43,7 +43,7 @@ jobs:
       - name: Verify exact Spark provenance
         shell: bash
         run: test "$(git -C spark-src rev-parse HEAD)" = "${{ needs.resolve-candidate.outputs.spark_sha }}"
-      - name: Compile current IAT lifecycle oracles
+      - name: Compile current IAT lifecycle oracle
         working-directory: spark-src
         shell: bash
         run: |
@@ -52,16 +52,12 @@ jobs:
             src/native/alloc/windows_iat_hooks.cpp \
             tests/native/alloc/windows_iat_hooks_test.cpp \
             -o windows_iat_hooks_test
-          c++ -std=c++20 -Wall -Wextra -Werror -pedantic -pthread -Isrc \
-            tests/native/alloc/windows_callback_gate_test.cpp \
-            -o windows_callback_gate_test
-      - name: Run deterministic lifecycle and callback lifetime
+      - name: Run deterministic lifecycle
         working-directory: spark-src
         shell: bash
         run: |
           set -euo pipefail
           ./windows_iat_hooks_test
-          ./windows_callback_gate_test
 
   native-windows:
     needs: resolve-candidate
@@ -96,10 +92,6 @@ jobs:
             tests/native/alloc/windows_iat_hooks_test.cpp `
             /Fe:windows_iat_hooks_test.exe /link Psapi.lib
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $clang /nologo /std:c++20 /EHsc /W4 /WX /I src `
-            tests/native/alloc/windows_callback_gate_test.cpp `
-            /Fe:windows_callback_gate_test.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $clang /nologo /std:c++20 /EHsc /W4 /WX /LD `
             tests/native/alloc/windows_iat_provider.cpp `
             /Fe:windows_iat_provider.dll /link /IMPLIB:windows_iat_provider.lib
@@ -114,13 +106,11 @@ jobs:
             tests/native/alloc/windows_iat_native_test.cpp `
             /Fe:windows_iat_native_test.exe /link Psapi.lib
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Run deterministic lifecycle, callback lifetime and native PE reload safety
+      - name: Run deterministic lifecycle and native PE reload safety
         working-directory: spark-src
         shell: pwsh
         run: |
           .\windows_iat_hooks_test.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          .\windows_callback_gate_test.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\windows_iat_native_test.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

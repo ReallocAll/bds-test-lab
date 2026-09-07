@@ -130,7 +130,7 @@ jobs:
         shell: pwsh
         working-directory: spark-src
         run: |
-          ctest --test-dir build/RelWithDebInfo -C RelWithDebInfo --output-on-failure -R "^(spark_windows_allocation_unavailable_test|spark_allocation_count_only_test)$"
+          ctest --test-dir build/RelWithDebInfo -C RelWithDebInfo --output-on-failure -R "^(spark_windows_allocation_backend_test|spark_allocation_count_only_test)$"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Verify permanent-IAT backend and no shim payload
@@ -144,8 +144,8 @@ jobs:
 
           if (-not (Test-Path $plugin)) { throw "endstone_spark.dll was not produced" }
           if (-not (Test-Path $pdb)) { throw "endstone_spark.pdb was not produced" }
-          if (-not (Select-String -Path $commands -SimpleMatch "windows_permanent_iat_funchook_compat.cpp")) {
-            throw "real Spark target did not compile the permanent-IAT compat source"
+          if (-not (Select-String -Path $commands -SimpleMatch "windows_allocation_iat_hooks.cpp")) {
+            throw "real Spark target did not compile the Spark-owned allocation IAT source"
           }
           if (-not (Select-String -Path $commands -SimpleMatch "windows_permanent_iat_gateway.cpp")) {
             throw "real Spark target did not compile the production permanent-IAT gateway source"
@@ -159,8 +159,8 @@ jobs:
           if (Select-String -Path $commands -SimpleMatch "windows_permanent_iat_gateway_registry_experiment.cpp") {
             throw "production target graph still compiled the experiment-named registry source"
           }
-          if (Select-String -Path $commands -SimpleMatch "windows_iat_funchook_compat.cpp") {
-            throw "real Spark target still compiled the removed pinned-shim compat source"
+          if (Select-String -Path $commands -Pattern "funchook") {
+            throw "real Spark target still compiled a removed compatibility source"
           }
           if (Select-String -Path $commands -SimpleMatch "windows_allocation_shim.cpp") {
             throw "production target graph still compiled the removed shim source"
