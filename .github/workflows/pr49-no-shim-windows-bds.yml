@@ -21,9 +21,10 @@ permissions:
 env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
-  EXPECTED_SPARK_SHA: "2b591107b7de8be7eb2ecbe9000c84268b2c4d4e"
-  EXPECTED_SPARK_RUN_ID: "34075035870"
-  EXPECTED_SPARK_ARTIFACT_ID: "10001835057"
+  EXPECTED_SPARK_SHA: "f0dbab57b488a1d7de54d9ce88432fe0f5bb2098"
+  EXPECTED_LAB_SHA: "04012d8e6d0ef6e57fa55b6f8788e565bd8301e3"
+  EXPECTED_SPARK_RUN_ID: "34092357036"
+  EXPECTED_SPARK_ARTIFACT_ID: "10007456168"
   EXPECTED_ENDSTONE_SHA: "46eff9f125f52eac76472d84339ead8fbf51fcd2"
   EXPECTED_ENDSTONE_RUN_ID: "33567087207"
   EXPECTED_ENDSTONE_ARTIFACT_ID: "9824065779"
@@ -48,13 +49,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          run="$(gh api "repos/ReallocAll/spark/actions/runs/${EXPECTED_SPARK_RUN_ID}")"
-          test "$(jq -r '.head_sha' <<<"$run")" = "$EXPECTED_SPARK_SHA"
+          run="$(gh api "repos/ReallocAll/bds-test-lab/actions/runs/${EXPECTED_SPARK_RUN_ID}")"
+          test "$(jq -r '.head_sha' <<<"$run")" = "$EXPECTED_LAB_SHA"
           test "$(jq -r '.conclusion' <<<"$run")" = "success"
           test "$(jq -r '.name' <<<"$run")" = "Windows No-Shim Real Plugin"
-          artifact="$(gh api "repos/ReallocAll/spark/actions/artifacts/${EXPECTED_SPARK_ARTIFACT_ID}")"
+          artifact="$(gh api "repos/ReallocAll/bds-test-lab/actions/artifacts/${EXPECTED_SPARK_ARTIFACT_ID}")"
           test "$(jq -r '.workflow_run.id' <<<"$artifact")" = "$EXPECTED_SPARK_RUN_ID"
-          test "$(jq -r '.workflow_run.head_sha' <<<"$artifact")" = "$EXPECTED_SPARK_SHA"
+          test "$(jq -r '.workflow_run.head_sha' <<<"$artifact")" = "$EXPECTED_LAB_SHA"
           test "$(jq -r '.name' <<<"$artifact")" = "spark-windows-no-shim-${EXPECTED_SPARK_SHA}"
           test "$(jq -r '.expired' <<<"$artifact")" = "false"
 
