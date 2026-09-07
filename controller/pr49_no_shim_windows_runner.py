@@ -21,7 +21,7 @@ from controller.run_test import locate_one, run_checked
 from providers import artifact_provider
 
 SPARK_REPOSITORY = "ReallocAll/spark"
-NO_SHIM_WORKFLOW = "Windows No-Shim Real Plugin Experiment"
+NO_SHIM_WORKFLOW = "Windows No-Shim Real Plugin"
 _ORIGINAL_RUN_PROFILER = CombinedPackGameruleFleetValidation.run_profiler
 
 
