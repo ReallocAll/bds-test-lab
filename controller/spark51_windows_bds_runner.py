@@ -33,6 +33,8 @@ CPU_LOAD_KIND = "20-player-load"
 ALLOCATION_KIND = "allocation-4096"
 POST_RELOAD_KIND = "post-reload-cycle-3"
 PROFILE_KINDS = (CPU_BASELINE_KIND, CPU_LOAD_KIND, ALLOCATION_KIND, POST_RELOAD_KIND)
+CANDIDATE_PROFILE_COMMAND_ACK_TIMEOUT = 75.0
+PENDING_COMMAND_DRAIN_TIMEOUT = 5.0
 _DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
 _RELOAD_DISABLE_RE = re.compile(r"\[endstone\]\s+disabling\s+spark(?:\s|$)", re.IGNORECASE)
 _RELOAD_ENABLE_RE = re.compile(r"\[endstone\]\s+enabling\s+spark(?:\s|$)", re.IGNORECASE)
@@ -301,7 +303,7 @@ class Spark51WindowsBdsValidation(CombinedPackGameruleFleetValidation):
 
         self._profile_active = True
         try:
-            start, _, _ = self._dispatch(command)
+            start, _, _ = self._dispatch(command, timeout=CANDIDATE_PROFILE_COMMAND_ACK_TIMEOUT)
             deadline = time.monotonic() + self.profile_seconds + 90
             url: str | None = None
             while time.monotonic() < deadline:
@@ -315,7 +317,10 @@ class Spark51WindowsBdsValidation(CombinedPackGameruleFleetValidation):
                     raise RuntimeError(f"BDS exited during {kind} profile")
                 time.sleep(0.5)
             if url is None:
-                stop_start, _, _ = self._dispatch("spark profiler stop")
+                stop_start, _, _ = self._dispatch(
+                    "spark profiler stop",
+                    timeout=CANDIDATE_PROFILE_COMMAND_ACK_TIMEOUT,
+                )
                 deadline = time.monotonic() + 60
                 while time.monotonic() < deadline:
                     url = self._viewer_url(self.server.snapshot(), min(start, stop_start))
@@ -608,6 +613,30 @@ class Spark51WindowsBdsValidation(CombinedPackGameruleFleetValidation):
             self._record_cleanup_error(f"{operation} is_alive", exc)
             return True
 
+    def _clear_terminal_pending_file_commands(
+        self,
+        pending_commands: dict[int, str],
+        pending_before: dict[int, str],
+        diagnostic: dict[str, Any],
+    ) -> str:
+        command_path = getattr(self.server, "lifecycle_command_path", None) if self.server is not None else None
+        diagnostic["status"] = "terminated"
+        diagnostic["request_path"] = str(command_path) if command_path is not None else None
+        diagnostic["request_removed"] = command_path is None
+        cleanup = ""
+        try:
+            if command_path is not None:
+                pathlib.Path(command_path).unlink(missing_ok=True)
+                diagnostic["request_removed"] = True
+        except Exception as exc:  # noqa: BLE001 - terminal cleanup must preserve primary failure
+            diagnostic["request_removed"] = False
+            diagnostic["request_removal_error"] = f"{type(exc).__name__}: {exc}"
+            cleanup += self._record_cleanup_error("pending CI command request removal", exc)
+        finally:
+            for start_index in pending_before:
+                pending_commands.pop(start_index, None)
+        return cleanup
+
     def _cleanup_after_failure(self, diagnostic: str) -> str:
         cleanup = diagnostic
         try:
@@ -616,6 +645,41 @@ class Spark51WindowsBdsValidation(CombinedPackGameruleFleetValidation):
             cleanup += self._record_cleanup_error("fleet graceful stop", exc)
             if self.bot is not None and self._cleanup_is_alive(self.bot, "bot force_close"):
                 cleanup += self._cleanup_step("bot force_close", self.bot.force_close)
+        pending_commands = getattr(self.server, "_pending_file_commands", {}) if self.server is not None else {}
+        if pending_commands:
+            pending_before = dict(pending_commands)
+            drain = getattr(self.server, "wait_for_pending_file_commands", None)
+            drained = False
+            if callable(drain):
+                try:
+                    drained = drain(PENDING_COMMAND_DRAIN_TIMEOUT) is True
+                except Exception as exc:  # noqa: BLE001 - force cleanup must follow a failed drain
+                    cleanup += self._record_cleanup_error("pending CI command acknowledgement", exc)
+            pending_diagnostic = {
+                "operation": "pending CI command acknowledgement",
+                "status": "drained" if drained else "unresolved",
+                "pending": pending_before,
+                "timeout": PENDING_COMMAND_DRAIN_TIMEOUT,
+            }
+            self.result.setdefault("cleanup_diagnostics", []).append(pending_diagnostic)
+            if pending_commands and not drained:
+                force_cleanup = self._cleanup_step(
+                    "BDS force_kill_tree after pending CI command",
+                    self.server.force_kill_tree,
+                )
+                cleanup += force_cleanup
+                if not force_cleanup and not self._cleanup_is_alive(self.server, "terminal pending CI command cleanup"):
+                    cleanup += self._clear_terminal_pending_file_commands(
+                        pending_commands,
+                        pending_before,
+                        pending_diagnostic,
+                    )
+                elif force_cleanup:
+                    pending_diagnostic["status"] = "force-cleanup-failed"
+                else:
+                    pending_diagnostic["status"] = "force-cleanup-incomplete"
+                cleanup += self._cleanup_step("shutdown evidence", self._set_shutdown_evidence)
+                return cleanup
         if self.server is not None and self._cleanup_is_alive(self.server, "BDS graceful shutdown"):
             cleanup += self._cleanup_step(
                 "shutdown phase context",

@@ -259,6 +259,48 @@ class CombinedPackExactRunnerTest(unittest.TestCase):
             self.assertTrue(payload["token"])
             self.assertEqual(server._pending_file_commands[start], payload["token"])
 
+    def test_framework_file_command_publishes_complete_json_atomically(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            process = _WaitProcess(returncode=0)
+            server = _framework_server(process)
+            request = root / "command.request"
+            server.lifecycle_command_path = request
+            server.is_alive = lambda: True  # type: ignore[method-assign]
+            server.snapshot = lambda: ["ready"]  # type: ignore[method-assign]
+            observations: list[str | None] = []
+            replace = exact.os.replace
+
+            def observe_before_replace(source: str | os.PathLike[str], target: str | os.PathLike[str]) -> None:
+                if Path(target) == request:
+                    observations.append(request.read_text(encoding="utf-8") if request.exists() else None)
+                replace(source, target)
+
+            with mock.patch.object(exact.os, "replace", side_effect=observe_before_replace):
+                server.command("spark tps")
+
+            self.assertEqual(observations, [None])
+            payload = json.loads(request.read_text(encoding="utf-8"))
+            self.assertEqual(payload["command"], "spark tps")
+            self.assertTrue(payload["token"])
+
+    def test_framework_file_command_cleans_failed_publication_and_pending_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            process = _WaitProcess(returncode=0)
+            server = _framework_server(process)
+            request = root / "command.request"
+            server.lifecycle_command_path = request
+            server.is_alive = lambda: True  # type: ignore[method-assign]
+            server.snapshot = lambda: ["ready"]  # type: ignore[method-assign]
+            with mock.patch.object(exact.os, "replace", side_effect=OSError("replace failed")):
+                with self.assertRaisesRegex(OSError, "replace failed"):
+                    server.command("spark tps")
+
+            self.assertFalse(request.exists())
+            self.assertEqual(server._pending_file_commands, {})
+            self.assertEqual(list(root.glob(".command.request.*.tmp")), [])
+
     def test_framework_file_command_rejects_pending_request(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -284,6 +326,25 @@ class CombinedPackExactRunnerTest(unittest.TestCase):
         self.assertEqual(len(output), 2)
         self.assertNotIn(0, server._pending_file_commands)
 
+    def test_framework_file_command_wait_accepts_late_ack_with_candidate_budget(self) -> None:
+        process = _WaitProcess(returncode=0)
+        server = _framework_server(process)
+        server._pending_file_commands = {0: "abc123"}
+        server.snapshot = mock.Mock(
+            side_effect=[
+                ["CI command dispatch requested; token=abc123; command=spark profiler start"],
+                ["CI command dispatch completed; token=abc123; dispatched=true"],
+            ]
+        )  # type: ignore[method-assign]
+        server.is_alive = lambda: True  # type: ignore[method-assign]
+        with (
+            mock.patch.object(exact.time, "monotonic", side_effect=[0.0, 45.0, 45.0]),
+            mock.patch.object(exact.time, "sleep"),
+        ):
+            output = server.wait_command_output(0, 75.0)
+        self.assertEqual(output, ["CI command dispatch completed; token=abc123; dispatched=true"])
+        self.assertNotIn(0, server._pending_file_commands)
+
     def test_framework_file_command_wait_fails_closed_on_rejected_dispatch(self) -> None:
         process = _WaitProcess(returncode=0)
         server = _framework_server(process)
@@ -294,6 +355,29 @@ class CombinedPackExactRunnerTest(unittest.TestCase):
         server.is_alive = lambda: True  # type: ignore[method-assign]
         with self.assertRaisesRegex(RuntimeError, "rejected CI command transport request"):
             server.wait_command_output(0, 0.2)
+
+    def test_framework_file_command_wait_fails_closed_on_wrong_token(self) -> None:
+        process = _WaitProcess(returncode=0)
+        server = _framework_server(process)
+        server._pending_file_commands = {0: "abc123"}
+        server.snapshot = lambda: [  # type: ignore[method-assign]
+            "CI command dispatch completed; token=wrong-token; dispatched=true"
+        ]
+        server.is_alive = lambda: True  # type: ignore[method-assign]
+        with self.assertRaisesRegex(RuntimeError, "unexpected token"):
+            server.wait_command_output(0, 0.2)
+        self.assertEqual(server._pending_file_commands, {0: "abc123"})
+
+    def test_framework_file_command_wait_timeout_retains_pending_state(self) -> None:
+        process = _WaitProcess(returncode=0)
+        server = _framework_server(process)
+        server._pending_file_commands = {0: "abc123"}
+        server.snapshot = lambda: []  # type: ignore[method-assign]
+        server.is_alive = lambda: True  # type: ignore[method-assign]
+        with mock.patch.object(exact.time, "monotonic", side_effect=[0.0, 1.0]):
+            with self.assertRaises(TimeoutError):
+                server.wait_command_output(0, 0.5)
+        self.assertEqual(server._pending_file_commands, {0: "abc123"})
 
     def test_framework_shutdown_process_sends_cishutdown(self) -> None:
         process = _WaitProcess(returncode=0)

@@ -60,8 +60,22 @@ class _FrameworkShutdownServerProcess(ServerProcess):
         pending[start] = token
         payload = {"token": token, "command": command}
         print(f"> {command} [file-trigger token={token}]", flush=True)
-        command_path.parent.mkdir(parents=True, exist_ok=True)
-        command_path.write_text(json.dumps(payload, separators=(",", ":")) + "\n", encoding="utf-8")
+        temporary_path = command_path.with_name(f".{command_path.name}.{token}.tmp")
+        try:
+            command_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary_path.write_text(
+                json.dumps(payload, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            os.replace(temporary_path, command_path)
+        except Exception:
+            pending.pop(start, None)
+            raise
+        finally:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
         return start
 
     def wait_command_output(self, start_index: int, timeout: float = 8.0) -> list[str]:
@@ -69,11 +83,26 @@ class _FrameworkShutdownServerProcess(ServerProcess):
         token = pending.get(start_index)
         if token is None:
             return super().wait_command_output(start_index, timeout)
-        completion = f"ci command dispatch completed; token={token}; dispatched=".casefold()
+        completion = "ci command dispatch completed; token="
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             lines = self.snapshot()[start_index:]
-            matched = next((line for line in lines if completion in line.casefold()), None)
+            matched: str | None = None
+            for line in lines:
+                lowered = line.casefold()
+                marker_index = lowered.find(completion)
+                if marker_index < 0:
+                    continue
+                acknowledgement = lowered[marker_index + len(completion) :]
+                observed_token = acknowledgement.split(";", 1)[0].strip()
+                if observed_token != token.casefold():
+                    raise RuntimeError(
+                        "Endstone returned a CI command dispatch acknowledgement for an unexpected token: "
+                        f"expected={token} observed={observed_token}"
+                    )
+                if "; dispatched=" in acknowledgement:
+                    matched = line
+                    break
             if matched is not None:
                 pending.pop(start_index, None)
                 if "dispatched=true" not in matched.casefold():
@@ -85,6 +114,23 @@ class _FrameworkShutdownServerProcess(ServerProcess):
         raise TimeoutError(
             f"Timed out after {timeout:.0f}s waiting for CI command dispatch acknowledgement: {token}"
         )
+
+    def wait_for_pending_file_commands(self, timeout: float = 5.0) -> bool:
+        """Boundedly drain late command ACKs before lifecycle cleanup."""
+
+        pending = getattr(self, "_pending_file_commands", {})
+        if not pending:
+            return True
+        deadline = time.monotonic() + timeout
+        for start_index in list(pending):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            try:
+                self.wait_command_output(start_index, remaining)
+            except (OSError, RuntimeError, TimeoutError, ValueError):
+                return False
+        return not pending
 
     def _record_shutdown_acknowledgement(
         self,
@@ -349,8 +395,8 @@ def _start_windows_interactive_server(self: CombinedPackGameruleFleetValidation)
             "PASS",
             shutdown_control="file-trigger",
             command_control="file-trigger" if command_path is not None else "console-compat",
-            request_path=str(request_path),
-            command_path=str(command_path) if command_path is not None else None,
+            request_path=request_path.as_posix(),
+            command_path=command_path.as_posix() if command_path is not None else None,
             compatibility_command="cishutdown",
         )
     else:

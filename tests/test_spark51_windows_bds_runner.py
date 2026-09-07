@@ -10,6 +10,7 @@ from controller.spark51_windows_bds_runner import (
     ALLOCATION_INTERVAL_BYTES,
     ALLOCATION_KIND,
     BOT_COUNT,
+    CANDIDATE_PROFILE_COMMAND_ACK_TIMEOUT,
     CPU_BASELINE_KIND,
     CPU_LOAD_KIND,
     POST_RELOAD_KIND,
@@ -274,6 +275,105 @@ class Spark51WindowsBdsRunnerTest(unittest.TestCase):
             persisted = json.loads(validator.result_path.read_text(encoding="utf-8"))
             self.assertEqual(persisted["state"], "failed")
             self.assertIn("artifact failure", persisted["error_summary"])
+
+    def test_candidate_profile_dispatch_uses_bounded_long_ack_budget(self) -> None:
+        validator = _validator()
+        server = mock.Mock()
+        server.command.return_value = 0
+        server.wait_command_output.return_value = [
+            "CI command dispatch completed; token=abc123; dispatched=true"
+        ]
+        validator.server = server
+
+        validator._dispatch("spark profiler start --timeout 30", timeout=CANDIDATE_PROFILE_COMMAND_ACK_TIMEOUT)
+
+        server.wait_command_output.assert_called_once_with(0, CANDIDATE_PROFILE_COMMAND_ACK_TIMEOUT)
+
+    def test_cleanup_bypasses_graceful_stop_when_command_ack_remains_pending(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            events: list[str] = []
+            validator = _validator()
+            validator.bot = None
+            validator._fleet_stopped = False
+            validator.shutdown = mock.Mock()
+            request = Path(temp) / "command.request"
+            request.write_text('{"token":"late-token","command":"spark tps"}\n', encoding="utf-8")
+
+            class PendingServer:
+                _pending_file_commands = {0: "late-token"}
+
+                def __init__(self) -> None:
+                    self.alive = True
+                    self.lifecycle_command_path = request
+
+                def wait_for_pending_file_commands(self, timeout: float) -> bool:
+                    self.timeout = timeout
+                    return False
+
+                def is_alive(self) -> bool:
+                    return self.alive
+
+                def force_kill_tree(self) -> None:
+                    events.append("force_kill_tree")
+                    self.alive = False
+
+            server = PendingServer()
+            validator.server = server  # type: ignore[assignment]
+            validator._cleanup_after_failure("primary failure")
+
+            validator.shutdown.assert_not_called()
+            self.assertEqual(events, ["force_kill_tree"])
+            self.assertEqual(server._pending_file_commands, {})
+            self.assertFalse(request.exists())
+            diagnostic = validator.result["cleanup_diagnostics"][0]
+            self.assertEqual(diagnostic["status"], "terminated")
+            self.assertEqual(diagnostic["pending"], {0: "late-token"})
+            self.assertEqual(diagnostic["request_path"], str(request))
+            self.assertTrue(diagnostic["request_removed"])
+
+    def test_terminal_pending_request_removal_failure_is_recorded_and_persisted(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            validator = _validator()
+            validator.bot = None
+            validator._fleet_stopped = False
+            validator.shutdown = mock.Mock()
+            request = Path(temp) / "command.request"
+            request.write_text("pending\n", encoding="utf-8")
+
+            class PendingServer:
+                _pending_file_commands = {3: "stale-token"}
+
+                def __init__(self) -> None:
+                    self.alive = True
+                    self.lifecycle_command_path = request
+
+                def wait_for_pending_file_commands(self, timeout: float) -> bool:
+                    del timeout
+                    return False
+
+                def is_alive(self) -> bool:
+                    return self.alive
+
+                def force_kill_tree(self) -> None:
+                    self.alive = False
+
+            server = PendingServer()
+            validator.server = server  # type: ignore[assignment]
+            with mock.patch.object(Path, "unlink", side_effect=OSError("request is locked")):
+                validator._cleanup_after_failure("primary failure")
+
+            self.assertEqual(server._pending_file_commands, {})
+            self.assertTrue(request.exists())
+            self.assertTrue(validator._write_results.called)
+            diagnostic = validator.result["cleanup_diagnostics"][0]
+            self.assertFalse(diagnostic["request_removed"])
+            self.assertIn("request is locked", diagnostic["request_removal_error"])
+            self.assertTrue(
+                any(
+                    item["operation"] == "pending CI command request removal"
+                    for item in validator.result["cleanup_errors"]
+                )
+            )
 
     def test_cleanup_continues_and_preserves_primary_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
