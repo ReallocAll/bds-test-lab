@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import math
 import os
 import pathlib
 import re
@@ -35,6 +36,10 @@ VIEWER_RE = re.compile(r"https://spark\.lucko\.me/[A-Za-z0-9._~:/?#\[\]@!$&'()*+
 READY_HINTS = ("server started.", "server started in", "server started")
 SPARK_LOAD_HINTS = ("enabling spark", "enabled spark", "spark v", "loaded spark")
 _CHILD_SECRET_ENV_NAMES = frozenset({"GH_TOKEN", "REPO_PAT"})
+TIMEOUT_DIAGNOSTIC_DELAY_SECONDS = 2.0
+TIMEOUT_DIAGNOSTIC_MAX_BYTES = 32 * 1024
+TIMEOUT_DIAGNOSTIC_MAX_PROCESSES = 32
+TIMEOUT_DIAGNOSTIC_MAX_THREADS = 256
 
 
 def now_iso() -> str:
@@ -98,6 +103,9 @@ class ServerProcess:
         self._root_identity_evidence: dict[str, Any] = {}
         self._process_tree_error: str | None = None
         self._unverified_processes: dict[int, str] = {}
+        self.timeout_diagnostic_directory: pathlib.Path | None = None
+        self.timeout_diagnostic_delay = TIMEOUT_DIAGNOSTIC_DELAY_SECONDS
+        self._timeout_diagnostic_serial = 0
         self._lock = threading.Lock()
         self._reader: threading.Thread | None = None
         self._log = None
@@ -271,6 +279,235 @@ class ServerProcess:
                 record["alive"] = None
             records.append(record)
         return records
+
+    @staticmethod
+    def _diagnostic_executable_name(value: object) -> str:
+        text = str(value or "unknown").replace("\\", "/")
+        name = text.rsplit("/", 1)[-1].strip()
+        return name[:128] or "unknown"
+
+    @staticmethod
+    def _diagnostic_cpu_time(value: object) -> float | None:
+        try:
+            result = float(value)
+        except (TypeError, ValueError):
+            return None
+        return result if math.isfinite(result) and result >= 0 else None
+
+    def _timeout_heartbeat_state(self) -> dict[str, Any]:
+        try:
+            lines = self.snapshot()
+        except (AttributeError, TypeError):
+            return {}
+        for line in reversed(lines):
+            if "kind=ci-lifecycle-heartbeat" not in line:
+                continue
+            fields: dict[str, str] = {}
+            for field in line.split(";"):
+                key, separator, value = field.strip().partition("=")
+                if separator:
+                    fields[key] = value.strip()
+            state: dict[str, Any] = {}
+            generation = fields.get("generation", "")
+            if generation and len(generation) <= 128 and all(character.isalnum() or character in "-_" for character in generation):
+                state["generation"] = generation
+            for key in ("task_id", "callback_seq"):
+                value = fields.get(key)
+                if value is not None:
+                    try:
+                        state[key] = int(value)
+                    except ValueError:
+                        state[key] = None
+            for key in ("is_sync", "is_cancelled", "command_pending"):
+                value = fields.get(key)
+                if value is not None:
+                    state[key] = value.casefold() == "true"
+            dispatch_result = fields.get("dispatch_result")
+            if dispatch_result is not None:
+                state["dispatch_result"] = (
+                    None
+                    if dispatch_result.casefold() in ("none", "null")
+                    else dispatch_result.casefold() == "true"
+                )
+            return state
+        return {}
+
+    def _capture_timeout_process_thread_snapshot(
+        self,
+        snapshot_number: int,
+        baseline: dict[tuple[int, int], tuple[float, float]] | None = None,
+    ) -> dict[str, Any]:
+        captured_at = time.monotonic_ns()
+        heartbeat_state = self._timeout_heartbeat_state()
+        errors: list[str] = []
+        try:
+            tree = self.process_tree_snapshot()
+        except Exception as exc:  # noqa: BLE001 - diagnostics must not replace the timeout
+            tree = []
+            errors.append(type(exc).__name__)
+
+        processes: list[dict[str, Any]] = []
+        threads: list[dict[str, Any]] = []
+        for record in tree[:TIMEOUT_DIAGNOSTIC_MAX_PROCESSES]:
+            if not isinstance(record, dict):
+                errors.append("MalformedProcessRecord")
+                continue
+            try:
+                pid = int(record.get("pid"))
+            except (TypeError, ValueError):
+                errors.append("InvalidProcessId")
+                continue
+            if pid <= 0:
+                errors.append("InvalidProcessId")
+                continue
+            executable = self._diagnostic_executable_name(record.get("name") or record.get("executable"))
+            create_time = self._diagnostic_cpu_time(record.get("create_time"))
+            alive = record.get("alive") if isinstance(record.get("alive"), bool) else None
+            identity_match = record.get("identity_match") if isinstance(record.get("identity_match"), bool) else None
+            processes.append(
+                {
+                    "pid": pid,
+                    "name": executable,
+                    "create_time": create_time,
+                    "alive": alive,
+                    "identity_match": identity_match,
+                }
+            )
+            if alive is not True or identity_match is not True or "bedrock_server" not in executable.casefold():
+                continue
+            try:
+                process = psutil.Process(pid)
+                process_threads = process.threads()
+            except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess, OSError) as exc:
+                errors.append(type(exc).__name__)
+                continue
+            for thread in process_threads[:TIMEOUT_DIAGNOSTIC_MAX_THREADS]:
+                try:
+                    tid = int(thread.id)
+                except (AttributeError, TypeError, ValueError):
+                    errors.append("InvalidThreadId")
+                    continue
+                if tid <= 0:
+                    errors.append("InvalidThreadId")
+                    continue
+                user_time = self._diagnostic_cpu_time(getattr(thread, "user_time", None))
+                system_time = self._diagnostic_cpu_time(getattr(thread, "system_time", None))
+                thread_record: dict[str, Any] = {
+                    "pid": pid,
+                    "tid": tid,
+                    "name": executable,
+                    "create_time": create_time,
+                    "alive": alive,
+                    "identity_match": identity_match,
+                    "user_time": user_time,
+                    "system_time": system_time,
+                    "user_time_delta": None,
+                    "system_time_delta": None,
+                }
+                if baseline is not None and user_time is not None and system_time is not None:
+                    previous = baseline.get((pid, tid))
+                    if previous is not None:
+                        thread_record["user_time_delta"] = user_time - previous[0]
+                        thread_record["system_time_delta"] = system_time - previous[1]
+                threads.append(thread_record)
+
+        return {
+            "snapshot": snapshot_number,
+            "monotonic_ns": captured_at,
+            "generation": heartbeat_state.get("generation"),
+            "task_state": heartbeat_state,
+            "processes": processes,
+            "threads": threads,
+            "collector_errors": errors[:32],
+        }
+
+    @staticmethod
+    def _timeout_snapshot_cpu_baseline(snapshot: dict[str, Any]) -> dict[tuple[int, int], tuple[float, float]]:
+        baseline: dict[tuple[int, int], tuple[float, float]] = {}
+        for thread in snapshot.get("threads", []):
+            if not isinstance(thread, dict):
+                continue
+            user_time = thread.get("user_time")
+            system_time = thread.get("system_time")
+            try:
+                key = (int(thread["pid"]), int(thread["tid"]))
+                user = float(user_time)
+                system = float(system_time)
+            except (KeyError, TypeError, ValueError):
+                continue
+            if math.isfinite(user) and math.isfinite(system):
+                baseline[key] = (user, system)
+        return baseline
+
+    def capture_timeout_diagnostics(self) -> dict[str, Any]:
+        """Capture bounded process/thread evidence without masking the command timeout."""
+
+        errors: list[str] = []
+        try:
+            first = self._capture_timeout_process_thread_snapshot(1)
+        except Exception as exc:  # noqa: BLE001 - diagnostics must not replace the timeout
+            first = {
+                "snapshot": 1,
+                "monotonic_ns": time.monotonic_ns(),
+                "generation": None,
+                "task_state": {},
+                "processes": [],
+                "threads": [],
+                "collector_errors": [type(exc).__name__],
+            }
+            errors.append(type(exc).__name__)
+        try:
+            delay = getattr(self, "timeout_diagnostic_delay", TIMEOUT_DIAGNOSTIC_DELAY_SECONDS)
+            time.sleep(max(0.0, min(float(delay), TIMEOUT_DIAGNOSTIC_DELAY_SECONDS)))
+        except Exception as exc:  # noqa: BLE001 - diagnostics must not replace the timeout
+            errors.append(type(exc).__name__)
+        try:
+            second = self._capture_timeout_process_thread_snapshot(
+                2,
+                baseline=self._timeout_snapshot_cpu_baseline(first),
+            )
+        except Exception as exc:  # noqa: BLE001 - diagnostics must not replace the timeout
+            second = {
+                "snapshot": 2,
+                "monotonic_ns": time.monotonic_ns(),
+                "generation": None,
+                "task_state": {},
+                "processes": [],
+                "threads": [],
+                "collector_errors": [type(exc).__name__],
+            }
+            errors.append(type(exc).__name__)
+        serial = getattr(self, "_timeout_diagnostic_serial", 0) + 1
+        self._timeout_diagnostic_serial = serial
+        directory = getattr(self, "timeout_diagnostic_directory", None)
+        if directory is None:
+            cwd = getattr(self, "cwd", None)
+            directory = cwd / "combined-health-capture-windows" if isinstance(cwd, pathlib.Path) else None
+        paths: list[str] = []
+        if directory is not None:
+            for snapshot in (first, second):
+                try:
+                    directory.mkdir(parents=True, exist_ok=True)
+                    path = directory / (
+                        f"command-timeout-{self._timeout_diagnostic_serial:03d}-snapshot-{snapshot['snapshot']}.json"
+                    )
+                    text = json.dumps(snapshot, separators=(",", ":"), sort_keys=True)
+                    if len(text.encode("utf-8")) > TIMEOUT_DIAGNOSTIC_MAX_BYTES:
+                        snapshot["processes"] = snapshot["processes"][:4]
+                        snapshot["threads"] = snapshot["threads"][:16]
+                        text = json.dumps(snapshot, separators=(",", ":"), sort_keys=True)
+                    path.write_text(text + "\n", encoding="utf-8")
+                    paths.append(path.name)
+                except (OSError, TypeError, ValueError) as exc:
+                    errors.append(type(exc).__name__)
+        result = {
+            "snapshots": [first, second],
+            "files": paths,
+            "collector_errors": errors,
+        }
+        self.timeout_diagnostic_files = paths
+        self.timeout_diagnostic_errors = errors
+        return result
 
     def managed_residual_processes(self) -> list[str]:
         return [
@@ -596,7 +833,7 @@ class IntegrationTest:
                     "candidate artifact is shimless; native Spark owns the Windows allocation backend",
                 )
                 return
-            allocation_shim = sorted(shims, key=lambda path: (len(path.parts), str(path)))[0]
+            allocation_shim = min(shims, key=lambda path: (len(path.parts), str(path)))
             shim_target = plugin_dir / allocation_shim.name
             shutil.copy2(allocation_shim, shim_target)
             self.check("spark-allocation-shim-deployed", "PASS", str(shim_target.relative_to(self.root)))

@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
 
+import psutil
 import yaml
 
 import controller.combined_pack_gamerule_fleet_exact_runner as exact
 import controller.combined_pack_gamerule_fleet_validation as validation
+from controller import run_test
 from controller.combined_pack_gamerule_fleet_validation import (
     BEHAVIOR_PACKS,
     CombinedPackGameruleFleetValidation,
@@ -105,8 +110,62 @@ def _framework_server(process: _WaitProcess) -> exact._FrameworkShutdownServerPr
     server._root_identity_status = "verified"
     server._root_identity_evidence = {"status": "verified"}
     server.process_tree_snapshot = mock.Mock(return_value=[])  # type: ignore[method-assign]
+    server.timeout_diagnostic_delay = 0.0
     server.lifecycle_registered = True
     return server
+
+
+def _load_lifecycle_fixture() -> type:
+    source = (
+        Path(__file__).parents[1]
+        / "fixtures"
+        / "endstone-ci-lifecycle-control"
+        / "src"
+        / "endstone_ci_lifecycle_control"
+        / "__init__.py"
+    )
+    command = types.ModuleType("endstone.command")
+    command.Command = type("Command", (), {})
+    command.CommandSender = type("CommandSender", (), {})
+    plugin = types.ModuleType("endstone.plugin")
+
+    class Plugin:
+        def __init__(self) -> None:
+            pass
+
+    plugin.Plugin = Plugin
+    scheduler = types.ModuleType("endstone.scheduler")
+    scheduler.Task = type("Task", (), {})
+    package = types.ModuleType("endstone")
+    package.__path__ = []  # type: ignore[attr-defined]
+    spec = importlib.util.spec_from_file_location("test_ci_lifecycle_fixture", source)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    with mock.patch.dict(
+        sys.modules,
+        {
+            "endstone": package,
+            "endstone.command": command,
+            "endstone.plugin": plugin,
+            "endstone.scheduler": scheduler,
+        },
+    ):
+        spec.loader.exec_module(module)
+    return module.CiLifecycleControl
+
+
+def _heartbeat_fields(lines: list[str]) -> list[dict[str, str]]:
+    records = []
+    for line in lines:
+        if "kind=ci-lifecycle-heartbeat" not in line:
+            continue
+        fields = {}
+        for field in line.split(";"):
+            key, separator, value = field.strip().partition("=")
+            if separator:
+                fields[key] = value
+        records.append(fields)
+    return records
 
 
 class CombinedPackExactRunnerTest(unittest.TestCase):
@@ -293,9 +352,11 @@ class CombinedPackExactRunnerTest(unittest.TestCase):
             server.lifecycle_command_path = request
             server.is_alive = lambda: True  # type: ignore[method-assign]
             server.snapshot = lambda: ["ready"]  # type: ignore[method-assign]
-            with mock.patch.object(exact.os, "replace", side_effect=OSError("replace failed")):
-                with self.assertRaisesRegex(OSError, "replace failed"):
-                    server.command("spark tps")
+            with (
+                mock.patch.object(exact.os, "replace", side_effect=OSError("replace failed")),
+                self.assertRaisesRegex(OSError, "replace failed"),
+            ):
+                server.command("spark tps")
 
             self.assertFalse(request.exists())
             self.assertEqual(server._pending_file_commands, {})
@@ -372,12 +433,209 @@ class CombinedPackExactRunnerTest(unittest.TestCase):
         process = _WaitProcess(returncode=0)
         server = _framework_server(process)
         server._pending_file_commands = {0: "abc123"}
-        server.snapshot = lambda: []  # type: ignore[method-assign]
+        server.snapshot = list  # type: ignore[method-assign]
         server.is_alive = lambda: True  # type: ignore[method-assign]
-        with mock.patch.object(exact.time, "monotonic", side_effect=[0.0, 1.0]):
-            with self.assertRaises(TimeoutError):
-                server.wait_command_output(0, 0.5)
+        with (
+            mock.patch.object(exact.time, "monotonic", side_effect=[0.0, 1.0]),
+            self.assertRaises(TimeoutError),
+        ):
+            server.wait_command_output(0, 0.5)
         self.assertEqual(server._pending_file_commands, {0: "abc123"})
+
+    def test_lifecycle_heartbeat_has_generation_task_state_and_bounded_cadence(self) -> None:
+        LifecycleControl = _load_lifecycle_fixture()
+
+        class Logger:
+            def __init__(self) -> None:
+                self.lines: list[str] = []
+
+            def info(self, message: str) -> None:
+                self.lines.append(message)
+
+            def error(self, message: str) -> None:
+                self.lines.append(message)
+
+            def warning(self, message: str) -> None:
+                self.lines.append(message)
+
+        class Task:
+            task_id = 37
+            is_sync = True
+            is_cancelled = False
+
+            def cancel(self) -> None:
+                self.is_cancelled = True
+
+        class Scheduler:
+            def __init__(self, task: Task) -> None:
+                self.task = task
+
+            def run_task(self, *_args: object, **_kwargs: object) -> Task:
+                return self.task
+
+        with tempfile.TemporaryDirectory() as temp:
+            control = LifecycleControl.__new__(LifecycleControl)
+            control.logger = Logger()
+            control.data_folder = Path(temp)
+            control.get_command = lambda _name: object()  # type: ignore[method-assign]
+            control.server = types.SimpleNamespace(scheduler=Scheduler(Task()))
+            control.on_enable()
+            first = _heartbeat_fields(control.logger.lines)
+            self.assertEqual(first[0]["phase"], "enable")
+            self.assertTrue(first[0]["generation"])
+            self.assertEqual(first[0]["task_id"], "37")
+            self.assertEqual(first[0]["is_sync"], "True")
+            self.assertEqual(first[0]["is_cancelled"], "False")
+            first_generation = first[0]["generation"]
+            control.on_disable()
+
+        disable = _heartbeat_fields(control.logger.lines)[-2:]
+        self.assertEqual([record["phase"] for record in disable], ["disable", "disable"])
+        self.assertEqual([record["cancellation"] for record in disable], ["before", "after"])
+        self.assertEqual(disable[0]["is_cancelled"], "False")
+        self.assertEqual(disable[1]["is_cancelled"], "True")
+
+        control = LifecycleControl.__new__(LifecycleControl)
+        control.logger = Logger()
+        control._generation = first_generation
+        control._callback_seq = 0
+        control._file_control_task = Task()
+        control._command_path = None
+        control._request_path = None
+        control.server = types.SimpleNamespace()
+        for _ in range(40):
+            control._poll_file_control()
+        cadence = _heartbeat_fields(control.logger.lines)
+        self.assertEqual([(record["phase"], record["callback_seq"]) for record in cadence], [
+            ("entry", "20"),
+            ("exit", "20"),
+            ("entry", "40"),
+            ("exit", "40"),
+        ])
+
+    def test_lifecycle_heartbeat_logs_exception_and_reraises(self) -> None:
+        LifecycleControl = _load_lifecycle_fixture()
+
+        class Logger:
+            def __init__(self) -> None:
+                self.lines: list[str] = []
+
+            def info(self, message: str) -> None:
+                self.lines.append(message)
+
+            def error(self, message: str) -> None:
+                self.lines.append(message)
+
+            def warning(self, message: str) -> None:
+                self.lines.append(message)
+
+        with tempfile.TemporaryDirectory() as temp:
+            control = LifecycleControl.__new__(LifecycleControl)
+            control.logger = Logger()
+            control._generation = "opaque-generation"
+            control._callback_seq = 0
+            control._file_control_task = types.SimpleNamespace(task_id=9, is_sync=True, is_cancelled=False)
+            control._command_path = Path(temp) / "command.request"
+            control._request_path = None
+            control._command_path.write_text('{"token":"token","command":"spark tps"}\n', encoding="utf-8")
+            control.server = types.SimpleNamespace(
+                dispatch_command=mock.Mock(side_effect=RuntimeError("dispatch failed")),
+                command_sender=object(),
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "dispatch failed"):
+                control._poll_file_control()
+
+        phases = [record["phase"] for record in _heartbeat_fields(control.logger.lines)]
+        self.assertEqual(phases, ["entry", "exception", "exit"])
+
+    def test_timeout_diagnostics_are_two_bounded_snapshots_with_thread_deltas(self) -> None:
+        process = _WaitProcess(returncode=0)
+        server = _framework_server(process)
+        server.timeout_diagnostic_delay = 0.0
+        heartbeat = (
+            "CI lifecycle heartbeat; kind=ci-lifecycle-heartbeat; generation=opaque-generation; phase=exit; "
+            "callback_seq=20; task_id=37; is_sync=True; is_cancelled=False; monotonic_ns=123; "
+            "command_pending=False; dispatch_result=None"
+        )
+        server.snapshot = lambda: [heartbeat]  # type: ignore[method-assign]
+        server.process_tree_snapshot = mock.Mock(side_effect=[[
+            {"pid": 700, "name": "C:\\private\\bedrock_server.exe", "create_time": 12.5, "alive": True, "identity_match": True}
+        ], [
+            {"pid": 700, "name": "C:\\private\\bedrock_server.exe", "create_time": 12.5, "alive": True, "identity_match": True}
+        ]])  # type: ignore[method-assign]
+        thread_samples = iter((
+            [types.SimpleNamespace(id=701, user_time=1.0, system_time=0.5)],
+            [types.SimpleNamespace(id=701, user_time=1.5, system_time=0.75)],
+        ))
+        fake_process = types.SimpleNamespace(threads=lambda: next(thread_samples))
+
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(run_test.psutil, "Process", return_value=fake_process):
+            server.timeout_diagnostic_directory = Path(temp)
+            result = server.capture_timeout_diagnostics()
+            files = sorted(Path(temp).glob("command-timeout-*.json"))
+            self.assertEqual(len(files), 2)
+            self.assertEqual(len(result["snapshots"]), 2)
+            second = result["snapshots"][1]
+            self.assertEqual(second["task_state"]["generation"], "opaque-generation")
+            self.assertEqual(second["threads"][0]["user_time_delta"], 0.5)
+            self.assertEqual(second["threads"][0]["system_time_delta"], 0.25)
+            for path in files:
+                self.assertLessEqual(path.stat().st_size, run_test.TIMEOUT_DIAGNOSTIC_MAX_BYTES)
+                text = path.read_text(encoding="utf-8")
+                self.assertNotIn("private", text)
+                self.assertNotIn("commandline", text.casefold())
+                self.assertNotIn("cwd", text.casefold())
+
+    def test_timeout_ack_error_stays_primary_and_pending_token_drains_late(self) -> None:
+        process = _WaitProcess(returncode=0)
+        server = _framework_server(process)
+        server._pending_file_commands = {0: "abc123"}
+        server.snapshot = list  # type: ignore[method-assign]
+        server.is_alive = lambda: True  # type: ignore[method-assign]
+        capture = mock.Mock()
+        server.capture_timeout_diagnostics = capture  # type: ignore[method-assign]
+
+        with (
+            mock.patch.object(exact.time, "monotonic", side_effect=[0.0, 1.0]),
+            self.assertRaisesRegex(TimeoutError, "abc123"),
+        ):
+            server.wait_command_output(0, 0.5)
+        capture.assert_called_once_with()
+        self.assertEqual(server._pending_file_commands, {0: "abc123"})
+
+        server.snapshot = lambda: [  # type: ignore[method-assign]
+            "CI command dispatch completed; token=abc123; dispatched=true"
+        ]
+        self.assertTrue(server.wait_for_pending_file_commands(0.2))
+        self.assertEqual(server._pending_file_commands, {})
+
+    def test_timeout_diagnostics_tolerate_missing_terminated_and_access_denied_processes(self) -> None:
+        process = _WaitProcess(returncode=0)
+        server = _framework_server(process)
+        server.snapshot = list  # type: ignore[method-assign]
+        cases = (
+            ("missing", {"alive": True, "identity_match": True}, psutil.NoSuchProcess(700)),
+            ("terminated", {"alive": False, "identity_match": True}, None),
+            ("access-denied", {"alive": True, "identity_match": True}, psutil.AccessDenied(700)),
+        )
+        for name, state, process_error in cases:
+            with self.subTest(process=name):
+                record = {
+                    "pid": 700,
+                    "name": "bedrock_server.exe",
+                    "create_time": 12.5,
+                    **state,
+                }
+                server.process_tree_snapshot = mock.Mock(return_value=[record])  # type: ignore[method-assign]
+                with mock.patch.object(run_test.psutil, "Process", side_effect=process_error) as constructor:
+                    snapshot = server._capture_timeout_process_thread_snapshot(1)
+                self.assertEqual(snapshot["processes"][0]["pid"], 700)
+                self.assertEqual(snapshot["threads"], [])
+                if process_error is None:
+                    constructor.assert_not_called()
+                else:
+                    self.assertIn(type(process_error).__name__, snapshot["collector_errors"])
 
     def test_framework_shutdown_process_sends_cishutdown(self) -> None:
         process = _WaitProcess(returncode=0)

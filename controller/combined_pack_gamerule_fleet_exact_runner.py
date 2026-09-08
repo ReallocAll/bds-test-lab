@@ -79,6 +79,13 @@ class _FrameworkShutdownServerProcess(ServerProcess):
         return start
 
     def wait_command_output(self, start_index: int, timeout: float = 8.0) -> list[str]:
+        try:
+            return self._wait_command_output(start_index, timeout)
+        except TimeoutError:
+            self.capture_timeout_diagnostics()
+            raise
+
+    def _wait_command_output(self, start_index: int, timeout: float) -> list[str]:
         pending = getattr(self, "_pending_file_commands", {})
         token = pending.get(start_index)
         if token is None:
@@ -127,7 +134,7 @@ class _FrameworkShutdownServerProcess(ServerProcess):
             if remaining <= 0:
                 return False
             try:
-                self.wait_command_output(start_index, remaining)
+                self._wait_command_output(start_index, remaining)
             except (OSError, RuntimeError, TimeoutError, ValueError):
                 return False
         return not pending
@@ -343,6 +350,9 @@ def _start_windows_interactive_server(self: CombinedPackGameruleFleetValidation)
         str(self.server_dir),
     ]
     self.server = _FrameworkShutdownServerProcess(cmd, self.root, self.log_path)
+    capture = getattr(self, "capture", None)
+    if capture is not None:
+        self.server.timeout_diagnostic_directory = capture.output_dir
     IntegrationTest._prepare_bstats_before_start(self)
     self.server.start()
     self.server.wait_for(
