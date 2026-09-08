@@ -13,6 +13,10 @@ on:
       - "controller/combined_pack_gamerule_fleet_exact_runner.py"
       - "fixtures/endstone-ci-lifecycle-control/**"
 
+concurrency:
+  group: spark51-windows-bds-host
+  cancel-in-progress: false
+
 permissions:
   contents: read
   actions: read

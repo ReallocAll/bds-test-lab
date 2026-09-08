@@ -1,0 +1,916 @@
+name: Spark #51 Windows post-reload diagnostic stress
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_lab_sha:
+        description: Exact successful upstream lab commit
+        required: true
+        default: 6293f9d41672adc2b27ffa4e38eb9c444c6c0620
+        type: string
+      diagnostic_lab_sha:
+        description: Diagnostic commit to check out; must equal github.sha
+        required: true
+        type: string
+      upstream_run_id:
+        description: Exact successful upstream E2E run
+        required: true
+        default: "34229468130"
+        type: string
+      upstream_run_attempt:
+        description: Exact upstream run attempt
+        required: true
+        default: "3"
+        type: string
+      spark_candidate_sha:
+        description: Exact Spark candidate commit
+        required: true
+        default: 6911c16ab7334410b13691a47895479a20d232de
+        type: string
+      spark_artifact_id:
+        description: Exact Spark Actions artifact ID
+        required: true
+        default: "10056904202"
+        type: string
+      spark_artifact_digest:
+        description: Exact Spark Actions artifact digest
+        required: true
+        default: sha256:2d6e7c2bd82b110ffc2f5d347624e42d0e96301507be2ee42aab9f75cb9e41f6
+        type: string
+
+concurrency:
+  group: spark51-windows-bds-host
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  LAB_RUN_ID: ${{ github.run_id }}
+  EXPECTED_ENDSTONE_SHA: "46eff9f125f52eac76472d84339ead8fbf51fcd2"
+  EXPECTED_ENDSTONE_RUN_ID: "33567087207"
+  EXPECTED_ENDSTONE_ARTIFACT_ID: "9824065779"
+  EXPECTED_ENDSTONE_VERSION: "0.11.11.dev396"
+  EXPECTED_BDS_VERSION: "1.26.45.1"
+  BOT_REF: "f175e4a6551d1973628b5ca926a497e9962c1302"
+  INPUT_UPSTREAM_LAB_SHA: ${{ inputs.upstream_lab_sha }}
+  INPUT_DIAGNOSTIC_LAB_SHA: ${{ inputs.diagnostic_lab_sha }}
+  INPUT_UPSTREAM_RUN_ID: ${{ inputs.upstream_run_id }}
+  INPUT_UPSTREAM_RUN_ATTEMPT: ${{ inputs.upstream_run_attempt }}
+  INPUT_SPARK_CANDIDATE_SHA: ${{ inputs.spark_candidate_sha }}
+  INPUT_SPARK_ARTIFACT_ID: ${{ inputs.spark_artifact_id }}
+  INPUT_SPARK_ARTIFACT_DIGEST: ${{ inputs.spark_artifact_digest }}
+
+jobs:
+  windows-post-reload-diagnostic:
+    if: github.run_attempt == 1
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - name: Validate trusted dispatch provenance before checkout
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.REPO_PAT }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $labRepository = "ReallocAll/bds-test-lab"
+          $sparkRepository = "ReallocAll/spark"
+          $workflowPath = ".github/workflows/spark51-windows-bds-e2e.yml"
+          function Require-FullSha([string] $value, [string] $name) {
+            if ($value -notmatch '^[0-9a-fA-F]{40}$') { throw "$name must be an exact full SHA" }
+            return $value.ToLowerInvariant()
+          }
+          function Get-GhJson([string] $path) {
+            $raw = gh api $path
+            if ($LASTEXITCODE -ne 0) { throw "GitHub API request failed: $path" }
+            return ($raw | ConvertFrom-Json)
+          }
+          if ($env:GITHUB_EVENT_NAME -ne "workflow_dispatch") { throw "diagnostic requires workflow_dispatch" }
+          if ($env:GITHUB_REPOSITORY -ne $labRepository) { throw "diagnostic must run in $labRepository" }
+          $upstreamSha = Require-FullSha $env:INPUT_UPSTREAM_LAB_SHA "upstream_lab_sha"
+          $diagnosticSha = Require-FullSha $env:INPUT_DIAGNOSTIC_LAB_SHA "diagnostic_lab_sha"
+          $candidateSha = Require-FullSha $env:INPUT_SPARK_CANDIDATE_SHA "spark_candidate_sha"
+          if ($upstreamSha -ne "6293f9d41672adc2b27ffa4e38eb9c444c6c0620") { throw "upstream lab SHA is not the authorized revision" }
+          if ($candidateSha -ne "6911c16ab7334410b13691a47895479a20d232de") { throw "Spark candidate SHA is not authorized" }
+          if ($diagnosticSha -ne $env:GITHUB_SHA.ToLowerInvariant()) { throw "diagnostic_lab_sha must equal github.sha" }
+          $lab = Get-GhJson "repos/$labRepository"
+          if ($lab.full_name -ne $labRepository -or $lab.fork -ne $false) { throw "lab repository identity is not the intended non-fork repository" }
+          [long] $runId = 0
+          if (-not [long]::TryParse($env:INPUT_UPSTREAM_RUN_ID, [ref] $runId) -or $runId -ne 34229468130) { throw "upstream_run_id is not authorized" }
+          [long] $attempt = 0
+          if (-not [long]::TryParse($env:INPUT_UPSTREAM_RUN_ATTEMPT, [ref] $attempt) -or $attempt -ne 3) { throw "upstream_run_attempt is not authorized" }
+          $run = Get-GhJson "repos/$labRepository/actions/runs/$runId"
+          if ($run.id -ne $runId -or $run.run_attempt -ne $attempt -or $run.status -ne "completed" -or $run.conclusion -ne "success") { throw "upstream run is not the authorized completed success attempt" }
+          if ($run.path -ne $workflowPath -or $run.head_sha.ToLowerInvariant() -ne $upstreamSha) { throw "upstream workflow path or head SHA mismatch" }
+          $workflow = Get-GhJson "repos/$labRepository/actions/workflows/$($run.workflow_id)"
+          if ($run.workflow_id -ne $workflow.id -or $workflow.path -ne $workflowPath) { throw "upstream workflow identity mismatch" }
+          if ($run.repository.full_name -ne $labRepository -or $run.head_repository.full_name -ne $labRepository) { throw "upstream run is from a fork or another repository" }
+          $runArtifacts = Get-GhJson "repos/$labRepository/actions/runs/$runId/artifacts?per_page=100"
+          $runEvidence = @($runArtifacts.artifacts | Where-Object { $_.expired -eq $false -and $_.name -eq "spark51-windows-bds-e2e-$runId" })
+          if ($runEvidence.Count -ne 1) { throw "authorized upstream E2E artifact evidence is missing or duplicated" }
+          [long] $artifactId = 0
+          if (-not [long]::TryParse($env:INPUT_SPARK_ARTIFACT_ID, [ref] $artifactId) -or $artifactId -ne 10056904202) { throw "spark_artifact_id is not authorized" }
+          $artifactDigest = $env:INPUT_SPARK_ARTIFACT_DIGEST.Trim().ToLowerInvariant()
+          if ($artifactDigest -ne "sha256:2d6e7c2bd82b110ffc2f5d347624e42d0e96301507be2ee42aab9f75cb9e41f6") { throw "spark_artifact_digest is not authorized" }
+          $sparkArtifact = Get-GhJson "repos/$sparkRepository/actions/artifacts/$artifactId"
+          if ($sparkArtifact.id -ne $artifactId -or $sparkArtifact.expired -ne $false -or $sparkArtifact.digest.ToLowerInvariant() -ne $artifactDigest) { throw "Spark artifact ID or digest mismatch" }
+          [long] $sparkRunId = 0
+          if (-not [long]::TryParse([string] $sparkArtifact.workflow_run.id, [ref] $sparkRunId) -or $sparkRunId -ne 34228410211) { throw "Spark artifact workflow run ID mismatch" }
+          if ($sparkArtifact.workflow_run.head_sha.ToLowerInvariant() -ne $candidateSha) { throw "Spark artifact candidate SHA mismatch" }
+          $sparkRun = Get-GhJson "repos/$sparkRepository/actions/runs/$sparkRunId"
+          if ($sparkRun.id -ne $sparkRunId -or $sparkRun.status -ne "completed" -or $sparkRun.conclusion -ne "success" -or $sparkRun.path -ne ".github/workflows/build.yml" -or $sparkRun.head_sha.ToLowerInvariant() -ne $candidateSha -or $sparkRun.repository.full_name -ne $sparkRepository -or $sparkRun.head_repository.full_name -ne $sparkRepository) { throw "Spark artifact workflow run provenance mismatch" }
+          $candidatePointer = Get-GhJson "repos/$labRepository/contents/.github/spark51-candidate.txt?ref=$upstreamSha"
+          $pointer = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(($candidatePointer.content -replace '\s', ''))).Trim().ToLowerInvariant()
+          if ($pointer -ne $candidateSha) { throw "Spark candidate pointer evidence mismatch" }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "EXPECTED_SPARK_SHA=$candidateSha"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "UPSTREAM_RUN_ID=$runId"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "EXPECTED_SPARK_ARTIFACT_ID=$artifactId"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "EXPECTED_SPARK_ARTIFACT_DIGEST=$artifactDigest"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "EXPECTED_SPARK_ARTIFACT_RUN_ID=$sparkRunId"
+
+      - name: Checkout exact diagnostic lab revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.INPUT_DIAGNOSTIC_LAB_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify checked out diagnostic revision and candidate pointer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($head -ne $env:INPUT_DIAGNOSTIC_LAB_SHA.ToLowerInvariant() -or $head -ne $env:GITHUB_SHA.ToLowerInvariant()) { throw "diagnostic checkout SHA mismatch" }
+          $candidate = (Get-Content -Raw -LiteralPath ".github/spark51-candidate.txt").Trim().ToLowerInvariant()
+          if ($candidate -ne $env:EXPECTED_SPARK_SHA.ToLowerInvariant()) { throw "checked out Spark candidate pointer mismatch" }
+
+      - name: Checkout exact bot
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/bds-test-bot
+          ref: ${{ env.BOT_REF }}
+          path: bot-src
+          persist-credentials: false
+
+      - name: Set up Go 1.25
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Build exact bot
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cd bot-src
+          test "$(git rev-parse HEAD)" = "$BOT_REF"
+          go mod download
+          go test ./...
+          go build -trimpath -o ../dist/bds-test-bot.exe ./cmd/bds-test-bot
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install validation dependencies and lifecycle fixture
+        shell: pwsh
+        run: >-
+          python -m pip install --disable-pip-version-check
+          psutil packaging
+          ./fixtures/endstone-ci-lifecycle-control
+
+      - name: Require exact Spark Actions artifact
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.REPO_PAT }}
+        run: >-
+          python -m controller.assert_spark_artifact
+          --platform windows
+          --expected-sha $env:EXPECTED_SPARK_SHA
+
+      - name: Run post-reload diagnostic stress
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.REPO_PAT }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $supervisorSource = @'
+          using System;
+          using System.Collections;
+          using System.Collections.Generic;
+          using System.Diagnostics;
+          using System.IO;
+          using System.IO.MemoryMappedFiles;
+          using System.Runtime.InteropServices;
+          using System.Text;
+          using System.Threading;
+
+          public static class Spark51WindowsContainmentSupervisor
+          {
+              private const int ControlSize = 4096;
+              private const int KillOnJobClose = 0x2000;
+              private const int BreakawayOk = 0x0800;
+              private const uint HandleInherit = 0x00000001;
+              private const uint CreateSuspended = 0x00000004;
+              private const uint CreateUnicodeEnvironment = 0x00000400;
+              private const uint CreateNoWindow = 0x08000000;
+              private const int JobObjectBasicProcessIdList = 3;
+              private const int ControlSchemaVersion = 2;
+              private const int SupervisorStarting = 1;
+              private const int SupervisorRunning = 2;
+              private const int SupervisorFailure = 3;
+              private const int SupervisorObserverDeathConfirmed = 4;
+              private const int SupervisorComplete = 5;
+              private const int SupervisorForcedObserverFailure = 6;
+              private const int SupervisorEmergency = 7;
+              private const int ControllerStarting = 1;
+              private const int ControllerRunning = 2;
+              private const int ControllerNormalObserverStopRequest = 3;
+              private const int ControllerFailure = 4;
+              private const int ControllerComplete = 5;
+              private const int ObserverWaiting = 1;
+              private const int ObserverReady = 2;
+              private const int ObserverFailure = 3;
+              private const int ObserverTriggered = 4;
+              private const int ObserverStopped = 5;
+              private const long SupervisorStatusOffset = 12;
+              private const long ControllerStatusOffset = 16;
+              private const long ObserverStatusOffset = 20;
+              private const long OriginOffset = 24;
+              private const long WorkDeadlineOffset = 32;
+              private const long HardDeadlineOffset = 40;
+              private const long EmergencyOffset = 48;
+              private const long ObserverZeroOffset = 56;
+              private const long ControllerZeroOffset = 64;
+              private const long RepetitionDeadlineOffset = 72;
+              private const long ControllerPidOffset = 80;
+              private const long ObserverPidOffset = 84;
+              private const long SupervisorUpdateOffset = 88;
+              private const long ControllerUpdateOffset = 96;
+              private const long ObserverUpdateOffset = 104;
+              private const long RepetitionOffset = 112;
+              private const long PhaseOffset = 116;
+              private const long Billion = 1000000000L;
+
+              [StructLayout(LayoutKind.Sequential)]
+              private struct IoCounters
+              {
+                  public ulong ReadOperationCount;
+                  public ulong WriteOperationCount;
+                  public ulong OtherOperationCount;
+                  public ulong ReadTransferCount;
+                  public ulong WriteTransferCount;
+                  public ulong OtherTransferCount;
+              }
+
+              [StructLayout(LayoutKind.Sequential)]
+              private struct BasicLimitInformation
+              {
+                  public long PerProcessUserTimeLimit;
+                  public long PerJobUserTimeLimit;
+                  public uint LimitFlags;
+                  public UIntPtr MinimumWorkingSetSize;
+                  public UIntPtr MaximumWorkingSetSize;
+                  public uint ActiveProcessLimit;
+                  public IntPtr Affinity;
+                  public uint PriorityClass;
+                  public uint SchedulingClass;
+              }
+
+              [StructLayout(LayoutKind.Sequential)]
+              private struct ExtendedLimitInformation
+              {
+                  public BasicLimitInformation BasicLimitInformation;
+                  public IoCounters IoInfo;
+                  public UIntPtr ProcessMemoryLimit;
+                  public UIntPtr JobMemoryLimit;
+                  public UIntPtr PeakProcessMemoryUsed;
+                  public UIntPtr PeakJobMemoryUsed;
+              }
+
+              [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+              private struct StartupInfo
+              {
+                  public int cb;
+                  public string reserved;
+                  public string desktop;
+                  public string title;
+                  public int x;
+                  public int y;
+                  public int xSize;
+                  public int ySize;
+                  public int xCountChars;
+                  public int yCountChars;
+                  public int fillAttribute;
+                  public int flags;
+                  public short showWindow;
+                  public short reserved2;
+                  public IntPtr reserved2Ptr;
+                  public IntPtr stdInput;
+                  public IntPtr stdOutput;
+                  public IntPtr stdError;
+              }
+
+              [StructLayout(LayoutKind.Sequential)]
+              private struct ProcessInformation
+              {
+                  public IntPtr process;
+                  public IntPtr thread;
+                  public int processId;
+                  public int threadId;
+              }
+
+              [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+              private static extern IntPtr CreateJobObject(IntPtr attributes, string name);
+
+              [DllImport("kernel32.dll", SetLastError = true)]
+              private static extern bool SetInformationJobObject(IntPtr job, int informationClass, IntPtr information, uint length);
+
+              [DllImport("kernel32.dll", SetLastError = true)]
+              private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+
+              [DllImport("kernel32.dll", SetLastError = true)]
+              private static extern bool IsProcessInJob(IntPtr process, IntPtr job, out bool result);
+
+              [DllImport("kernel32.dll", SetLastError = true)]
+              private static extern bool QueryInformationJobObject(IntPtr job, int informationClass, IntPtr information, uint length, out uint returnLength);
+
+              [DllImport("kernel32.dll", SetLastError = true)]
+              private static extern bool TerminateJobObject(IntPtr job, uint exitCode);
+
+              [DllImport("kernel32.dll", SetLastError = true)]
+              private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+              [DllImport("kernel32.dll", SetLastError = true)]
+              private static extern bool CloseHandle(IntPtr handle);
+
+              [DllImport("kernel32.dll", SetLastError = true)]
+              private static extern uint ResumeThread(IntPtr thread);
+
+              [DllImport("kernel32.dll", SetLastError = true)]
+              private static extern bool CreateProcess(
+                  string applicationName,
+                  StringBuilder commandLine,
+                  IntPtr processAttributes,
+                  IntPtr threadAttributes,
+                  bool inheritHandles,
+                  uint creationFlags,
+                  IntPtr environment,
+                  string currentDirectory,
+                  ref StartupInfo startupInfo,
+                  out ProcessInformation processInformation);
+
+              [DllImport("kernel32.dll", SetLastError = true)]
+              private static extern bool SetHandleInformation(IntPtr handle, uint mask, uint flags);
+
+              [DllImport("kernel32.dll", SetLastError = true)]
+              private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+              [DllImport("kernel32.dll", SetLastError = true)]
+              private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+
+              private sealed class Child
+              {
+                  public IntPtr Process;
+                  public IntPtr Thread;
+                  public int Pid;
+                  public FileStream Output;
+                  public bool Forced;
+                  public bool Created;
+                  public bool Assigned;
+                  public bool JobContained;
+                  public bool Resumed;
+              }
+
+              private static int startChildCalls;
+
+              private static long NowNs()
+              {
+                  return (long)(Stopwatch.GetTimestamp() * (double)Billion / Stopwatch.Frequency);
+              }
+
+              private static string Quote(string value)
+              {
+                  return "\"" + value.Replace("\"", "\\\"") + "\"";
+              }
+
+              private static IntPtr EnvironmentBlock(Dictionary<string, string> additions, bool keepToken)
+              {
+                  var values = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                  foreach (DictionaryEntry item in Environment.GetEnvironmentVariables())
+                  {
+                      string key = (string)item.Key;
+                      if (!keepToken && (key.Equals("GH_TOKEN", StringComparison.OrdinalIgnoreCase) || key.Equals("REPO_PAT", StringComparison.OrdinalIgnoreCase)))
+                          continue;
+                      values[key] = (string)item.Value;
+                  }
+                  foreach (var item in additions)
+                      values[item.Key] = item.Value;
+                  var block = new StringBuilder();
+                  foreach (var item in values)
+                      block.Append(item.Key).Append('=').Append(item.Value).Append('\0');
+                  block.Append('\0');
+                  return Marshal.StringToHGlobalUni(block.ToString());
+              }
+
+              private static IntPtr CreateContainedJob(string name)
+              {
+                  IntPtr job = CreateJobObject(IntPtr.Zero, name);
+                  if (job == IntPtr.Zero)
+                      throw new InvalidOperationException("CreateJobObject failed");
+                  var limits = new ExtendedLimitInformation();
+                  limits.BasicLimitInformation.LimitFlags = KillOnJobClose;
+                  if ((limits.BasicLimitInformation.LimitFlags & BreakawayOk) != 0)
+                      throw new InvalidOperationException("breakaway is forbidden");
+                  int size = Marshal.SizeOf(typeof(ExtendedLimitInformation));
+                  IntPtr buffer = Marshal.AllocHGlobal(size);
+                  try
+                  {
+                      Marshal.StructureToPtr(limits, buffer, false);
+                      if (!SetInformationJobObject(job, 9, buffer, (uint)size))
+                          throw new InvalidOperationException("SetInformationJobObject failed");
+                  }
+                  catch
+                  {
+                      CloseHandle(job);
+                      throw;
+                  }
+                  finally
+                  {
+                      Marshal.FreeHGlobal(buffer);
+                  }
+                  return job;
+              }
+
+              private static Child StartChild(string python, string arguments, string root, string logPath, Dictionary<string, string> additions, bool keepToken)
+              {
+                  int startChildCall = Interlocked.Increment(ref startChildCalls);
+                  if (startChildCall == 2 && Environment.GetEnvironmentVariable("SPARK51_TEST_FAIL_SECOND_START") == "1")
+                      throw new InvalidOperationException("injected second StartChild failure");
+                  var output = new FileStream(logPath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite);
+                  if (!SetHandleInformation(output.SafeFileHandle.DangerousGetHandle(), HandleInherit, HandleInherit))
+                  {
+                      output.Dispose();
+                      throw new InvalidOperationException("stdout handle could not be made inheritable");
+                  }
+                  var startup = new StartupInfo();
+                  startup.cb = Marshal.SizeOf(typeof(StartupInfo));
+                  startup.flags = unchecked((int)0x00000100);
+                  startup.stdOutput = output.SafeFileHandle.DangerousGetHandle();
+                  startup.stdError = output.SafeFileHandle.DangerousGetHandle();
+                  var command = new StringBuilder(Quote(python) + " " + arguments);
+                  IntPtr environment = IntPtr.Zero;
+                  ProcessInformation information = new ProcessInformation();
+                  try
+                  {
+                      environment = EnvironmentBlock(additions, keepToken);
+                      if (!CreateProcess(null, command, IntPtr.Zero, IntPtr.Zero, true, CreateSuspended | CreateUnicodeEnvironment | CreateNoWindow, environment, root, ref startup, out information))
+                          throw new InvalidOperationException("CreateProcess failed");
+                      var child = new Child { Process = information.process, Thread = information.thread, Pid = information.processId, Output = output, Created = true };
+                      information.process = IntPtr.Zero;
+                      information.thread = IntPtr.Zero;
+                      return child;
+                  }
+                  catch
+                  {
+                      if (information.process != IntPtr.Zero)
+                      {
+                          TerminateProcess(information.process, 1);
+                          WaitForSingleObject(information.process, 5000);
+                          CloseHandle(information.process);
+                      }
+                      if (information.thread != IntPtr.Zero)
+                          CloseHandle(information.thread);
+                      output.Dispose();
+                      throw;
+                  }
+                  finally
+                  {
+                      if (environment != IntPtr.Zero)
+                          Marshal.FreeHGlobal(environment);
+                  }
+              }
+
+              private static bool AssignVerified(IntPtr job, Child child)
+              {
+                  child.Assigned = AssignProcessToJobObject(job, child.Process);
+                  if (!child.Assigned)
+                      return false;
+                  bool inJob;
+                  child.JobContained = IsProcessInJob(child.Process, job, out inJob) && inJob;
+                  child.Assigned = child.JobContained;
+                  return child.JobContained;
+              }
+
+              private static int ReadInt(MemoryMappedViewAccessor view, long offset)
+              {
+                  int value;
+                  view.Read(offset, out value);
+                  return value;
+              }
+
+              private static long ReadLong(MemoryMappedViewAccessor view, long offset)
+              {
+                  long value;
+                  view.Read(offset, out value);
+                  return value;
+              }
+
+              private static void WriteInt(MemoryMappedViewAccessor view, long offset, int value)
+              {
+                  view.Write(offset, value);
+                  view.Flush();
+              }
+
+              private static void WriteStatus(MemoryMappedViewAccessor view, long offset, long updateOffset, int status)
+              {
+                  WriteInt(view, offset, status);
+                  WriteLong(view, updateOffset, NowNs());
+              }
+
+              private static void WriteLong(MemoryMappedViewAccessor view, long offset, long value)
+              {
+                  view.Write(offset, value);
+                  view.Flush();
+              }
+
+              private static bool JobEmpty(IntPtr job)
+              {
+                  IntPtr buffer = Marshal.AllocHGlobal(65536);
+                  try
+                  {
+                      uint returned;
+                      if (!QueryInformationJobObject(job, JobObjectBasicProcessIdList, buffer, 65536, out returned))
+                          return false;
+                      return Marshal.ReadInt32(buffer) == 0;
+                  }
+                  finally
+                  {
+                      Marshal.FreeHGlobal(buffer);
+                  }
+              }
+
+              private static bool Dead(Child child)
+              {
+                  return WaitForSingleObject(child.Process, 0) == 0;
+              }
+
+              private static int ExitCode(Child child)
+              {
+                  uint code;
+                  if (!GetExitCodeProcess(child.Process, out code))
+                      return -1;
+                  return unchecked((int)code);
+              }
+
+              private static void KillJob(IntPtr job, Child child)
+              {
+                  child.Forced = true;
+                  if (child.JobContained && job != IntPtr.Zero)
+                      TerminateJobObject(job, 1);
+                  else if (child.Process != IntPtr.Zero)
+                      TerminateProcess(child.Process, 1);
+              }
+
+              private static void TerminateCreated(IntPtr job, Child child)
+              {
+                  if (child == null || !child.Created || child.Process == IntPtr.Zero)
+                      return;
+                  if (child.JobContained && job != IntPtr.Zero)
+                      TerminateJobObject(job, 1);
+                  else
+                      TerminateProcess(child.Process, 1);
+                  child.Forced = true;
+              }
+
+              private static bool TerminateCreatedAndWait(IntPtr job, Child child)
+              {
+                  if (child == null || !child.Created || child.Process == IntPtr.Zero)
+                      return false;
+                  bool live = !Dead(child);
+                  if (live)
+                  {
+                      TerminateCreated(job, child);
+                      WaitForSingleObject(child.Process, 5000);
+                  }
+                  if (child.Thread != IntPtr.Zero)
+                  {
+                      CloseHandle(child.Thread);
+                      child.Thread = IntPtr.Zero;
+                  }
+                  return live;
+              }
+
+              private static bool Stopped(Child child)
+              {
+                  return child == null || !child.Created || child.Process == IntPtr.Zero || Dead(child);
+              }
+
+              private static void CleanupCreatedChildren(IntPtr observerJob, Child observer, IntPtr controllerJob, Child controller)
+              {
+                  TerminateCreatedAndWait(observerJob, observer);
+                  TerminateCreatedAndWait(controllerJob, controller);
+              }
+
+              private static void SleepUntil(long target)
+              {
+                  long remaining = target - NowNs();
+                  if (remaining <= 0)
+                      return;
+                  int milliseconds = (int)Math.Min(50L, Math.Max(1L, remaining / 1000000L));
+                  Thread.Sleep(milliseconds);
+              }
+
+              private static void WriteVerdict(string path, string status, string state, int controllerCode, int observerCode, bool controllerEmpty, bool observerEmpty, bool observerDead, bool forced, string reason)
+              {
+                  WriteVerdict(path, status, state, controllerCode, observerCode, controllerEmpty, observerEmpty, observerDead, forced, reason, false, false);
+              }
+
+              private static void WriteVerdict(string path, string status, string state, int controllerCode, int observerCode, bool controllerEmpty, bool observerEmpty, bool observerDead, bool forced, string reason, bool controllerStopped, bool observerStopped)
+              {
+                   string json = "{\"status\":\"" + status + "\",\"state\":\"" + state + "\",\"controller_exit_code\":" + controllerCode + ",\"observer_exit_code\":" + observerCode + ",\"controller_job_empty\":" + controllerEmpty.ToString().ToLowerInvariant() + ",\"observer_job_empty\":" + observerEmpty.ToString().ToLowerInvariant() + ",\"observer_death_confirmed\":" + observerDead.ToString().ToLowerInvariant() + ",\"forced_observer_termination\":" + forced.ToString().ToLowerInvariant() + ",\"controller_stopped\":" + controllerStopped.ToString().ToLowerInvariant() + ",\"observer_stopped\":" + observerStopped.ToString().ToLowerInvariant() + ",\"reason\":\"" + reason.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"}\n";
+                   string temporary = path + ".tmp-" + Process.GetCurrentProcess().Id;
+                   File.WriteAllText(temporary, json, new UTF8Encoding(false));
+                   if (File.Exists(path))
+                       File.Replace(temporary, path, null, true);
+                   else
+                       File.Move(temporary, path);
+               }
+
+               public static int Run(string python, string root, string bot)
+               {
+                   string controlPath = Path.Combine(root, "spark51-control.bin");
+                   string verdictPath = Path.Combine(root, "supervisor-verdict.json");
+                   IntPtr controllerJob = IntPtr.Zero;
+                   IntPtr observerJob = IntPtr.Zero;
+                   Child controller = null;
+                  Child observer = null;
+                  bool forcedObserver = false;
+                  int controllerCode = -1;
+                  int observerCode = -1;
+                   bool observerDeath = false;
+                   bool failed = false;
+                   string reason = "supervisor did not prove completion";
+                   try
+                   {
+                       File.WriteAllBytes(controlPath, new byte[ControlSize]);
+                       WriteVerdict(verdictPath, "FAIL", "incomplete", -1, -1, false, false, false, false, "supervisor has not proven completion");
+                       string suffix = Environment.GetEnvironmentVariable("GITHUB_RUN_ID") ?? Process.GetCurrentProcess().Id.ToString();
+                       var additions = new Dictionary<string, string>();
+                       additions["SPARK51_CONTROL_PATH"] = controlPath;
+                       additions["SPARK51_SUPERVISOR_VERDICT"] = verdictPath;
+                       string readyName = "Local\\Spark51ObserverReady-" + suffix + "-" + Process.GetCurrentProcess().Id;
+                       string failureName = "Local\\Spark51ObserverFailure-" + suffix + "-" + Process.GetCurrentProcess().Id;
+                       additions["SPARK51_OBSERVER_READY_EVENT"] = readyName;
+                       additions["SPARK51_OBSERVER_FAILURE_EVENT"] = failureName;
+                       using (var readyEvent = new EventWaitHandle(false, EventResetMode.ManualReset, readyName))
+                       using (var failureEvent = new EventWaitHandle(false, EventResetMode.ManualReset, failureName))
+                       using (var controlFile = new FileStream(controlPath, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite))
+                       using (var map = MemoryMappedFile.CreateFromFile(controlFile, "Spark51Control-" + suffix, ControlSize, MemoryMappedFileAccess.ReadWrite, HandleInheritability.None, true))
+                       using (var view = map.CreateViewAccessor())
+                       {
+                           view.Write(0, (byte)'S'); view.Write(1, (byte)'P'); view.Write(2, (byte)'K'); view.Write(3, (byte)'5'); view.Write(4, (byte)'1'); view.Write(5, (byte)'C'); view.Write(6, (byte)'T'); view.Write(7, (byte)'L');
+                           WriteInt(view, 8, ControlSchemaVersion);
+                           long origin = NowNs();
+                           long work = origin + 1380L * Billion;
+                           long hard = origin + 1500L * Billion;
+                           long emergency = origin + 1480L * Billion;
+                           long observerZero = origin + 1485L * Billion;
+                           long controllerZero = origin + 1495L * Billion;
+                           WriteStatus(view, SupervisorStatusOffset, SupervisorUpdateOffset, SupervisorStarting);
+                           WriteStatus(view, ControllerStatusOffset, ControllerUpdateOffset, ControllerStarting);
+                           WriteStatus(view, ObserverStatusOffset, ObserverUpdateOffset, ObserverWaiting);
+                           WriteLong(view, OriginOffset, origin); WriteLong(view, WorkDeadlineOffset, work); WriteLong(view, HardDeadlineOffset, hard); WriteLong(view, EmergencyOffset, emergency); WriteLong(view, ObserverZeroOffset, observerZero); WriteLong(view, ControllerZeroOffset, controllerZero); WriteLong(view, RepetitionDeadlineOffset, 0);
+                           additions["SPARK51_ORIGIN_MONOTONIC_NS"] = origin.ToString();
+                           additions["SPARK51_WORK_DEADLINE_NS"] = work.ToString();
+                           additions["SPARK51_HARD_DEADLINE_NS"] = hard.ToString();
+                           additions["SPARK51_EMERGENCY_NS"] = emergency.ToString();
+                           additions["SPARK51_OBSERVER_ZERO_NS"] = observerZero.ToString();
+                           additions["SPARK51_CONTROLLER_ZERO_NS"] = controllerZero.ToString();
+                           controllerJob = CreateContainedJob("Local\\Spark51ControllerJob-" + suffix + "-" + Process.GetCurrentProcess().Id);
+                           observerJob = CreateContainedJob("Local\\Spark51ObserverJob-" + suffix + "-" + Process.GetCurrentProcess().Id);
+                           var observerArgs = "-m controller.spark51_post_reload_diagnostic --observer --observer-root " + Quote(root) + " --control-path " + Quote(controlPath);
+                           var controllerArgs = "-m controller.spark51_post_reload_diagnostic --supervised-controller --platform windows --bot " + Quote(bot) + " --profile-seconds 30";
+                           controller = StartChild(python, controllerArgs, root, Path.Combine(root, "controller-supervisor.log"), additions, true);
+                           observer = StartChild(python, observerArgs, root, Path.Combine(root, "observer-supervisor.log"), additions, false);
+                           bool observerAssigned = AssignVerified(observerJob, observer);
+                           bool controllerAssigned = AssignVerified(controllerJob, controller);
+                           if (!observerAssigned || !controllerAssigned)
+                           {
+                               failed = true;
+                               reason = "job assignment failed before workload resume";
+                               WriteStatus(view, SupervisorStatusOffset, SupervisorUpdateOffset, SupervisorFailure);
+                               if (TerminateCreatedAndWait(observerJob, observer)) { forcedObserver = true; WriteStatus(view, SupervisorStatusOffset, SupervisorUpdateOffset, SupervisorForcedObserverFailure); }
+                               TerminateCreatedAndWait(controllerJob, controller);
+                            }
+                           else
+                           {
+                               WriteInt(view, ControllerPidOffset, controller.Pid); WriteInt(view, ObserverPidOffset, observer.Pid);
+                               uint observerResume = ResumeThread(observer.Thread);
+                               observer.Resumed = observerResume != unchecked((uint)-1);
+                               uint controllerResume = ResumeThread(controller.Thread);
+                               controller.Resumed = controllerResume != unchecked((uint)-1);
+                               if (!observer.Resumed || !controller.Resumed)
+                               {
+                                   failed = true;
+                                   reason = "process resume failed after verified assignment";
+                                   WriteStatus(view, SupervisorStatusOffset, SupervisorUpdateOffset, SupervisorFailure);
+                                   if (TerminateCreatedAndWait(observerJob, observer)) { forcedObserver = true; WriteStatus(view, SupervisorStatusOffset, SupervisorUpdateOffset, SupervisorForcedObserverFailure); }
+                                   TerminateCreatedAndWait(controllerJob, controller);
+                               }
+                               if (observer.Thread != IntPtr.Zero) { CloseHandle(observer.Thread); observer.Thread = IntPtr.Zero; }
+                               if (controller.Thread != IntPtr.Zero) { CloseHandle(controller.Thread); controller.Thread = IntPtr.Zero; }
+                               if (!failed)
+                                   WriteStatus(view, SupervisorStatusOffset, SupervisorUpdateOffset, SupervisorRunning);
+                           }
+                           long monitorEnd = hard;
+                           while (NowNs() < monitorEnd)
+                           {
+                               bool observerExited = Dead(observer);
+                               bool controllerExited = Dead(controller);
+                               int observerStatus = ReadInt(view, ObserverStatusOffset);
+                               int controllerStatus = ReadInt(view, ControllerStatusOffset);
+                               long workDeadline = ReadLong(view, WorkDeadlineOffset);
+                               long repetitionDeadline = ReadLong(view, RepetitionDeadlineOffset);
+                               long activeDeadline = hard;
+                               if (workDeadline > 0) activeDeadline = Math.Min(activeDeadline, workDeadline);
+                               if (repetitionDeadline > 0) activeDeadline = Math.Min(activeDeadline, repetitionDeadline);
+                               int eventIndex = WaitHandle.WaitAny(new WaitHandle[] { readyEvent, failureEvent }, 100);
+                               if (eventIndex == 1 || observerStatus == ObserverFailure || observerStatus == ObserverTriggered || controllerStatus == ControllerFailure)
+                               {
+                                   failed = true;
+                                   reason = eventIndex == 1 ? "observer failure event" : "shared diagnostic failure status";
+                                   WriteStatus(view, SupervisorStatusOffset, SupervisorUpdateOffset, SupervisorFailure);
+                               }
+                               bool normalStop = controllerStatus == ControllerNormalObserverStopRequest;
+                               if (observerExited && !observerDeath)
+                               {
+                                   int observedExit = ExitCode(observer);
+                                   bool handshakeObserverEmpty = JobEmpty(observerJob);
+                                   if (normalStop && observerStatus == ObserverStopped && observedExit == 0 && handshakeObserverEmpty)
+                                   {
+                                       observerDeath = true;
+                                       observerCode = observedExit;
+                                       WriteStatus(view, SupervisorStatusOffset, SupervisorUpdateOffset, SupervisorObserverDeathConfirmed);
+                                   }
+                                   else if (!failed && !(observerStatus == ObserverStopped && observedExit == 0))
+                                   {
+                                       failed = true;
+                                       reason = "observer exited before the expected normal stop handshake";
+                                       WriteStatus(view, SupervisorStatusOffset, SupervisorUpdateOffset, SupervisorFailure);
+                                   }
+                               }
+                               if (controllerExited && !failed)
+                               {
+                                   controllerCode = ExitCode(controller);
+                                   if (controllerStatus != ControllerComplete || controllerCode != 0 || !observerDeath)
+                                   {
+                                       failed = true;
+                                       reason = "controller exited before supervisor confirmed observer death";
+                                       WriteStatus(view, SupervisorStatusOffset, SupervisorUpdateOffset, SupervisorFailure);
+                                   }
+                               }
+                               if (failed)
+                               {
+                                   if (!observerExited) { KillJob(observerJob, observer); forcedObserver = true; WriteStatus(view, SupervisorStatusOffset, SupervisorUpdateOffset, SupervisorForcedObserverFailure); }
+                                   if (!controllerExited) KillJob(controllerJob, controller);
+                                   if (Dead(observer) && Dead(controller)) break;
+                               }
+                               if (!failed && NowNs() >= activeDeadline)
+                               {
+                                   failed = true;
+                                   reason = repetitionDeadline > 0 && activeDeadline == repetitionDeadline ? "repetition deadline exceeded" : "work deadline exceeded";
+                                   WriteStatus(view, SupervisorStatusOffset, SupervisorUpdateOffset, SupervisorFailure);
+                                   if (!observerExited) { KillJob(observerJob, observer); forcedObserver = true; WriteStatus(view, SupervisorStatusOffset, SupervisorUpdateOffset, SupervisorForcedObserverFailure); }
+                                   if (!controllerExited) KillJob(controllerJob, controller);
+                               }
+                               if (!failed && controllerExited && observerDeath && controllerStatus == ControllerComplete && JobEmpty(controllerJob))
+                                   break;
+                               if (!failed && NowNs() >= emergency)
+                               {
+                                   failed = true;
+                                   reason = "supervisor emergency containment deadline reached";
+                                   WriteStatus(view, SupervisorStatusOffset, SupervisorUpdateOffset, SupervisorEmergency);
+                                   if (!observerExited) { KillJob(observerJob, observer); forcedObserver = true; }
+                                   while (NowNs() < observerZero && (!Dead(observer) || !JobEmpty(observerJob))) SleepUntil(Math.Min(observerZero, NowNs() + 50L * 1000000L));
+                                   observerExited = Dead(observer);
+                                   if (!observerExited || !JobEmpty(observerJob)) reason = "observer did not reach death and job zero by +1485s";
+                                   if (!Dead(controller)) KillJob(controllerJob, controller);
+                                   while (NowNs() < controllerZero && (!Dead(controller) || !JobEmpty(controllerJob))) SleepUntil(Math.Min(controllerZero, NowNs() + 50L * 1000000L));
+                                   break;
+                               }
+                               SleepUntil(Math.Min(monitorEnd, NowNs() + 50L * 1000000L));
+                           }
+                           if (!Dead(observer)) { failed = true; forcedObserver = true; reason = "observer remained alive at supervisor hard deadline"; KillJob(observerJob, observer); WriteStatus(view, SupervisorStatusOffset, SupervisorUpdateOffset, SupervisorForcedObserverFailure); }
+                           if (!Dead(controller)) { failed = true; reason = "controller remained alive at supervisor hard deadline"; KillJob(controllerJob, controller); }
+                           while (NowNs() < hard && (!JobEmpty(observerJob) || !JobEmpty(controllerJob)))
+                           {
+                              long current = NowNs();
+                               if (current >= observerZero && !JobEmpty(observerJob))
+                               {
+                                   failed = true;
+                                   reason = "observer job did not reach zero by +1485s";
+                                   if (!Dead(observer)) { KillJob(observerJob, observer); forcedObserver = true; WriteStatus(view, SupervisorStatusOffset, SupervisorUpdateOffset, SupervisorForcedObserverFailure); }
+                               }
+                              if (current >= controllerZero && !JobEmpty(controllerJob))
+                              {
+                                  failed = true;
+                                  reason = "controller job did not reach zero by +1495s";
+                                  KillJob(controllerJob, controller);
+                              }
+                              SleepUntil(Math.Min(hard, current + 50L * 1000000L));
+                          }
+                          bool observerEmpty = JobEmpty(observerJob);
+                          bool controllerEmpty = JobEmpty(controllerJob);
+                           observerCode = ExitCode(observer);
+                           controllerCode = ExitCode(controller);
+                           bool pass = !failed && ReadInt(view, SupervisorStatusOffset) == SupervisorObserverDeathConfirmed && ReadInt(view, ControllerStatusOffset) == ControllerComplete && ReadInt(view, ObserverStatusOffset) == ObserverStopped && observerDeath && observerCode == 0 && controllerCode == 0 && observerEmpty && controllerEmpty && !forcedObserver;
+                           if (pass) WriteStatus(view, SupervisorStatusOffset, SupervisorUpdateOffset, SupervisorComplete);
+                          if (!pass) failed = true;
+                          WriteVerdict(verdictPath, pass ? "PASS" : "FAIL", pass ? "complete" : "failed", controllerCode, observerCode, controllerEmpty, observerEmpty, observerDeath, forcedObserver, pass ? "controller and observer completed with empty jobs" : reason);
+                          return pass ? 0 : 1;
+                      }
+                  }
+                  catch (Exception exception)
+                  {
+                      reason = exception.GetType().Name + ": " + exception.Message;
+                      CleanupCreatedChildren(observerJob, observer, controllerJob, controller);
+                      bool controllerEmpty = controllerJob == IntPtr.Zero || JobEmpty(controllerJob);
+                      bool observerEmpty = observerJob == IntPtr.Zero || JobEmpty(observerJob);
+                      try { WriteVerdict(verdictPath, "FAIL", "failed", controllerCode, observerCode, controllerEmpty, observerEmpty, observerDeath, forcedObserver, reason, Stopped(controller), Stopped(observer)); } catch { }
+                      return 1;
+                  }
+                  finally
+                  {
+                      CleanupCreatedChildren(observerJob, observer, controllerJob, controller);
+                      if (controllerJob != IntPtr.Zero) CloseHandle(controllerJob);
+                      if (observerJob != IntPtr.Zero) CloseHandle(observerJob);
+                      if (controller != null) { if (controller.Process != IntPtr.Zero) CloseHandle(controller.Process); if (controller.Output != null) controller.Output.Dispose(); }
+                      if (observer != null) { if (observer.Process != IntPtr.Zero) CloseHandle(observer.Process); if (observer.Output != null) observer.Output.Dispose(); }
+                  }
+              }
+          }
+          '@
+          Add-Type -TypeDefinition $supervisorSource -Language CSharp
+          $python = (Get-Command python).Source
+          $bot = (Resolve-Path dist/bds-test-bot.exe).Path
+          $supervisorExit = [Spark51WindowsContainmentSupervisor]::Run($python, (Get-Location).Path, $bot)
+          if ($supervisorExit -ne 0) { exit $supervisorExit }
+
+      - name: Validate diagnostic result contract
+        if: always()
+        shell: pwsh
+        run: >-
+          python -m controller.spark51_post_reload_diagnostic
+          --validate-result
+          --result fleet-spark-result.json
+
+      - name: Add diagnostic summary
+        if: always()
+        shell: pwsh
+        run: |
+          $summary = @'
+          import json
+          from pathlib import Path
+
+          path = Path("fleet-spark-result.json")
+          print("## Spark #51 Windows post-reload diagnostic stress")
+          print()
+          if not path.is_file():
+              print("Result: `fleet-spark-result.json` missing")
+          else:
+              data = json.loads(path.read_text(encoding="utf-8"))
+              diagnostic = data.get("post_reload_diagnostic") or {}
+              print(f"Status: **{data.get('status')}**  |  State: **{data.get('state')}**")
+              print(f"Reloads: {len(data.get('plugin_reload_cycles') or [])}/30  |  Post profiles: {len(data.get('post_reload_profiles') or [])}/10")
+              print(f"Observer: {diagnostic.get('status')}  |  Samples: {diagnostic.get('sample_count')}")
+          '@
+          $summary | python | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload bounded diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: spark51-post-reload-diagnostic-${{ github.run_id }}
+          path: |
+            metadata.json
+            fleet-spark-result.json
+            supervisor-verdict.json
+            controller-supervisor.log
+            observer-supervisor.log
+            observer-state.json
+            observer-result.json
+            test-results.json
+            failure-diagnostics.txt
+            combined-health-capture-windows/*.json
+            bds.log
+            endstone.log
+            spark.log
+            fleet-windows-20-chunk-walk-local.log
+            fleet-windows-20-chunk-walk-public.log
+          if-no-files-found: warn
+          retention-days: 30
