@@ -187,11 +187,35 @@ class Spark51WindowsBdsRunnerTest(unittest.TestCase):
             ["[Endstone] Enabling spark", valid_disable, valid_complete],
             [valid_disable, valid_enable, "Exception while reloading", valid_complete],
             [valid_disable, valid_enable, "Reload rejected by Endstone", valid_complete],
-            [valid_disable, valid_enable, "dispatch result: false", valid_complete],
         )
         for lines in invalid_cases:
             with self.subTest(lines=lines), self.assertRaisesRegex(RuntimeError, "evidence|failure|enable"):
                 _ordered_reload_evidence(lines, 1)
+
+    def test_reload_evidence_rejects_explicit_dispatch_result_false(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "failure"):
+            _ordered_reload_evidence(
+                [
+                    "[Endstone] Disabling spark",
+                    "[Endstone] Enabling spark",
+                    "dispatch result: false",
+                    "Reload complete.",
+                ],
+                1,
+            )
+
+    def test_reload_evidence_ignores_false_lifecycle_heartbeat_fields(self) -> None:
+        lines = [
+            "[Endstone] Disabling spark",
+            (
+                "CI lifecycle heartbeat; kind=ci-lifecycle-heartbeat; generation=opaque-generation; phase=exit; "
+                "callback_seq=20; task_id=37; is_sync=True; is_cancelled=False; monotonic_ns=123; "
+                "command_pending=False; dispatch_result=False"
+            ),
+            "[Endstone] Enabling spark",
+            "Reload complete.",
+        ]
+        self.assertEqual(_ordered_reload_evidence(lines, 1), (lines[0], lines[2], lines[3]))
 
     def test_reload_evidence_is_case_insensitive_and_preserves_exact_lines(self) -> None:
         lines = [

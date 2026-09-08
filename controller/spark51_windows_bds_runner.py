@@ -25,7 +25,7 @@ from controller.python_evidence_provenance import (
 )
 from controller.run_test import ServerProcess, now_iso
 
-SPARK_CANDIDATE_SHA = "de3940d51224b6c826f05ad58c662c20ed18d4e7"
+SPARK_CANDIDATE_SHA = "6911c16ab7334410b13691a47895479a20d232de"
 RELOAD_CYCLES = 3
 ALLOCATION_INTERVAL_BYTES = 4096
 CPU_BASELINE_KIND = "cpu-baseline"
@@ -40,7 +40,8 @@ _RELOAD_DISABLE_RE = re.compile(r"\[(?:endstone|spark)\]\s+disabling\s+spark(?:\
 _RELOAD_ENABLE_RE = re.compile(r"\[(?:endstone|spark)\]\s+enabling\s+spark(?:\s|$)", re.IGNORECASE)
 _RELOAD_COMPLETE_RE = re.compile(r"(?:^|\]\s*:?\s*)reload\s+complete\.\s*$", re.IGNORECASE)
 _RELOAD_FAILURE_RE = re.compile(
-    r"\b(?:failed|failure|error|unable|cannot|could\s+not|not|exception|rejected|false)\b",
+    r"(?:\b(?:failed|failure|error|unable|cannot|could\s+not|not|exception|rejected)\b|"
+    r"\bdispatch\s+result\s*:\s*false\b)",
     re.IGNORECASE,
 )
 

@@ -11,7 +11,7 @@ import yaml
 
 
 WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "spark51-windows-bds-e2e.yml"
-EXPECTED_SPARK_SHA = "de3940d51224b6c826f05ad58c662c20ed18d4e7"
+EXPECTED_SPARK_SHA = "6911c16ab7334410b13691a47895479a20d232de"
 EXPECTED_ENDSTONE_SHA = "46eff9f125f52eac76472d84339ead8fbf51fcd2"
 SPARK_DIGEST = "sha256:" + "a" * 64
 ENDSTONE_DIGEST = "sha256:" + "b" * 64
