@@ -139,8 +139,8 @@ jobs:
           _REPOSITORIES = {"spark": "ReallocAll/spark", "endstone": "EndstoneMC/endstone"}
           _PROFILE_COMMAND = "spark profiler start --timeout 30"
           _ALLOCATION_COMMAND = f"{_PROFILE_COMMAND} --alloc --interval 4096"
-          _ENDSTONE_DISABLE_RE = re.compile(r"\[endstone\].*?\bdisabling\s+spark\b", re.IGNORECASE)
-          _ENDSTONE_ENABLE_RE = re.compile(r"\[endstone\].*?\benabling\s+spark\b", re.IGNORECASE)
+          _SPARK_LIFECYCLE_DISABLE_RE = re.compile(r"\[(?:endstone|spark)\].*?\bdisabling\s+spark\b", re.IGNORECASE)
+          _SPARK_LIFECYCLE_ENABLE_RE = re.compile(r"\[(?:endstone|spark)\].*?\benabling\s+spark\b", re.IGNORECASE)
           _RELOAD_COMPLETE_RE = re.compile(r"\breload\s+complete\.", re.IGNORECASE)
 
 
@@ -311,10 +311,10 @@ jobs:
                   disable = normalized_evidence(record.get("spark_disable_evidence"), f"reload {cycle} Spark disable")
                   enable = normalized_evidence(record.get("spark_enable_evidence"), f"reload {cycle} Spark enable")
                   completion = normalized_evidence(record.get("reload_completion"), f"reload {cycle} completion")
-                  need(_ENDSTONE_DISABLE_RE.search(disable) is not None,
-                       f"reload {cycle} Spark disable evidence is not explicit Endstone output")
-                  need(_ENDSTONE_ENABLE_RE.search(enable) is not None,
-                       f"reload {cycle} Spark enable evidence is not explicit Endstone output")
+                  need(_SPARK_LIFECYCLE_DISABLE_RE.search(disable) is not None,
+                       f"reload {cycle} Spark disable evidence is not explicit Spark lifecycle output")
+                  need(_SPARK_LIFECYCLE_ENABLE_RE.search(enable) is not None,
+                       f"reload {cycle} Spark enable evidence is not explicit Spark lifecycle output")
                   need(_RELOAD_COMPLETE_RE.search(completion) is not None,
                        f"reload {cycle} completion evidence is not explicit")
                   need(record.get("reload_evidence_order") == ["spark-disable", "spark-enable", "reload-complete"],

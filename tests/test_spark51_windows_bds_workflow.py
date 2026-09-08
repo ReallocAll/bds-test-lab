@@ -115,8 +115,8 @@ def _valid_fixture() -> tuple[dict[str, Any], dict[str, Any], dict[str, str]]:
             }
         )
     for cycle in range(1, 4):
-        disable = "[Endstone] Disabling spark"
-        enable = "[Endstone] Enabling spark"
+        disable = "[01:49:22 INFO] [Spark] Disabling spark v0.5.3"
+        enable = "[01:49:24 INFO] [Spark] Enabling spark v0.5.3"
         complete = "Reload complete."
         result["plugin_reload_cycles"].append(
             {
@@ -256,6 +256,18 @@ class Spark51WindowsBdsWorkflowTest(unittest.TestCase):
 
     def test_embedded_validator_accepts_minimal_valid_fixture(self) -> None:
         self._validate_fixture(*_valid_fixture())
+
+    def test_embedded_validator_accepts_legacy_endstone_reload_evidence(self) -> None:
+        result, metadata, env = _valid_fixture()
+        for record in result["plugin_reload_cycles"]:
+            record["spark_disable_evidence"] = "[Endstone] Disabling spark"
+            record["spark_enable_evidence"] = "[Endstone] Enabling spark"
+            record["reload_evidence_lines"] = [
+                record["spark_disable_evidence"],
+                record["spark_enable_evidence"],
+                record["reload_completion"],
+            ]
+        self._validate_fixture(result, metadata, env)
 
     def test_embedded_validator_rejects_mutated_profile_command(self) -> None:
         result, metadata, env = _valid_fixture()
