@@ -152,6 +152,29 @@ class Spark51WindowsBdsRunnerTest(unittest.TestCase):
             with self.subTest(lines=invalid), self.assertRaisesRegex(RuntimeError, "evidence|completion"):
                 _ordered_reload_evidence(invalid, 1)
 
+    def test_reload_evidence_matches_real_spark_log_lines(self) -> None:
+        lines = [
+            "[01:49:22 INFO] [Spark] Disabling spark v0.5.3",
+            "[01:49:24 INFO] [Spark] Enabling spark v0.5.3",
+            "[01:49:24 INFO]: Reload complete.",
+        ]
+        self.assertEqual(_ordered_reload_evidence(lines, 1), tuple(lines))
+        invalid_cases = (
+            [
+                "[01:49:22 INFO] [Worker] Disabling spark v0.5.3",
+                lines[1],
+                lines[2],
+            ],
+            [
+                lines[0],
+                "[01:49:24 INFO] [Worker] Enabling spark v0.5.3",
+                lines[2],
+            ],
+        )
+        for invalid in invalid_cases:
+            with self.subTest(lines=invalid), self.assertRaisesRegex(RuntimeError, "evidence"):
+                _ordered_reload_evidence(invalid, 1)
+
     def test_reload_evidence_rejects_generic_load_and_failure_text(self) -> None:
         valid_disable = "[Endstone] Disabling spark"
         valid_enable = "[Endstone] Enabling spark"

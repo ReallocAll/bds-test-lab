@@ -36,9 +36,9 @@ PROFILE_KINDS = (CPU_BASELINE_KIND, CPU_LOAD_KIND, ALLOCATION_KIND, POST_RELOAD_
 CANDIDATE_PROFILE_COMMAND_ACK_TIMEOUT = 75.0
 PENDING_COMMAND_DRAIN_TIMEOUT = 5.0
 _DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
-_RELOAD_DISABLE_RE = re.compile(r"\[endstone\]\s+disabling\s+spark(?:\s|$)", re.IGNORECASE)
-_RELOAD_ENABLE_RE = re.compile(r"\[endstone\]\s+enabling\s+spark(?:\s|$)", re.IGNORECASE)
-_RELOAD_COMPLETE_RE = re.compile(r"(?:^|\]\s*)reload\s+complete\.\s*$", re.IGNORECASE)
+_RELOAD_DISABLE_RE = re.compile(r"\[(?:endstone|spark)\]\s+disabling\s+spark(?:\s|$)", re.IGNORECASE)
+_RELOAD_ENABLE_RE = re.compile(r"\[(?:endstone|spark)\]\s+enabling\s+spark(?:\s|$)", re.IGNORECASE)
+_RELOAD_COMPLETE_RE = re.compile(r"(?:^|\]\s*:?\s*)reload\s+complete\.\s*$", re.IGNORECASE)
 _RELOAD_FAILURE_RE = re.compile(
     r"\b(?:failed|failure|error|unable|cannot|could\s+not|not|exception|rejected|false)\b",
     re.IGNORECASE,
