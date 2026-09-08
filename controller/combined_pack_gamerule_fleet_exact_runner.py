@@ -350,6 +350,7 @@ def _start_windows_interactive_server(self: CombinedPackGameruleFleetValidation)
         str(self.server_dir),
     ]
     self.server = _FrameworkShutdownServerProcess(cmd, self.root, self.log_path)
+    self.server.ci_diagnostics_enabled = bool(getattr(self, "enable_ci_diagnostics", False))
     capture = getattr(self, "capture", None)
     if capture is not None:
         self.server.timeout_diagnostic_directory = capture.output_dir

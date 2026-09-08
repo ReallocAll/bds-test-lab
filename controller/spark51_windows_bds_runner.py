@@ -25,7 +25,7 @@ from controller.python_evidence_provenance import (
 )
 from controller.run_test import ServerProcess, now_iso
 
-SPARK_CANDIDATE_SHA = "22340939da88ad3b3c586ca2f5a6e1cfec473690"
+SPARK_CANDIDATE_SHA = "de3940d51224b6c826f05ad58c662c20ed18d4e7"
 RELOAD_CYCLES = 3
 ALLOCATION_INTERVAL_BYTES = 4096
 CPU_BASELINE_KIND = "cpu-baseline"
@@ -168,8 +168,11 @@ def _validate_command_ack(lines: list[str], command: str) -> str:
 class Spark51WindowsBdsValidation(CombinedPackGameruleFleetValidation):
     """Run the exact Spark #51 Windows profile and same-process reload matrix."""
 
+    enable_ci_diagnostics = True
+
     def __init__(self, bot_binary: pathlib.Path, profile_seconds: int) -> None:
         super().__init__("windows", bot_binary, profile_seconds)
+        self.enable_ci_diagnostics = True
         self.allow_missing_windows_allocation_shim = True
         self._profile_active = False
         self._fleet_stopped = False

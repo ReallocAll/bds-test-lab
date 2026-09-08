@@ -29,6 +29,7 @@ from controller.bstats import (
     copy_bstats_evidence,
     write_disabled_bstats_config,
 )
+from controller.ci_diagnostics import read_ci_diagnostics
 from providers.artifact_provider import resolve_artifacts
 
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -40,6 +41,17 @@ TIMEOUT_DIAGNOSTIC_DELAY_SECONDS = 2.0
 TIMEOUT_DIAGNOSTIC_MAX_BYTES = 32 * 1024
 TIMEOUT_DIAGNOSTIC_MAX_PROCESSES = 32
 TIMEOUT_DIAGNOSTIC_MAX_THREADS = 256
+
+
+def _unavailable_ci_diagnostics() -> dict[str, Any]:
+    return {
+        "status": "unavailable",
+        "mapping_name": None,
+        "reason": "reader-failed",
+        "mapping_lifetime": None,
+        "schema_version": None,
+        "contexts": [],
+    }
 
 
 def now_iso() -> str:
@@ -104,6 +116,7 @@ class ServerProcess:
         self._process_tree_error: str | None = None
         self._unverified_processes: dict[int, str] = {}
         self.timeout_diagnostic_directory: pathlib.Path | None = None
+        self.ci_diagnostics_enabled = False
         self.timeout_diagnostic_delay = TIMEOUT_DIAGNOSTIC_DELAY_SECONDS
         self._timeout_diagnostic_serial = 0
         self._lock = threading.Lock()
@@ -111,7 +124,11 @@ class ServerProcess:
         self._log = None
 
     def start(self) -> None:
-        kwargs: dict[str, Any] = {"env": child_process_env()}
+        environment = child_process_env()
+        environment.pop("ENDSTONE_SPARK_CI_DIAGNOSTICS", None)
+        if self.ci_diagnostics_enabled:
+            environment["ENDSTONE_SPARK_CI_DIAGNOSTICS"] = "1"
+        kwargs: dict[str, Any] = {"env": environment}
         if os.name == "nt":
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
@@ -348,6 +365,7 @@ class ServerProcess:
 
         processes: list[dict[str, Any]] = []
         threads: list[dict[str, Any]] = []
+        bds_pid: int | None = None
         for record in tree[:TIMEOUT_DIAGNOSTIC_MAX_PROCESSES]:
             if not isinstance(record, dict):
                 errors.append("MalformedProcessRecord")
@@ -375,6 +393,8 @@ class ServerProcess:
             )
             if alive is not True or identity_match is not True or "bedrock_server" not in executable.casefold():
                 continue
+            if bds_pid is None:
+                bds_pid = pid
             try:
                 process = psutil.Process(pid)
                 process_threads = process.threads()
@@ -411,6 +431,12 @@ class ServerProcess:
                         thread_record["system_time_delta"] = system_time - previous[1]
                 threads.append(thread_record)
 
+        try:
+            ci_diagnostics = read_ci_diagnostics(bds_pid)
+        except Exception as exc:  # noqa: BLE001 - diagnostics must not replace the timeout
+            del exc
+            ci_diagnostics = _unavailable_ci_diagnostics()
+
         return {
             "snapshot": snapshot_number,
             "monotonic_ns": captured_at,
@@ -418,6 +444,7 @@ class ServerProcess:
             "task_state": heartbeat_state,
             "processes": processes,
             "threads": threads,
+            "ci_diagnostics": ci_diagnostics,
             "collector_errors": errors[:32],
         }
 
@@ -453,6 +480,7 @@ class ServerProcess:
                 "task_state": {},
                 "processes": [],
                 "threads": [],
+                "ci_diagnostics": _unavailable_ci_diagnostics(),
                 "collector_errors": [type(exc).__name__],
             }
             errors.append(type(exc).__name__)
@@ -474,6 +502,7 @@ class ServerProcess:
                 "task_state": {},
                 "processes": [],
                 "threads": [],
+                "ci_diagnostics": _unavailable_ci_diagnostics(),
                 "collector_errors": [type(exc).__name__],
             }
             errors.append(type(exc).__name__)

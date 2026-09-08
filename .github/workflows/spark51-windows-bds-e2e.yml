@@ -7,6 +7,8 @@ on:
       - ".github/spark51-candidate.txt"
       - ".github/workflows/spark51-windows-bds-e2e.yml"
       - "controller/spark51_windows_bds_runner.py"
+      - "controller/ci_diagnostics.py"
+      - "controller/run_test.py"
       - "controller/combined_windows_final_runner.py"
       - "controller/combined_pack_gamerule_fleet_exact_runner.py"
       - "fixtures/endstone-ci-lifecycle-control/**"
@@ -45,7 +47,7 @@ jobs:
         shell: pwsh
         run: |
           $candidate = (Get-Content -Raw -LiteralPath ".github/spark51-candidate.txt").Trim().ToLowerInvariant()
-          $expected = "22340939da88ad3b3c586ca2f5a6e1cfec473690"
+          $expected = "de3940d51224b6c826f05ad58c662c20ed18d4e7"
           if ($candidate -ne $expected) {
             throw "Spark candidate pointer mismatch: observed $candidate, expected $expected"
           }
@@ -135,7 +137,7 @@ jobs:
 
 
           _DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
-          _SPARK_SHA = "22340939da88ad3b3c586ca2f5a6e1cfec473690"
+          _SPARK_SHA = "de3940d51224b6c826f05ad58c662c20ed18d4e7"
           _REPOSITORIES = {"spark": "ReallocAll/spark", "endstone": "EndstoneMC/endstone"}
           _PROFILE_COMMAND = "spark profiler start --timeout 30"
           _ALLOCATION_COMMAND = f"{_PROFILE_COMMAND} --alloc --interval 4096"
