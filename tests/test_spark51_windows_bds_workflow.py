@@ -122,8 +122,12 @@ def _valid_fixture() -> tuple[dict[str, Any], dict[str, Any], dict[str, str]]:
             {
                 "cycle": cycle,
                 "command": "reload",
-                "command_acknowledged": True,
-                "command_acknowledgement": "ci command dispatch completed; dispatched=true",
+                "transport": "stdin",
+                "command_published": True,
+                "dispatch_acknowledged": False,
+                "dispatch_acknowledgement": None,
+                "command_acknowledged": False,
+                "command_acknowledgement": None,
                 "reload_complete": True,
                 "reload_completion": complete,
                 "spark_enabled": True,
@@ -231,7 +235,10 @@ class Spark51WindowsBdsWorkflowTest(unittest.TestCase):
             '"post-reload-cycle-3"',
             'len(set(urls)) == 4',
             'len(reloads) == 3',
-            'record.get("command_acknowledged") is True',
+            'record.get("transport") == "stdin"',
+            'record.get("command_published") is True',
+            'record.get("dispatch_acknowledged") is False',
+            'record.get("command_acknowledged") is False',
             'record.get("spark_enabled") is True',
             'record.get("same_bds_identity") is True',
             'record.get("player_count") == 20',
@@ -276,6 +283,18 @@ class Spark51WindowsBdsWorkflowTest(unittest.TestCase):
             with self.subTest(mutation=name), self.assertRaises(SystemExit):
                 self._validate_fixture(*mutation)
 
+    def test_embedded_validator_rejects_file_transport_or_dispatch_ack_claim(self) -> None:
+        for field, value in (
+            ("transport", "file-trigger"),
+            ("command_published", False),
+            ("dispatch_acknowledged", True),
+            ("command_acknowledged", True),
+        ):
+            result, metadata, env = _valid_fixture()
+            result["plugin_reload_cycles"][0][field] = value
+            with self.subTest(field=field), self.assertRaises(SystemExit):
+                self._validate_fixture(result, metadata, env)
+
     def test_embedded_validator_rejects_non_endstone_reload_evidence(self) -> None:
         for field, line_index, evidence in (
             ("spark_disable_evidence", 0, "[Worker] Disabling spark"),
@@ -307,6 +326,11 @@ class Spark51WindowsBdsWorkflowTest(unittest.TestCase):
         self.assertIn("actions/upload-artifact@v7", self.text)
         self.assertIn("fleet-spark-result.json", self.text)
         self.assertIn("metadata.json", self.text)
+        self.assertIn("work/windows/bedrock_server/crash_reports/**/*.txt", self.text)
+        self.assertIn("crash_reports/**/*.txt", self.text)
+        self.assertNotIn("            work/windows/bedrock_server/crash_reports/**\n", self.text)
+        self.assertNotIn("            crash_reports/**\n", self.text)
+        self.assertIn("if-no-files-found: warn", self.text)
         self.assertIn("persist-credentials: false", self.text)
 
 

@@ -298,14 +298,16 @@ jobs:
                   need(isinstance(record, dict), f"reload {cycle} record is missing")
                   need(record.get("cycle") == cycle, f"reload cycle order drift: {record!r}")
                   need(record.get("command") == "reload", f"reload {cycle} command drift")
-                  need(record.get("command_acknowledged") is True, f"reload {cycle} was not acknowledged")
+                  need(record.get("transport") == "stdin", f"reload {cycle} did not use stdin transport")
+                  need(record.get("command_published") is True, f"reload {cycle} was not published to stdin")
+                  need(record.get("dispatch_acknowledged") is False, f"reload {cycle} falsely reported dispatch acknowledgement")
+                  need(record.get("dispatch_acknowledgement") is None, f"reload {cycle} reported dispatch acknowledgement evidence")
+                  need(record.get("command_acknowledged") is False, f"reload {cycle} falsely reported command acknowledgement")
+                  need(record.get("command_acknowledgement") is None, f"reload {cycle} reported command acknowledgement evidence")
                   need(record.get("reload_complete") is True, f"reload {cycle} did not complete")
                   need(record.get("spark_enabled") is True, f"reload {cycle} did not re-enable Spark")
                   need(record.get("same_bds_identity") is True, f"reload {cycle} changed BDS identity")
                   need(record.get("player_count") == 20, f"reload {cycle} player count drift")
-                  acknowledgement = normalized_evidence(record.get("command_acknowledgement"), f"reload {cycle} command acknowledgement")
-                  need("ci command dispatch completed" in acknowledgement and "dispatched=true" in acknowledgement,
-                       f"reload {cycle} command acknowledgement evidence is not explicit")
                   disable = normalized_evidence(record.get("spark_disable_evidence"), f"reload {cycle} Spark disable")
                   enable = normalized_evidence(record.get("spark_enable_evidence"), f"reload {cycle} Spark enable")
                   completion = normalized_evidence(record.get("reload_completion"), f"reload {cycle} completion")
@@ -385,7 +387,8 @@ jobs:
               print("Reload records:")
               for record in data.get("plugin_reload_cycles") or []:
                   print(
-                      f"- cycle {record.get('cycle')}: acknowledged={record.get('command_acknowledged')} "
+                      f"- cycle {record.get('cycle')}: transport={record.get('transport')} "
+                      f"published={record.get('command_published')} "
                       f"enabled={record.get('spark_enabled')} completed={record.get('reload_complete')} "
                       f"pid={record.get('bds_pid')} create_time={record.get('bds_create_time')} "
                       f"players={record.get('player_count')}"
@@ -411,6 +414,8 @@ jobs:
             combined-health-capture-windows/
             work/windows/bedrock_server/server.properties
             work/windows/bedrock_server/version.txt
+            work/windows/bedrock_server/crash_reports/**/*.txt
+            crash_reports/**/*.txt
             work/windows/bedrock_server/worlds/SparkCombinedValidation/world_behavior_packs.json
             work/windows/bedrock_server/behavior_packs/spark_probe_alpha/
             work/windows/bedrock_server/behavior_packs/spark_probe_beta/

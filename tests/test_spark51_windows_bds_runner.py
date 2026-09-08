@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from controller.spark51_windows_bds_runner import (
@@ -67,7 +68,12 @@ def _reloads() -> list[dict[str, object]]:
         {
             "cycle": cycle,
             "command": "reload",
-            "command_acknowledged": True,
+            "transport": "stdin",
+            "command_published": True,
+            "dispatch_acknowledged": False,
+            "dispatch_acknowledgement": None,
+            "command_acknowledged": False,
+            "command_acknowledgement": None,
             "reload_complete": True,
             "spark_enabled": True,
             "spark_disable_evidence": "[Endstone] Disabling spark",
@@ -177,6 +183,64 @@ class Spark51WindowsBdsRunnerTest(unittest.TestCase):
         validator.result["plugin_reload_cycles"][2]["bds_pid"] = 9999
         with self.assertRaisesRegex(RuntimeError, "identity"):
             validator._validate_workload_success()
+
+    def test_reload_bypasses_file_command_override_and_publishes_to_stdin(self) -> None:
+        class Stdin:
+            def __init__(self) -> None:
+                self.writes: list[str] = []
+
+            def write(self, value: str) -> int:
+                self.writes.append(value)
+                return len(value)
+
+            def flush(self) -> None:
+                pass
+
+        class FileOverrideServer:
+            def __init__(self) -> None:
+                self.stdin = Stdin()
+                self.process = SimpleNamespace(stdin=self.stdin)
+
+            def command(self, command: str) -> int:
+                raise AssertionError(f"reload entered file command override: {command}")
+
+            def is_alive(self) -> bool:
+                return True
+
+            def snapshot(self) -> list[str]:
+                return []
+
+            def process_tree_snapshot(self) -> list[dict[str, object]]:
+                return [{
+                    "name": "bedrock_server.exe",
+                    "pid": 4242,
+                    "create_time": 100.0,
+                    "alive": True,
+                    "identity_match": True,
+                }]
+
+        validator = _validator()
+        validator._profile_active = False
+        server = FileOverrideServer()
+        validator.server = server  # type: ignore[assignment]
+        validator.assert_20_players = mock.Mock()  # type: ignore[method-assign]
+        validator._wait_reload_complete = mock.Mock(  # type: ignore[method-assign]
+            return_value=(
+                ["[Endstone] Disabling spark", "[Endstone] Enabling spark", "Reload complete."],
+                "[Endstone] Disabling spark",
+                "[Endstone] Enabling spark",
+                "Reload complete.",
+            )
+        )
+
+        validator._reload(1, (4242, 100.0))
+
+        self.assertEqual(server.stdin.writes, ["reload\n"])
+        record = validator.result["plugin_reload_cycles"][0]
+        self.assertEqual(record["transport"], "stdin")
+        self.assertTrue(record["command_published"])
+        self.assertFalse(record["dispatch_acknowledged"])
+        self.assertIsNone(record["dispatch_acknowledgement"])
 
     def test_shutdown_validation_requires_all_clean_events_and_final_phase(self) -> None:
         validator = _validator()

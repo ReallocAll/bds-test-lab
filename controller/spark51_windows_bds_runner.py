@@ -23,7 +23,7 @@ from controller.python_evidence_provenance import (
     validate_component_provenance,
     validate_endstone_runtime_version,
 )
-from controller.run_test import now_iso
+from controller.run_test import ServerProcess, now_iso
 
 SPARK_CANDIDATE_SHA = "6974323d5345d987d4ea7cc47067e20dc864384e"
 RELOAD_CYCLES = 3
@@ -389,7 +389,7 @@ class Spark51WindowsBdsValidation(CombinedPackGameruleFleetValidation):
                 f"baseline={baseline_identity!r} observed={before_identity!r}"
             )
         self.assert_20_players(f"before-reload-{cycle}")
-        start, dispatch_output, dispatch_ack = self._dispatch("reload", timeout=20)
+        start = ServerProcess.command(self.server, "reload")
         reload_lines, spark_disable, spark_enable, completion = self._wait_reload_complete(start, cycle)
         after_identity = _select_live_bds_identity(self.server.process_tree_snapshot())
         if after_identity != baseline_identity:
@@ -401,8 +401,12 @@ class Spark51WindowsBdsValidation(CombinedPackGameruleFleetValidation):
         record = {
             "cycle": cycle,
             "command": "reload",
-            "command_acknowledged": True,
-            "command_acknowledgement": dispatch_ack,
+            "transport": "stdin",
+            "command_published": True,
+            "dispatch_acknowledged": False,
+            "dispatch_acknowledgement": None,
+            "command_acknowledged": False,
+            "command_acknowledgement": None,
             "reload_complete": True,
             "reload_completion": completion,
             "spark_enabled": True,
@@ -416,7 +420,6 @@ class Spark51WindowsBdsValidation(CombinedPackGameruleFleetValidation):
             "before_bds_create_time": before_identity[1],
             "same_bds_identity": True,
             "player_count": BOT_COUNT,
-            "dispatch_output_tail": dispatch_output[-20:],
             "reload_output_tail": reload_lines[-20:],
         }
         self.result["plugin_reload_cycles"].append(record)
@@ -518,14 +521,19 @@ class Spark51WindowsBdsValidation(CombinedPackGameruleFleetValidation):
                 raise RuntimeError(f"profile metadata is not exact: expected={expected!r} observed={actual!r}")
         reloads = self.result.get("plugin_reload_cycles") or []
         if len(reloads) != RELOAD_CYCLES:
-            raise RuntimeError(f"expected exactly three acknowledged reload records, got {reloads!r}")
+            raise RuntimeError(f"expected exactly three published reload records, got {reloads!r}")
         if [record.get("cycle") for record in reloads] != list(range(1, RELOAD_CYCLES + 1)):
             raise RuntimeError(f"reload cycles are not serialized in order: {reloads!r}")
         identities: set[tuple[int, float]] = set()
         for record in reloads:
             if (
                 record.get("command") != "reload"
-                or record.get("command_acknowledged") is not True
+                or record.get("transport") != "stdin"
+                or record.get("command_published") is not True
+                or record.get("dispatch_acknowledged") is not False
+                or record.get("dispatch_acknowledgement") is not None
+                or record.get("command_acknowledged") is not False
+                or record.get("command_acknowledgement") is not None
                 or record.get("reload_complete") is not True
                 or record.get("spark_enabled") is not True
                 or record.get("same_bds_identity") is not True
