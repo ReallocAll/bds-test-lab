@@ -1,21 +1,20 @@
 # Latest BDS integration test
 
-- Lab commit: `eb63f51cec4dfb6d71fca870bdffec66fab3a42d`
-- Lab Actions: [34086059137](https://github.com/ReallocAll/bds-test-lab/actions/runs/34086059137)
-- State: **PASS**
-- Spark SHA: `8cb5c2b651a8c9808da397e6957526f87c1fe712`
+- Lab commit: `0d55408c4abda4e0ed04b23f1e255784d1fafe57`
+- Lab Actions: [34294324980](https://github.com/ReallocAll/bds-test-lab/actions/runs/34294324980)
+- State: **FAIL**
+- Spark SHA: `7d18dd0b70ea26d05a450c22a5e83bf2c2863968`
 - Endstone SHA: `46eff9f125f52eac76472d84339ead8fbf51fcd2`
-- Completed: `2026-09-07T05:47:18.443616Z`
+- Completed: `2026-09-09T00:24:14.474454Z`
 
 ## Platforms
 
 | Platform | Result | BDS | Shutdown | Crash replay | Soak | Execution | Allocation | Recovery |
 |---|---|---|---|---|---|---|---|---|
-| Windows | **PASS** | `26.45` | `graceful` | `PASS` | `30m` | [viewer](https://spark.lucko.me/LoVY9c85h4) | [viewer](https://spark.lucko.me/K79l6sYeMN) | [viewer](https://spark.lucko.me/XorjhrYXVw) |
+| Windows | **FAIL** | `` | `not_started` | `not_started` | `30m` |  |  |  |
 
-- windows soak RSS: start `618876928`, end `58241024`, peak `621076480`
-- windows soak threads: start `56`, end `41`, peak `56`
-| Linux | **PASS** | `26.45` | `graceful` | `PASS` | `30m` | [viewer](https://spark.lucko.me/2iTyHBxvZZ) | [viewer](https://spark.lucko.me/M6sVQWVuim) | [viewer](https://spark.lucko.me/i39QsbMcMK) |
+**Windows error:** `FileNotFoundError: No file matching ['spark_allocation_shim.dll'] under D:\a\bds-test-lab\bds-test-lab\downloads\spark\payload`
+| Linux | **running** | `26.45` | `controlled_crash_for_recovery` | `PASS` | `30m` | [viewer](https://spark.lucko.me/CX3CVdsaAW) | [viewer](https://spark.lucko.me/R4c9KtczRe) | [viewer](https://spark.lucko.me/MJSrKZrT31) |
 
-- linux soak RSS: start `855932928`, end `861368320`, peak `861368320`
-- linux soak threads: start `27`, end `28`, peak `28`
+- linux soak RSS: start `None`, end `None`, peak `None`
+- linux soak threads: start `None`, end `None`, peak `None`
