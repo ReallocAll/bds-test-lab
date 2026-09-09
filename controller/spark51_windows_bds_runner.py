@@ -25,7 +25,7 @@ from controller.python_evidence_provenance import (
 )
 from controller.run_test import ServerProcess, now_iso
 
-SPARK_CANDIDATE_SHA = "25edd777495eeebb3532d989e6e1ab3fb093936e"
+SPARK_CANDIDATE_SHA = "ef344882f10c08851101be0ea611268c330452cd"
 RELOAD_CYCLES = 3
 ALLOCATION_INTERVAL_BYTES = 4096
 CPU_BASELINE_KIND = "cpu-baseline"

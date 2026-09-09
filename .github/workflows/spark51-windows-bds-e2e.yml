@@ -47,7 +47,7 @@ jobs:
         shell: pwsh
         run: |
           $candidate = (Get-Content -Raw -LiteralPath ".github/spark51-candidate.txt").Trim().ToLowerInvariant()
-          $expected = "25edd777495eeebb3532d989e6e1ab3fb093936e"
+          $expected = "ef344882f10c08851101be0ea611268c330452cd"
           if ($candidate -ne $expected) {
             throw "Spark candidate pointer mismatch: observed $candidate, expected $expected"
           }
@@ -137,7 +137,7 @@ jobs:
 
 
           _DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
-          _SPARK_SHA = "25edd777495eeebb3532d989e6e1ab3fb093936e"
+          _SPARK_SHA = "ef344882f10c08851101be0ea611268c330452cd"
           _REPOSITORIES = {"spark": "ReallocAll/spark", "endstone": "EndstoneMC/endstone"}
           _PROFILE_COMMAND = "spark profiler start --timeout 30"
           _ALLOCATION_COMMAND = f"{_PROFILE_COMMAND} --alloc --interval 4096"
