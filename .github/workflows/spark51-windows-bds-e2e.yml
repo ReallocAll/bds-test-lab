@@ -13,10 +13,6 @@ on:
       - "controller/combined_pack_gamerule_fleet_exact_runner.py"
       - "fixtures/endstone-ci-lifecycle-control/**"
 
-concurrency:
-  group: spark51-windows-bds-host
-  cancel-in-progress: false
-
 permissions:
   contents: read
   actions: read
@@ -51,7 +47,7 @@ jobs:
         shell: pwsh
         run: |
           $candidate = (Get-Content -Raw -LiteralPath ".github/spark51-candidate.txt").Trim().ToLowerInvariant()
-          $expected = "6911c16ab7334410b13691a47895479a20d232de"
+          $expected = "25edd777495eeebb3532d989e6e1ab3fb093936e"
           if ($candidate -ne $expected) {
             throw "Spark candidate pointer mismatch: observed $candidate, expected $expected"
           }
@@ -141,7 +137,7 @@ jobs:
 
 
           _DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
-          _SPARK_SHA = "6911c16ab7334410b13691a47895479a20d232de"
+          _SPARK_SHA = "25edd777495eeebb3532d989e6e1ab3fb093936e"
           _REPOSITORIES = {"spark": "ReallocAll/spark", "endstone": "EndstoneMC/endstone"}
           _PROFILE_COMMAND = "spark profiler start --timeout 30"
           _ALLOCATION_COMMAND = f"{_PROFILE_COMMAND} --alloc --interval 4096"
