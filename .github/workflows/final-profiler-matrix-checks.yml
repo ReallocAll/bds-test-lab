@@ -104,7 +104,7 @@ jobs:
     timeout-minutes: 45
     env:
       PYTHONUNBUFFERED: "1"
-      SPARK_SHA: 653e6821a45f5b5de5e8d22671960c2024db18be
+      SPARK_SHA: ef344882f10c08851101be0ea611268c330452cd
       BOT_REF: f175e4a6551d1973628b5ca926a497e9962c1302
     steps:
       - name: Checkout exact pull-request head

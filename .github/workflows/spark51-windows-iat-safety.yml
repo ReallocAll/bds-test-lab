@@ -1,0 +1,261 @@
+name: Spark PR51 Windows IAT safety
+
+on:
+  pull_request:
+    paths:
+      - ".github/spark51-candidate.txt"
+      - ".github/workflows/spark51-windows-iat-safety.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  resolve-candidate:
+    runs-on: ubuntu-22.04
+    outputs:
+      spark_sha: ${{ steps.candidate.outputs.sha }}
+    steps:
+      - name: Checkout lab
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Resolve exact Spark candidate
+        id: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(tr -d '\r\n ' < .github/spark51-candidate.txt)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid Spark SHA: $sha" >&2; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+  deterministic-linux:
+    needs: resolve-candidate
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact Spark candidate
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/spark
+          ref: ${{ needs.resolve-candidate.outputs.spark_sha }}
+          path: spark-src
+          persist-credentials: false
+      - name: Verify exact Spark provenance
+        shell: bash
+        run: test "$(git -C spark-src rev-parse HEAD)" = "${{ needs.resolve-candidate.outputs.spark_sha }}"
+      - name: Compile current IAT lifecycle oracle
+        working-directory: spark-src
+        shell: bash
+        run: |
+          set -euo pipefail
+          c++ -std=c++20 -Wall -Wextra -Werror -pedantic -Isrc \
+            src/native/alloc/windows_iat_hooks.cpp \
+            tests/native/alloc/windows_iat_hooks_test.cpp \
+            -o windows_iat_hooks_test
+      - name: Run deterministic lifecycle
+        working-directory: spark-src
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./windows_iat_hooks_test
+
+  native-windows:
+    needs: resolve-candidate
+    runs-on: windows-2022
+    steps:
+      - name: Checkout exact Spark candidate
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/spark
+          ref: ${{ needs.resolve-candidate.outputs.spark_sha }}
+          path: spark-src
+          persist-credentials: false
+      - name: Verify exact Spark provenance
+        working-directory: spark-src
+        shell: pwsh
+        run: |
+          $actual = (& git rev-parse HEAD).Trim().ToLowerInvariant()
+          $expected = "${{ needs.resolve-candidate.outputs.spark_sha }}"
+          if ($actual -ne $expected) { throw "Spark SHA mismatch: expected $expected, got $actual" }
+      - name: Set up MSVC environment
+        uses: TheMrMilchmann/setup-msvc-dev@v4
+        with:
+          arch: x64
+      - name: Compile deterministic and native PE IAT oracles
+        working-directory: spark-src
+        shell: pwsh
+        run: |
+          $clang = "C:\Program Files\LLVM\bin\clang-cl.exe"
+          & $clang /nologo /std:c++20 /EHsc /W4 /WX /I src `
+            src/native/alloc/windows_iat_hooks.cpp `
+            src/native/alloc/windows_iat_hooks_windows.cpp `
+            tests/native/alloc/windows_iat_hooks_test.cpp `
+            /Fe:windows_iat_hooks_test.exe /link Psapi.lib
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $clang /nologo /std:c++20 /EHsc /W4 /WX /LD `
+            tests/native/alloc/windows_iat_provider.cpp `
+            /Fe:windows_iat_provider.dll /link /IMPLIB:windows_iat_provider.lib
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $clang /nologo /std:c++20 /EHsc /W4 /WX /LD `
+            tests/native/alloc/windows_iat_consumer.cpp windows_iat_provider.lib `
+            /Fe:windows_iat_consumer.dll
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $clang /nologo /std:c++20 /EHsc /W4 /WX /I src `
+            src/native/alloc/windows_iat_hooks.cpp `
+            src/native/alloc/windows_iat_hooks_windows.cpp `
+            tests/native/alloc/windows_iat_native_test.cpp `
+            /Fe:windows_iat_native_test.exe /link Psapi.lib
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run deterministic lifecycle and native PE reload safety
+        working-directory: spark-src
+        shell: pwsh
+        run: |
+          .\windows_iat_hooks_test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\windows_iat_native_test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  permanent-gateway-cfg:
+    needs: resolve-candidate
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/spark
+          ref: ${{ needs.resolve-candidate.outputs.spark_sha }}
+          path: spark-src
+          persist-credentials: false
+      - uses: TheMrMilchmann/setup-msvc-dev@v4
+        with:
+          arch: x64
+      - name: Verify, compile and run CFG publication oracle
+        working-directory: spark-src
+        shell: pwsh
+        run: |
+          if ((& git rev-parse HEAD).Trim().ToLowerInvariant() -ne "${{ needs.resolve-candidate.outputs.spark_sha }}") { throw "Spark SHA mismatch" }
+          cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /guard:cf /DWIN32_LEAN_AND_MEAN /DNOMINMAX /Isrc src\native\alloc\windows_permanent_iat_gateway.cpp tests\native\alloc\windows_permanent_iat_gateway_test.cpp /Fe:windows_permanent_iat_gateway_test.exe /link /guard:cf
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\windows_permanent_iat_gateway_test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  permanent-gateway-unwind:
+    needs: resolve-candidate
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/spark
+          ref: ${{ needs.resolve-candidate.outputs.spark_sha }}
+          path: spark-src
+          persist-credentials: false
+      - uses: TheMrMilchmann/setup-msvc-dev@v4
+        with:
+          arch: x64
+      - name: Verify, compile and run unwind oracle
+        working-directory: spark-src
+        shell: pwsh
+        run: |
+          if ((& git rev-parse HEAD).Trim().ToLowerInvariant() -ne "${{ needs.resolve-candidate.outputs.spark_sha }}") { throw "Spark SHA mismatch" }
+          cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /guard:cf /DWIN32_LEAN_AND_MEAN /DNOMINMAX /Isrc src\native\alloc\windows_permanent_iat_gateway.cpp tests\native\alloc\windows_permanent_iat_gateway_unwind_test.cpp /Fe:windows_permanent_iat_gateway_unwind_test.exe /link /guard:cf
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\windows_permanent_iat_gateway_unwind_test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  permanent-registry-reload:
+    needs: resolve-candidate
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/spark
+          ref: ${{ needs.resolve-candidate.outputs.spark_sha }}
+          path: spark-src
+          persist-credentials: false
+      - uses: TheMrMilchmann/setup-msvc-dev@v4
+        with:
+          arch: x64
+      - name: Verify, compile and run 1000-cycle registry reuse oracle
+        working-directory: spark-src
+        shell: pwsh
+        run: |
+          if ((& git rev-parse HEAD).Trim().ToLowerInvariant() -ne "${{ needs.resolve-candidate.outputs.spark_sha }}") { throw "Spark SHA mismatch" }
+          cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /DWIN32_LEAN_AND_MEAN /DNOMINMAX /Isrc src\native\alloc\windows_permanent_iat_gateway.cpp src\native\alloc\windows_permanent_iat_gateway_registry.cpp tests\native\alloc\windows_permanent_iat_gateway_registry_test.cpp /Fe:windows_permanent_iat_gateway_registry_test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\windows_permanent_iat_gateway_registry_test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  permanent-true-dll-unload:
+    needs: resolve-candidate
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/spark
+          ref: ${{ needs.resolve-candidate.outputs.spark_sha }}
+          path: spark-src
+          persist-credentials: false
+      - uses: TheMrMilchmann/setup-msvc-dev@v4
+        with:
+          arch: x64
+      - name: Verify, compile and run 1000-cycle handler unload/reload oracle
+        working-directory: spark-src
+        shell: pwsh
+        run: |
+          if ((& git rev-parse HEAD).Trim().ToLowerInvariant() -ne "${{ needs.resolve-candidate.outputs.spark_sha }}") { throw "Spark SHA mismatch" }
+          cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /LD /DWIN32_LEAN_AND_MEAN /DNOMINMAX tests\native\alloc\windows_gateway_test_handler.cpp /Fe:windows_iat_gateway_test_handler.dll
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /DWIN32_LEAN_AND_MEAN /DNOMINMAX /Isrc src\native\alloc\windows_permanent_iat_gateway.cpp tests\native\alloc\windows_permanent_iat_gateway_unload_test.cpp /Fe:windows_permanent_iat_gateway_unload_test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\windows_permanent_iat_gateway_unload_test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  permanent-full-backend-hot-reload:
+    needs: resolve-candidate
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/spark
+          ref: ${{ needs.resolve-candidate.outputs.spark_sha }}
+          path: spark-src
+          persist-credentials: false
+      - uses: TheMrMilchmann/setup-msvc-dev@v4
+        with:
+          arch: x64
+      - name: Verify exact Spark provenance
+        working-directory: spark-src
+        shell: pwsh
+        run: |
+          if ((& git rev-parse HEAD).Trim().ToLowerInvariant() -ne "${{ needs.resolve-candidate.outputs.spark_sha }}") { throw "Spark SHA mismatch" }
+      - name: Compile allocator client DLL
+        working-directory: spark-src
+        shell: pwsh
+        run: |
+          cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /MD /LD tests\native\alloc\windows_permanent_iat_backend_client.cpp /Fe:windows_permanent_iat_backend_client.dll
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Compile unloadable Spark-owned backend plugin DLL
+        working-directory: spark-src
+        shell: pwsh
+        run: |
+          cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /MD /LD /DWIN32_LEAN_AND_MEAN /DNOMINMAX /Isrc `
+            src\native\alloc\windows_permanent_iat_gateway.cpp `
+            src\native\alloc\windows_permanent_iat_gateway_registry.cpp `
+            src\native\alloc\windows_iat_hooks.cpp `
+            src\native\alloc\windows_iat_hooks_windows.cpp `
+            src\native\alloc\windows_allocation_iat_hooks.cpp `
+            tests\native\alloc\windows_permanent_iat_backend_plugin.cpp `
+            /Fe:windows_permanent_iat_backend_plugin.dll /link psapi.lib
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Compile backend hot-reload host
+        working-directory: spark-src
+        shell: pwsh
+        run: |
+          cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /MD /DWIN32_LEAN_AND_MEAN /DNOMINMAX tests\native\alloc\windows_permanent_iat_backend_reload_test.cpp /Fe:windows_permanent_iat_backend_reload_test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run full backend install/drain/plugin-unload/reload stress
+        working-directory: spark-src
+        shell: pwsh
+        run: |
+          .\windows_permanent_iat_backend_reload_test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
