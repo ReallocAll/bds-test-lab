@@ -21,11 +21,15 @@ on:
 permissions:
   contents: read
 
+env:
+  REQUESTED_SPARK_SHA: ${{ inputs.spark_sha || '' }}
+
 jobs:
   resolve-candidate:
     runs-on: ubuntu-latest
     outputs:
       spark_sha: ${{ steps.candidate.outputs.sha }}
+      lab_sha: ${{ steps.lab.outputs.sha }}
     steps:
       - name: Checkout lab candidate metadata
         uses: actions/checkout@v7
@@ -37,7 +41,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sha='${{ inputs.spark_sha }}'
+          sha="$REQUESTED_SPARK_SHA"
           if [ -z "$sha" ]; then
             file='lab/.github/spark-windows-candidate.txt'
             test -f "$file" || { echo "spark_sha input is empty and $file does not exist" >&2; exit 1; }
@@ -47,6 +51,14 @@ jobs:
           sha="${sha,,}"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "candidate_sha=$sha"
+      - name: Record Lab checkout SHA
+        id: lab
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(git -C lab rev-parse HEAD)"
+          [[ "$sha" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "invalid Lab SHA: $sha" >&2; exit 1; }
+          echo "sha=${sha,,}" >> "$GITHUB_OUTPUT"
 
   atomic-iat-publication:
     needs: resolve-candidate
@@ -63,28 +75,51 @@ jobs:
           ref: ${{ needs.resolve-candidate.outputs.spark_sha }}
           path: spark-src
           persist-credentials: false
-      - name: Verify exact candidate checkout
+      - name: Verify exact candidate checkout and record provenance
         shell: pwsh
         run: |
           $expected = "${{ needs.resolve-candidate.outputs.spark_sha }}"
           $checkout = (& git rev-parse HEAD).Trim().ToLowerInvariant()
           if ($checkout -ne $expected) { throw "checkout SHA mismatch: expected $expected, got $checkout" }
+          New-Item -ItemType Directory -Force -Path evidence | Out-Null
+          @(
+            "LabSHA=${{ needs.resolve-candidate.outputs.lab_sha }}"
+            "SparkSHA=$checkout"
+            "PythonVersion=not-applicable"
+            "workflow=windows-permanent-iat-gateway"
+          ) | Set-Content -Path evidence/provenance.txt -Encoding utf8
+          "commands" | Set-Content -Path evidence/commands.txt -Encoding utf8
       - name: Set up MSVC environment
         uses: TheMrMilchmann/setup-msvc-dev@v4
         with:
           arch: x64
       - name: Compile permanent IAT gateway with CFG
         shell: pwsh
-        run: >-
-          cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /guard:cf
-          /DWIN32_LEAN_AND_MEAN /DNOMINMAX /Isrc
-          src\native\alloc\windows_permanent_iat_gateway.cpp
-          tests\native\alloc\windows_permanent_iat_gateway_test.cpp
-          /Fe:windows_permanent_iat_gateway_test.exe
-          /link /guard:cf
+        run: |
+          $command = 'cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /guard:cf /DWIN32_LEAN_AND_MEAN /DNOMINMAX /Isrc src\native\alloc\windows_permanent_iat_gateway.cpp tests\native\alloc\windows_permanent_iat_gateway_test.cpp /Fe:windows_permanent_iat_gateway_test.exe /link /guard:cf'
+          Add-Content -Path evidence/commands.txt -Value $command
+          $output = & cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /guard:cf /DWIN32_LEAN_AND_MEAN /DNOMINMAX /Isrc src\native\alloc\windows_permanent_iat_gateway.cpp tests\native\alloc\windows_permanent_iat_gateway_test.cpp /Fe:windows_permanent_iat_gateway_test.exe /link /guard:cf 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath evidence/compile.log
+          if ($exitCode -ne 0) { exit $exitCode }
       - name: Stress atomic IAT publication and process-lifetime gateway reuse under CFG
         shell: pwsh
-        run: .\windows_permanent_iat_gateway_test.exe
+        run: |
+          $output = & .\windows_permanent_iat_gateway_test.exe 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath evidence/test.log
+          Add-Content -Path evidence/results.txt -Value "atomic publication/process-lifetime gateway reuse: $(if ($exitCode -eq 0) { 'PASS' } else { 'FAIL' })"
+          if ($exitCode -ne 0) { exit $exitCode }
+      - name: Upload atomic gateway evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: spark-windows-permanent-iat-atomic-${{ needs.resolve-candidate.outputs.spark_sha }}
+          path: |
+            spark-src/evidence
+            spark-src/windows_permanent_iat_gateway_test.exe
+          if-no-files-found: warn
+          retention-days: 14
 
   stack-unwind-correctness:
     needs: resolve-candidate
@@ -101,28 +136,51 @@ jobs:
           ref: ${{ needs.resolve-candidate.outputs.spark_sha }}
           path: spark-src
           persist-credentials: false
-      - name: Verify exact candidate checkout
+      - name: Verify exact candidate checkout and record provenance
         shell: pwsh
         run: |
           $expected = "${{ needs.resolve-candidate.outputs.spark_sha }}"
           $checkout = (& git rev-parse HEAD).Trim().ToLowerInvariant()
           if ($checkout -ne $expected) { throw "checkout SHA mismatch: expected $expected, got $checkout" }
+          New-Item -ItemType Directory -Force -Path evidence | Out-Null
+          @(
+            "LabSHA=${{ needs.resolve-candidate.outputs.lab_sha }}"
+            "SparkSHA=$checkout"
+            "PythonVersion=not-applicable"
+            "workflow=windows-permanent-iat-gateway"
+          ) | Set-Content -Path evidence/provenance.txt -Encoding utf8
+          "commands" | Set-Content -Path evidence/commands.txt -Encoding utf8
       - name: Set up MSVC environment
         uses: TheMrMilchmann/setup-msvc-dev@v4
         with:
           arch: x64
       - name: Compile permanent IAT gateway unwind probe with CFG
         shell: pwsh
-        run: >-
-          cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /guard:cf
-          /DWIN32_LEAN_AND_MEAN /DNOMINMAX /Isrc
-          src\native\alloc\windows_permanent_iat_gateway.cpp
-          tests\native\alloc\windows_permanent_iat_gateway_unwind_test.cpp
-          /Fe:windows_permanent_iat_gateway_unwind_test.exe
-          /link /guard:cf
+        run: |
+          $command = 'cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /guard:cf /DWIN32_LEAN_AND_MEAN /DNOMINMAX /Isrc src\native\alloc\windows_permanent_iat_gateway.cpp tests\native\alloc\windows_permanent_iat_gateway_unwind_test.cpp /Fe:windows_permanent_iat_gateway_unwind_test.exe /link /guard:cf'
+          Add-Content -Path evidence/commands.txt -Value $command
+          $output = & cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /guard:cf /DWIN32_LEAN_AND_MEAN /DNOMINMAX /Isrc src\native\alloc\windows_permanent_iat_gateway.cpp tests\native\alloc\windows_permanent_iat_gateway_unwind_test.cpp /Fe:windows_permanent_iat_gateway_unwind_test.exe /link /guard:cf 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath evidence/compile.log
+          if ($exitCode -ne 0) { exit $exitCode }
       - name: Require stack unwind through generated gateway
         shell: pwsh
-        run: .\windows_permanent_iat_gateway_unwind_test.exe
+        run: |
+          $output = & .\windows_permanent_iat_gateway_unwind_test.exe 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath evidence/test.log
+          Add-Content -Path evidence/results.txt -Value "stack unwind through generated gateway: $(if ($exitCode -eq 0) { 'PASS' } else { 'FAIL' })"
+          if ($exitCode -ne 0) { exit $exitCode }
+      - name: Upload unwind evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: spark-windows-permanent-iat-unwind-${{ needs.resolve-candidate.outputs.spark_sha }}
+          path: |
+            spark-src/evidence
+            spark-src/windows_permanent_iat_gateway_unwind_test.exe
+          if-no-files-found: warn
+          retention-days: 14
 
   registry-reload-reuse:
     needs: resolve-candidate
@@ -139,28 +197,51 @@ jobs:
           ref: ${{ needs.resolve-candidate.outputs.spark_sha }}
           path: spark-src
           persist-credentials: false
-      - name: Verify exact candidate checkout
+      - name: Verify exact candidate checkout and record provenance
         shell: pwsh
         run: |
           $expected = "${{ needs.resolve-candidate.outputs.spark_sha }}"
           $checkout = (& git rev-parse HEAD).Trim().ToLowerInvariant()
           if ($checkout -ne $expected) { throw "checkout SHA mismatch: expected $expected, got $checkout" }
+          New-Item -ItemType Directory -Force -Path evidence | Out-Null
+          @(
+            "LabSHA=${{ needs.resolve-candidate.outputs.lab_sha }}"
+            "SparkSHA=$checkout"
+            "PythonVersion=not-applicable"
+            "workflow=windows-permanent-iat-gateway"
+          ) | Set-Content -Path evidence/provenance.txt -Encoding utf8
+          "commands" | Set-Content -Path evidence/commands.txt -Encoding utf8
       - name: Set up MSVC environment
         uses: TheMrMilchmann/setup-msvc-dev@v4
         with:
           arch: x64
       - name: Compile permanent IAT gateway registry
         shell: pwsh
-        run: >-
-          cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX
-          /DWIN32_LEAN_AND_MEAN /DNOMINMAX /Isrc
-          src\native\alloc\windows_permanent_iat_gateway.cpp
-          src\native\alloc\windows_permanent_iat_gateway_registry.cpp
-          tests\native\alloc\windows_permanent_iat_gateway_registry_test.cpp
-          /Fe:windows_permanent_iat_gateway_registry_test.exe
+        run: |
+          $command = 'cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /DWIN32_LEAN_AND_MEAN /DNOMINMAX /Isrc src\native\alloc\windows_permanent_iat_gateway.cpp src\native\alloc\windows_permanent_iat_gateway_registry.cpp tests\native\alloc\windows_permanent_iat_gateway_registry_test.cpp /Fe:windows_permanent_iat_gateway_registry_test.exe'
+          Add-Content -Path evidence/commands.txt -Value $command
+          $output = & cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /DWIN32_LEAN_AND_MEAN /DNOMINMAX /Isrc src\native\alloc\windows_permanent_iat_gateway.cpp src\native\alloc\windows_permanent_iat_gateway_registry.cpp tests\native\alloc\windows_permanent_iat_gateway_registry_test.cpp /Fe:windows_permanent_iat_gateway_registry_test.exe 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath evidence/compile.log
+          if ($exitCode -ne 0) { exit $exitCode }
       - name: Run 1000 simulated plugin reload acquisitions
         shell: pwsh
-        run: .\windows_permanent_iat_gateway_registry_test.exe
+        run: |
+          $output = & .\windows_permanent_iat_gateway_registry_test.exe 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath evidence/test.log
+          Add-Content -Path evidence/results.txt -Value "1000 simulated plugin reload acquisitions: $(if ($exitCode -eq 0) { 'PASS' } else { 'FAIL' })"
+          if ($exitCode -ne 0) { exit $exitCode }
+      - name: Upload registry evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: spark-windows-permanent-iat-registry-${{ needs.resolve-candidate.outputs.spark_sha }}
+          path: |
+            spark-src/evidence
+            spark-src/windows_permanent_iat_gateway_registry_test.exe
+          if-no-files-found: warn
+          retention-days: 14
 
   true-dll-unload:
     needs: resolve-candidate
@@ -177,34 +258,61 @@ jobs:
           ref: ${{ needs.resolve-candidate.outputs.spark_sha }}
           path: spark-src
           persist-credentials: false
-      - name: Verify exact candidate checkout
+      - name: Verify exact candidate checkout and record provenance
         shell: pwsh
         run: |
           $expected = "${{ needs.resolve-candidate.outputs.spark_sha }}"
           $checkout = (& git rev-parse HEAD).Trim().ToLowerInvariant()
           if ($checkout -ne $expected) { throw "checkout SHA mismatch: expected $expected, got $checkout" }
+          New-Item -ItemType Directory -Force -Path evidence | Out-Null
+          @(
+            "LabSHA=${{ needs.resolve-candidate.outputs.lab_sha }}"
+            "SparkSHA=$checkout"
+            "PythonVersion=not-applicable"
+            "workflow=windows-permanent-iat-gateway"
+          ) | Set-Content -Path evidence/provenance.txt -Encoding utf8
+          "commands" | Set-Content -Path evidence/commands.txt -Encoding utf8
       - name: Set up MSVC environment
         uses: TheMrMilchmann/setup-msvc-dev@v4
         with:
           arch: x64
       - name: Compile unloadable handler DLL
         shell: pwsh
-        run: >-
-          cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /LD
-          /DWIN32_LEAN_AND_MEAN /DNOMINMAX
-          tests\native\alloc\windows_gateway_test_handler.cpp
-          /Fe:windows_iat_gateway_test_handler.dll
+        run: |
+          $command = 'cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /LD /DWIN32_LEAN_AND_MEAN /DNOMINMAX tests\native\alloc\windows_gateway_test_handler.cpp /Fe:windows_iat_gateway_test_handler.dll'
+          Add-Content -Path evidence/commands.txt -Value $command
+          $output = & cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /LD /DWIN32_LEAN_AND_MEAN /DNOMINMAX tests\native\alloc\windows_gateway_test_handler.cpp /Fe:windows_iat_gateway_test_handler.dll 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath evidence/compile-handler.log
+          if ($exitCode -ne 0) { exit $exitCode }
       - name: Compile permanent IAT gateway unload stress
         shell: pwsh
-        run: >-
-          cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX
-          /DWIN32_LEAN_AND_MEAN /DNOMINMAX /Isrc
-          src\native\alloc\windows_permanent_iat_gateway.cpp
-          tests\native\alloc\windows_permanent_iat_gateway_unload_test.cpp
-          /Fe:windows_permanent_iat_gateway_unload_test.exe
+        run: |
+          $command = 'cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /DWIN32_LEAN_AND_MEAN /DNOMINMAX /Isrc src\native\alloc\windows_permanent_iat_gateway.cpp tests\native\alloc\windows_permanent_iat_gateway_unload_test.cpp /Fe:windows_permanent_iat_gateway_unload_test.exe'
+          Add-Content -Path evidence/commands.txt -Value $command
+          $output = & cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /DWIN32_LEAN_AND_MEAN /DNOMINMAX /Isrc src\native\alloc\windows_permanent_iat_gateway.cpp tests\native\alloc\windows_permanent_iat_gateway_unload_test.cpp /Fe:windows_permanent_iat_gateway_unload_test.exe 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath evidence/compile-gateway.log
+          if ($exitCode -ne 0) { exit $exitCode }
       - name: Run 1000-cycle true handler DLL unload/reload stress
         shell: pwsh
-        run: .\windows_permanent_iat_gateway_unload_test.exe
+        run: |
+          $output = & .\windows_permanent_iat_gateway_unload_test.exe 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath evidence/test.log
+          Add-Content -Path evidence/results.txt -Value "1000-cycle true handler DLL unload/reload stress: $(if ($exitCode -eq 0) { 'PASS' } else { 'FAIL' })"
+          if ($exitCode -ne 0) { exit $exitCode }
+      - name: Upload true-unload evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: spark-windows-permanent-iat-unload-${{ needs.resolve-candidate.outputs.spark_sha }}
+          path: |
+            spark-src/evidence
+            spark-src/windows_iat_gateway_test_handler.dll
+            spark-src/windows_permanent_iat_gateway_unload_test.exe
+          if-no-files-found: warn
+          retention-days: 14
 
   full-backend-hot-reload:
     needs: resolve-candidate
@@ -221,42 +329,80 @@ jobs:
           ref: ${{ needs.resolve-candidate.outputs.spark_sha }}
           path: spark-src
           persist-credentials: false
-      - name: Verify exact candidate checkout
+      - name: Verify exact candidate checkout and record provenance
         shell: pwsh
         run: |
           $expected = "${{ needs.resolve-candidate.outputs.spark_sha }}"
           $checkout = (& git rev-parse HEAD).Trim().ToLowerInvariant()
           if ($checkout -ne $expected) { throw "checkout SHA mismatch: expected $expected, got $checkout" }
+          New-Item -ItemType Directory -Force -Path evidence | Out-Null
+          @(
+            "LabSHA=${{ needs.resolve-candidate.outputs.lab_sha }}"
+            "SparkSHA=$checkout"
+            "PythonVersion=not-applicable"
+            "workflow=windows-permanent-iat-gateway"
+          ) | Set-Content -Path evidence/provenance.txt -Encoding utf8
+          "commands" | Set-Content -Path evidence/commands.txt -Encoding utf8
       - name: Set up MSVC environment
         uses: TheMrMilchmann/setup-msvc-dev@v4
         with:
           arch: x64
       - name: Compile allocator client DLL
         shell: pwsh
-        run: >-
-          cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /MD /LD
-          tests\native\alloc\windows_permanent_iat_backend_client.cpp
-          /Fe:windows_permanent_iat_backend_client.dll
+        run: |
+          $command = 'cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /MD /LD tests\native\alloc\windows_permanent_iat_backend_client.cpp /Fe:windows_permanent_iat_backend_client.dll'
+          Add-Content -Path evidence/commands.txt -Value $command
+          $output = & cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /MD /LD tests\native\alloc\windows_permanent_iat_backend_client.cpp /Fe:windows_permanent_iat_backend_client.dll 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath evidence/compile-client.log
+          if ($exitCode -ne 0) { exit $exitCode }
       - name: Compile unloadable no-shim backend plugin DLL
         shell: pwsh
-        run: >-
-          cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /MD /LD
-          /DWIN32_LEAN_AND_MEAN /DNOMINMAX /Isrc
-          src\native\alloc\windows_permanent_iat_gateway.cpp
-          src\native\alloc\windows_permanent_iat_gateway_registry.cpp
-          src\native\alloc\windows_iat_hooks.cpp
-          src\native\alloc\windows_iat_hooks_windows.cpp
-          src\native\alloc\windows_permanent_iat_funchook_compat.cpp
-          tests\native\alloc\windows_permanent_iat_backend_plugin.cpp
-          /Fe:windows_permanent_iat_backend_plugin.dll
-          /link psapi.lib
+        run: |
+          $command = 'cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /MD /LD /DWIN32_LEAN_AND_MEAN /DNOMINMAX /Isrc src\native\alloc\windows_permanent_iat_gateway.cpp src\native\alloc\windows_permanent_iat_gateway_registry.cpp src\native\alloc\windows_iat_hooks.cpp src\native\alloc\windows_iat_hooks_windows.cpp src\native\alloc\windows_allocation_iat_hooks.cpp tests\native\alloc\windows_permanent_iat_backend_plugin.cpp /Fe:windows_permanent_iat_backend_plugin.dll /link psapi.lib'
+          Add-Content -Path evidence/commands.txt -Value $command
+          $output = & cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /MD /LD /DWIN32_LEAN_AND_MEAN /DNOMINMAX /Isrc src\native\alloc\windows_permanent_iat_gateway.cpp src\native\alloc\windows_permanent_iat_gateway_registry.cpp src\native\alloc\windows_iat_hooks.cpp src\native\alloc\windows_iat_hooks_windows.cpp src\native\alloc\windows_allocation_iat_hooks.cpp tests\native\alloc\windows_permanent_iat_backend_plugin.cpp /Fe:windows_permanent_iat_backend_plugin.dll /link psapi.lib 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath evidence/compile-plugin.log
+          if ($exitCode -ne 0) { exit $exitCode }
       - name: Compile backend hot-reload host
         shell: pwsh
-        run: >-
-          cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /MD
-          /DWIN32_LEAN_AND_MEAN /DNOMINMAX
-          tests\native\alloc\windows_permanent_iat_backend_reload_test.cpp
-          /Fe:windows_permanent_iat_backend_reload_test.exe
+        run: |
+          $command = 'cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /MD /DWIN32_LEAN_AND_MEAN /DNOMINMAX tests\native\alloc\windows_permanent_iat_backend_reload_test.cpp /Fe:windows_permanent_iat_backend_reload_test.exe'
+          Add-Content -Path evidence/commands.txt -Value $command
+          $output = & cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /MD /DWIN32_LEAN_AND_MEAN /DNOMINMAX tests\native\alloc\windows_permanent_iat_backend_reload_test.cpp /Fe:windows_permanent_iat_backend_reload_test.exe 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath evidence/compile-host.log
+          if ($exitCode -ne 0) { exit $exitCode }
       - name: Run full IAT backend install/drain/plugin-unload/reload stress
         shell: pwsh
-        run: .\windows_permanent_iat_backend_reload_test.exe
+        run: |
+          $output = & .\windows_permanent_iat_backend_reload_test.exe 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath evidence/test.log
+          Add-Content -Path evidence/results.txt -Value "1000-cycle full IAT backend install/drain/plugin-unload/reload stress: $(if ($exitCode -eq 0) { 'PASS' } else { 'FAIL' })"
+          if ($exitCode -ne 0) { exit $exitCode }
+      - name: Upload full backend evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: spark-windows-permanent-iat-full-${{ needs.resolve-candidate.outputs.spark_sha }}
+          path: |
+            spark-src/evidence
+            spark-src/windows_permanent_iat_backend_client.dll
+            spark-src/windows_permanent_iat_backend_plugin.dll
+            spark-src/windows_permanent_iat_backend_reload_test.exe
+          if-no-files-found: warn
+          retention-days: 14
+
+  python-native-offline:
+    needs: resolve-candidate
+    uses: ./.github/workflows/python-native-offline.yml
+    with:
+      spark_sha: ${{ needs.resolve-candidate.outputs.spark_sha }}
+
+  windows-iat-offline:
+    needs: resolve-candidate
+    uses: ./.github/workflows/windows-iat-offline.yml
+    with:
+      spark_sha: ${{ needs.resolve-candidate.outputs.spark_sha }}

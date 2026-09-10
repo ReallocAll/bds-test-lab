@@ -1,0 +1,185 @@
+name: Python Native Offline Gates
+
+on:
+  workflow_dispatch:
+    inputs:
+      spark_sha:
+        description: Exact ReallocAll/spark commit SHA to validate
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      spark_sha:
+        description: Exact ReallocAll/spark commit SHA to validate
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  native-python:
+    name: Linux / CPython ${{ matrix.python-version }} / native offline
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    env:
+      REQUESTED_SPARK_SHA: ${{ inputs.spark_sha }}
+      EXPECTED_PYTHON_VERSION: ${{ matrix.python-version }}
+    steps:
+      - name: Checkout Lab at workflow revision
+        uses: actions/checkout@v7
+        with:
+          path: lab
+          persist-credentials: false
+
+      - name: Validate exact Spark input and Lab checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$REQUESTED_SPARK_SHA" =~ ^[0-9a-fA-F]{40}$ ]] || {
+            echo "spark_sha must be a full 40-character commit SHA" >&2
+            exit 1
+          }
+          lab_sha="$(git -C lab rev-parse HEAD)"
+          [[ "$lab_sha" =~ ^[0-9a-fA-F]{40}$ ]] || {
+            echo "Lab checkout SHA is not exact: $lab_sha" >&2
+            exit 1
+          }
+
+      - name: Checkout exact Spark candidate
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/spark
+          ref: ${{ inputs.spark_sha }}
+          path: spark-src
+          persist-credentials: false
+
+      - name: Verify exact Spark checkout and record provenance
+        working-directory: spark-src
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="${REQUESTED_SPARK_SHA,,}"
+          checkout="$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')"
+          test "$checkout" = "$expected"
+          lab_sha="$(git -C ../lab rev-parse HEAD | tr '[:upper:]' '[:lower:]')"
+          mkdir -p evidence build/native-python
+          {
+            echo "LabSHA=$lab_sha"
+            echo "SparkSHA=$checkout"
+            echo "PythonVersion=$EXPECTED_PYTHON_VERSION"
+            echo "workflow=python-native-offline"
+          } > evidence/provenance.txt
+          echo "commands" > evidence/commands.txt
+
+      - name: Set up CPython ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Resolve real shared libpython from chosen interpreter
+        id: python
+        working-directory: spark-src
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          import pathlib
+          import sys
+          import sysconfig
+
+          expected = os.environ["EXPECTED_PYTHON_VERSION"]
+          actual = f"{sys.version_info.major}.{sys.version_info.minor}"
+          if actual != expected:
+              raise SystemExit(f"selected Python {actual} does not match {expected}")
+          libdir = sysconfig.get_config_var("LIBDIR")
+          ld_library = sysconfig.get_config_var("LDLIBRARY")
+          candidates = []
+          if libdir and ld_library:
+              candidates.append(pathlib.Path(libdir) / ld_library)
+          if libdir:
+              candidates.extend(sorted(pathlib.Path(libdir).glob(f"libpython{actual}*.so*")))
+          library = next((path for path in candidates if path.is_file()), None)
+          if library is None:
+              raise SystemExit(f"shared libpython was not found for {actual}: {candidates}")
+          output = os.environ["GITHUB_OUTPUT"]
+          with open(output, "a", encoding="utf-8") as handle:
+              handle.write(f"libpython={library}\n")
+              handle.write(f"python_version={actual}\n")
+          print(f"Python executable: {sys.executable}")
+          print(f"Python version: {sys.version.split()[0]}")
+          print(f"SPARK_TEST_LIBPYTHON: {library}")
+          PY
+          if [[ "$EXPECTED_PYTHON_VERSION" == "3.11" ]]; then
+            mode="native-only fallback; no PEP 669 attribution claim (PEP 669 starts in Python 3.12)"
+          else
+            mode="PEP 669 attribution-capable runtime checks"
+          fi
+          echo "ExpectedMode=$mode" >> evidence/provenance.txt
+          python --version 2>&1 | sed 's/^/PythonRuntimeVersion=/' >> evidence/provenance.txt
+          echo "SPARK_TEST_LIBPYTHON=${{ steps.python.outputs.libpython }}" >> evidence/provenance.txt
+
+      - name: Compile and run native Python tests
+        working-directory: spark-src
+        shell: bash
+        env:
+          SPARK_TEST_LIBPYTHON: ${{ steps.python.outputs.libpython }}
+        run: |
+          set -euo pipefail
+          run_compile() {
+            local name="$1"
+            shift
+            { printf '$'; printf ' %q' "$@"; printf '\n'; } >> evidence/commands.txt
+            set +e
+            "$@" 2>&1 | tee "evidence/${name}.log"
+            local status=${PIPESTATUS[0]}
+            set -e
+            printf '%s\t%s\n' "$name" "$status" >> evidence/results.tsv
+            return "$status"
+          }
+          run_test() {
+            local name="$1"
+            shift
+            { printf '$'; printf ' %q' "$@"; printf '\n'; } >> evidence/commands.txt
+            set +e
+            "$@" 2>&1 | tee "evidence/${name}.test.log"
+            local status=${PIPESTATUS[0]}
+            set -e
+            printf '%s\t%s\n' "$name" "$status" >> evidence/results.tsv
+            return "$status"
+          }
+
+          run_compile shadow-compile c++ -std=c++20 -O2 -Wall -Wextra -Werror -pthread -Isrc \
+            tests/native/python/python_shadow_stack_test.cpp -o build/native-python/python_shadow_stack_test
+          run_compile runtime-compile c++ -std=c++20 -O2 -Wall -Wextra -Werror -pthread -Isrc \
+            tests/native/python/python_attribution_runtime_test.cpp src/native/sampler/thread_info.cpp \
+            -ldl -pthread -o build/native-python/python_attribution_runtime_test
+          run_compile reload-compile c++ -std=c++20 -O2 -Wall -Wextra -Werror -pthread -Isrc \
+            tests/native/python/python_reload_identity_test.cpp src/native/sampler/thread_info.cpp \
+            -ldl -pthread -o build/native-python/python_reload_identity_test
+
+          overall=0
+          run_test shadow-stack ./build/native-python/python_shadow_stack_test || overall=1
+          run_test attribution-runtime env SPARK_TEST_LIBPYTHON="$SPARK_TEST_LIBPYTHON" \
+            ./build/native-python/python_attribution_runtime_test || overall=1
+          run_test reload-identity env SPARK_TEST_LIBPYTHON="$SPARK_TEST_LIBPYTHON" \
+            ./build/native-python/python_reload_identity_test || overall=1
+          if [[ "$overall" -ne 0 ]]; then
+            exit "$overall"
+          fi
+
+      - name: Upload native Python evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: spark-python-native-offline-cp${{ matrix.python-version }}-${{ inputs.spark_sha }}
+          path: |
+            spark-src/evidence
+            spark-src/build/native-python
+          if-no-files-found: warn
+          retention-days: 14

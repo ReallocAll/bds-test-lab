@@ -1,0 +1,159 @@
+name: Windows Native IAT Offline Gates
+
+on:
+  workflow_dispatch:
+    inputs:
+      spark_sha:
+        description: Exact ReallocAll/spark commit SHA to validate
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      spark_sha:
+        description: Exact ReallocAll/spark commit SHA to validate
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  native-iat:
+    name: Windows / native IAT offline
+    runs-on: windows-2022
+    timeout-minutes: 25
+    env:
+      REQUESTED_SPARK_SHA: ${{ inputs.spark_sha }}
+    steps:
+      - name: Checkout Lab at workflow revision
+        uses: actions/checkout@v7
+        with:
+          path: lab
+          persist-credentials: false
+
+      - name: Validate exact Spark input and Lab checkout
+        shell: pwsh
+        run: |
+          $sha = $env:REQUESTED_SPARK_SHA.Trim()
+          if ($sha -notmatch '^[0-9a-fA-F]{40}$') {
+            throw "spark_sha must be a full 40-character commit SHA"
+          }
+          $lab = (& git -C lab rev-parse HEAD).Trim()
+          if ($lab -notmatch '^[0-9a-fA-F]{40}$') {
+            throw "Lab checkout SHA is not exact: $lab"
+          }
+
+      - name: Checkout exact Spark candidate
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/spark
+          ref: ${{ inputs.spark_sha }}
+          path: spark-src
+          persist-credentials: false
+
+      - name: Verify exact Spark checkout and record provenance
+        working-directory: spark-src
+        shell: pwsh
+        run: |
+          $expected = $env:REQUESTED_SPARK_SHA.Trim().ToLowerInvariant()
+          $checkout = (& git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($checkout -ne $expected) {
+            throw "checkout SHA mismatch: expected $expected, got $checkout"
+          }
+          $lab = (& git -C ../lab rev-parse HEAD).Trim().ToLowerInvariant()
+          New-Item -ItemType Directory -Force -Path evidence | Out-Null
+          @(
+            "LabSHA=$lab"
+            "SparkSHA=$checkout"
+            "PythonVersion=not-applicable"
+            "workflow=windows-iat-offline"
+          ) | Set-Content -Path evidence/provenance.txt -Encoding utf8
+          "commands" | Set-Content -Path evidence/commands.txt -Encoding utf8
+
+      - name: Set up MSVC environment
+        uses: TheMrMilchmann/setup-msvc-dev@v4
+        with:
+          arch: x64
+
+      - name: Compile provider fixture DLL
+        working-directory: spark-src
+        shell: pwsh
+        run: |
+          $command = 'cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /MD /LD /DWIN32_LEAN_AND_MEAN /DNOMINMAX tests\native\alloc\windows_iat_provider.cpp /Fe:windows_iat_provider.dll'
+          Add-Content -Path evidence/commands.txt -Value $command
+          $output = & cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /MD /LD /DWIN32_LEAN_AND_MEAN /DNOMINMAX tests\native\alloc\windows_iat_provider.cpp /Fe:windows_iat_provider.dll 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath evidence/compile-provider.log
+          if ($exitCode -ne 0) { exit $exitCode }
+          Add-Content -Path evidence/results.txt -Value "provider fixture compile: PASS"
+
+      - name: Compile consumer fixture DLL
+        working-directory: spark-src
+        shell: pwsh
+        run: |
+          $command = 'cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /MD /LD /DWIN32_LEAN_AND_MEAN /DNOMINMAX tests\native\alloc\windows_iat_consumer.cpp /Fe:windows_iat_consumer.dll /link windows_iat_provider.lib'
+          Add-Content -Path evidence/commands.txt -Value $command
+          $output = & cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /MD /LD /DWIN32_LEAN_AND_MEAN /DNOMINMAX tests\native\alloc\windows_iat_consumer.cpp /Fe:windows_iat_consumer.dll /link windows_iat_provider.lib 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath evidence/compile-consumer.log
+          if ($exitCode -ne 0) { exit $exitCode }
+          Add-Content -Path evidence/results.txt -Value "consumer fixture compile: PASS"
+
+      - name: Compile synthetic Windows IAT hooks test (10 cases)
+        working-directory: spark-src
+        shell: pwsh
+        run: |
+          $command = 'cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /MD /Isrc src\native\alloc\windows_iat_hooks.cpp tests\native\alloc\windows_iat_hooks_test.cpp /Fe:windows_iat_hooks_test.exe'
+          Add-Content -Path evidence/commands.txt -Value $command
+          $output = & cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /MD /Isrc src\native\alloc\windows_iat_hooks.cpp tests\native\alloc\windows_iat_hooks_test.cpp /Fe:windows_iat_hooks_test.exe 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath evidence/compile-synthetic.log
+          if ($exitCode -ne 0) { exit $exitCode }
+          Add-Content -Path evidence/results.txt -Value "synthetic test compile: PASS"
+
+      - name: Compile native Windows IAT test with current backend and psapi.lib
+        working-directory: spark-src
+        shell: pwsh
+        run: |
+          $command = 'cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /MD /DWIN32_LEAN_AND_MEAN /DNOMINMAX /Isrc src\native\alloc\windows_iat_hooks.cpp src\native\alloc\windows_iat_hooks_windows.cpp tests\native\alloc\windows_iat_native_test.cpp /Fe:windows_iat_native_test.exe /link psapi.lib'
+          Add-Content -Path evidence/commands.txt -Value $command
+          $output = & cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /MD /DWIN32_LEAN_AND_MEAN /DNOMINMAX /Isrc src\native\alloc\windows_iat_hooks.cpp src\native\alloc\windows_iat_hooks_windows.cpp tests\native\alloc\windows_iat_native_test.cpp /Fe:windows_iat_native_test.exe /link psapi.lib 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath evidence/compile-native.log
+          if ($exitCode -ne 0) { exit $exitCode }
+          Add-Content -Path evidence/results.txt -Value "native test compile: PASS"
+
+      - name: Run synthetic Windows IAT hooks test (10 cases)
+        working-directory: spark-src
+        shell: pwsh
+        run: |
+          $output = & .\windows_iat_hooks_test.exe 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath evidence/synthetic.test.log
+          Add-Content -Path evidence/results.txt -Value "synthetic Windows IAT hooks test (10 cases): $(if ($exitCode -eq 0) { 'PASS' } else { 'FAIL' })"
+          if ($exitCode -ne 0) { exit $exitCode }
+
+      - name: Run native Windows IAT provider/consumer stress test
+        working-directory: spark-src
+        shell: pwsh
+        run: |
+          $output = & .\windows_iat_native_test.exe 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath evidence/native.test.log
+          Add-Content -Path evidence/results.txt -Value "native Windows IAT provider/consumer stress test: $(if ($exitCode -eq 0) { 'PASS' } else { 'FAIL' })"
+          if ($exitCode -ne 0) { exit $exitCode }
+
+      - name: Upload native IAT evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: spark-windows-iat-offline-${{ inputs.spark_sha }}
+          path: |
+            spark-src/evidence
+            spark-src/windows_iat_provider.dll
+            spark-src/windows_iat_provider.lib
+            spark-src/windows_iat_consumer.dll
+            spark-src/windows_iat_hooks_test.exe
+            spark-src/windows_iat_native_test.exe
+          if-no-files-found: warn
+          retention-days: 14
