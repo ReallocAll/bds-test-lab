@@ -656,8 +656,8 @@ class CombinedPackExactRunnerTest(unittest.TestCase):
         self.assertEqual(len(lifecycle), 1)
         self.assertEqual(lifecycle[0]["shutdown_control"], "file-trigger")
         self.assertEqual(lifecycle[0]["command_control"], "file-trigger")
-        self.assertTrue(str(lifecycle[0]["request_path"]).endswith("plugins/ci/shutdown.request"))
-        self.assertTrue(str(lifecycle[0]["command_path"]).endswith("plugins/ci/command.request"))
+        self.assertTrue(Path(lifecycle[0]["request_path"]).as_posix().endswith("plugins/ci/shutdown.request"))
+        self.assertTrue(Path(lifecycle[0]["command_path"]).as_posix().endswith("plugins/ci/command.request"))
         self.assertEqual(validator.checks[-1][0:2], ("exact-bds-version", "PASS"))
 
 

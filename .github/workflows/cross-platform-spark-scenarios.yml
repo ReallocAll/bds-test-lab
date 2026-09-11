@@ -25,9 +25,30 @@ on:
         required: false
         default: "a0a83240e9e8f12d4806ba31194fb1807d7b5dd1"
       profile_seconds:
-        description: "Seconds per online Spark execution profile"
+        description: "Seconds per online Spark profile"
         required: false
         default: "30"
+      profiler_mode:
+        description: "Profiler modes to collect"
+        type: choice
+        options: [execution, allocation, all]
+        default: execution
+      spark_run_id:
+        description: "Exact Spark build run ID"
+        type: string
+        required: false
+      spark_windows_artifact_id:
+        description: "Exact Windows Spark artifact ID"
+        type: string
+        required: false
+      spark_linux_artifact_id:
+        description: "Exact Linux Spark artifact ID"
+        type: string
+        required: false
+      endstone_sha:
+        description: "Exact Endstone SHA"
+        type: string
+        required: false
 
 concurrency:
   group: spark-cross-platform-player-scenarios-${{ github.ref }}
@@ -43,63 +64,68 @@ env:
   EXPECTED_SPARK_SHA: ${{ github.event.inputs.spark_sha || 'c1ed938058ebfd3b417b50bc70c718e989eed60f' }}
   BOT_REF: ${{ github.event.inputs.bot_ref || 'a0a83240e9e8f12d4806ba31194fb1807d7b5dd1' }}
   PROFILE_SECONDS: ${{ github.event.inputs.profile_seconds || '30' }}
+  EXPECTED_SPARK_RUN_ID: ${{ inputs.spark_run_id }}
+  EXPECTED_ENDSTONE_SHA: ${{ inputs.endstone_sha }}
 
 jobs:
   player-scenario:
-    name: ${{ matrix.platform }} ${{ matrix.scenario }} ${{ matrix.count }} player(s)
+    name: ${{ matrix.platform }} ${{ matrix.scenario }} ${{ matrix.count }} player(s) ${{ matrix.profiler_mode }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
+        platform: [linux, windows]
+        scenario: [idle, chunk-walk]
+        count: [1, 5]
+        profiler_mode: ${{ fromJSON(inputs.profiler_mode == 'all' && '["execution","allocation"]' || inputs.profiler_mode == 'allocation' && '["allocation"]' || '["execution"]') }}
         include:
           - platform: linux
             os: ubuntu-24.04
             bot_name: bds-test-bot
-            scenario: idle
-            count: 1
-          - platform: linux
-            os: ubuntu-24.04
-            bot_name: bds-test-bot
-            scenario: idle
-            count: 5
-          - platform: linux
-            os: ubuntu-24.04
-            bot_name: bds-test-bot
-            scenario: chunk-walk
-            count: 1
-          - platform: linux
-            os: ubuntu-24.04
-            bot_name: bds-test-bot
-            scenario: chunk-walk
-            count: 5
           - platform: windows
             os: windows-2022
             bot_name: bds-test-bot.exe
-            scenario: idle
-            count: 1
-          - platform: windows
-            os: windows-2022
-            bot_name: bds-test-bot.exe
-            scenario: idle
-            count: 5
-          - platform: windows
-            os: windows-2022
-            bot_name: bds-test-bot.exe
-            scenario: chunk-walk
-            count: 1
-          - platform: windows
-            os: windows-2022
-            bot_name: bds-test-bot.exe
-            scenario: chunk-walk
-            count: 5
 
     runs-on: ${{ matrix.os }}
+    env:
+      EXPECTED_SPARK_ARTIFACT_ID: ${{ matrix.platform == 'windows' && inputs.spark_windows_artifact_id || matrix.platform == 'linux' && inputs.spark_linux_artifact_id || '' }}
+      SPARK_WINDOWS_ARTIFACT_ID: ${{ inputs.spark_windows_artifact_id }}
+      SPARK_LINUX_ARTIFACT_ID: ${{ inputs.spark_linux_artifact_id }}
+      CASE_PLATFORM: ${{ matrix.platform }}
+      BOT_NAME: ${{ matrix.bot_name }}
+      CASE_COUNT: ${{ matrix.count }}
+      CASE_SCENARIO: ${{ matrix.scenario }}
+      PROFILER_MODE: ${{ matrix.profiler_mode }}
 
     steps:
       - name: Checkout test lab
+        id: checkout-lab
         uses: actions/checkout@v7
 
+      - name: Set up Python 3.13
+        id: setup-python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Validate dispatch inputs
+        id: validate-inputs
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, re
+          for key in ("EXPECTED_SPARK_SHA", "BOT_REF", "EXPECTED_ENDSTONE_SHA"):
+              value = os.environ.get(key, "")
+              if (key != "EXPECTED_ENDSTONE_SHA" or value) and not re.fullmatch(r"[0-9a-fA-F]{40}", value):
+                  raise SystemExit(f"{key} must be a 40-character hexadecimal SHA")
+          for key in ("EXPECTED_SPARK_RUN_ID", "EXPECTED_SPARK_ARTIFACT_ID", "SPARK_WINDOWS_ARTIFACT_ID", "SPARK_LINUX_ARTIFACT_ID", "PROFILE_SECONDS"):
+              value = os.environ.get(key, "")
+              if (key == "PROFILE_SECONDS" or value) and not re.fullmatch(r"[0-9]+", value):
+                  raise SystemExit(f"{key} must contain only digits")
+          PY
+
       - name: Checkout Bot at exact ref
+        id: checkout-bot
         uses: actions/checkout@v7
         with:
           repository: ReallocAll/bds-test-bot
@@ -108,12 +134,14 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go 1.25
+        id: setup-go
         uses: actions/setup-go@v6
         with:
           go-version: "1.25.x"
           cache: false
 
       - name: Build exact Bot revision
+        id: build-bot
         shell: bash
         env:
           BOT_NAME: ${{ matrix.bot_name }}
@@ -125,28 +153,23 @@ jobs:
           go test ./...
           go build -trimpath -o "../dist/${BOT_NAME}" ./cmd/bds-test-bot
 
-      - name: Set up Python 3.13
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-
       - name: Install validation dependencies
+        id: install-dependencies
         run: python -m pip install --disable-pip-version-check psutil packaging
 
       - name: Require exact Spark artifact
-        run: >-
-          python -m controller.assert_spark_artifact
-          --platform ${{ matrix.platform }}
-          --expected-sha ${{ env.EXPECTED_SPARK_SHA }}
+        id: resolve-spark
+        shell: bash
+        run: |
+          python -m controller.assert_spark_artifact --platform "$CASE_PLATFORM" --expected-sha "$EXPECTED_SPARK_SHA"
 
       - name: Run real-player Spark scenario
-        run: >-
-          python -m controller.cross_platform_fleet_validation
-          --platform ${{ matrix.platform }}
-          --bot dist/${{ matrix.bot_name }}
-          --count ${{ matrix.count }}
-          --scenario ${{ matrix.scenario }}
-          --profile-seconds ${{ env.PROFILE_SECONDS }}
+        id: run-scenario
+        shell: bash
+        run: |
+          python -m controller.cross_platform_fleet_validation \
+            --platform "$CASE_PLATFORM" --bot "dist/$BOT_NAME" --count "$CASE_COUNT" \
+            --scenario "$CASE_SCENARIO" --profile-seconds "$PROFILE_SECONDS" --profiler-mode "$PROFILER_MODE"
 
       - name: Verify bStats evidence before upload
         if: always()
@@ -168,9 +191,12 @@ jobs:
           metrics = data.get("metrics") or {}
           mspt = metrics.get("mspt_10s") or {}
           tps = metrics.get("tps") or {}
-          print(f"## {data.get('platform')} / {data.get('scenario')} / {data.get('bot_count')} player(s)")
+          print(f"## {data.get('platform')} / {data.get('scenario')} / {data.get('bot_count')} player(s) / {data.get('profiler_mode')}")
           print()
           print(f"Status: **{data.get('status')}**")
+          print(f"Profile quality: **{(data.get('quality') or {}).get('status')}**")
+          print(f"Quality evidence: `{json.dumps(data.get('quality'), sort_keys=True)}`")
+          print(f"Player window: `{json.dumps(data.get('player_snapshots'), sort_keys=True)}`")
           print(f"BDS: `{data.get('bds_version')}`")
           print(f"Spark profile: {data.get('spark_profile_viewer_url')}")
           print(f"TPS 10s: {tps.get('10s')}")
@@ -184,13 +210,14 @@ jobs:
         if: ${{ always() && steps.verify-bstats.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:
-          name: spark-cross-platform-${{ matrix.platform }}-${{ matrix.scenario }}-${{ matrix.count }}-${{ github.run_id }}
+          name: spark-cross-platform-${{ matrix.platform }}-${{ matrix.scenario }}-${{ matrix.count }}-${{ matrix.profiler_mode }}-${{ github.run_id }}
           path: |
             metadata.json
             bds.log
             endstone.log
             spark.log
-            fleet-${{ matrix.platform }}-${{ matrix.count }}-${{ matrix.scenario }}.log
+            fleet-${{ matrix.platform }}-${{ matrix.scenario }}-${{ matrix.count }}-${{ matrix.profiler_mode }}.log
+            *-raw.sparkprofile
             test-results.json
             fleet-spark-result.json
             bstats-config.toml
@@ -198,4 +225,67 @@ jobs:
             work/${{ matrix.platform }}/bedrock_server/server.properties
             work/${{ matrix.platform }}/bedrock_server/version.txt
           if-no-files-found: warn
+          retention-days: 14
+
+      - name: Write restricted failure report
+        id: restricted-failure-report
+        if: ${{ always() && steps.verify-bstats.outcome != 'success' }}
+        shell: bash
+        env:
+          OUTCOME_CHECKOUT_LAB: ${{ steps.checkout-lab.outcome }}
+          OUTCOME_SETUP_PYTHON: ${{ steps.setup-python.outcome }}
+          OUTCOME_VALIDATE_INPUTS: ${{ steps.validate-inputs.outcome }}
+          OUTCOME_CHECKOUT_BOT: ${{ steps.checkout-bot.outcome }}
+          OUTCOME_SETUP_GO: ${{ steps.setup-go.outcome }}
+          OUTCOME_BUILD_BOT: ${{ steps.build-bot.outcome }}
+          OUTCOME_INSTALL_DEPENDENCIES: ${{ steps.install-dependencies.outcome }}
+          OUTCOME_RESOLVE_SPARK: ${{ steps.resolve-spark.outcome }}
+          OUTCOME_RUN_SCENARIO: ${{ steps.run-scenario.outcome }}
+          OUTCOME_VERIFY_BSTATS: ${{ steps.verify-bstats.outcome }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          def validated(key, pattern):
+              value = os.environ.get(key, "")
+              return value if re.fullmatch(pattern, value) else None
+
+          outcomes = {}
+          for name in (
+              "checkout_lab", "setup_python", "validate_inputs", "checkout_bot", "setup_go",
+              "build_bot", "install_dependencies", "resolve_spark", "run_scenario", "verify_bstats",
+          ):
+              value = os.environ.get("OUTCOME_" + name.upper(), "")
+              outcomes[name] = value if value in {"success", "failure", "cancelled", "skipped"} else "unavailable"
+          report = {
+              "report_kind": "restricted-workflow-failure-status",
+              "github_run_id": validated("GITHUB_RUN_ID", r"[0-9]{1,20}"),
+              "github_run_attempt": validated("GITHUB_RUN_ATTEMPT", r"[0-9]{1,20}"),
+              "lab_sha": validated("GITHUB_SHA", r"[0-9a-fA-F]{40}"),
+              "platform": validated("CASE_PLATFORM", r"linux|windows"),
+              "scenario": validated("CASE_SCENARIO", r"idle|chunk-walk"),
+              "player_count": validated("CASE_COUNT", r"1|5"),
+              "profiler_mode": validated("PROFILER_MODE", r"execution|allocation"),
+              "expected_spark_sha": validated("EXPECTED_SPARK_SHA", r"[0-9a-fA-F]{40}"),
+              "expected_endstone_sha": validated("EXPECTED_ENDSTONE_SHA", r"[0-9a-fA-F]{40}"),
+              "expected_spark_run_id": validated("EXPECTED_SPARK_RUN_ID", r"[0-9]{1,20}"),
+              "expected_spark_artifact_id": validated("EXPECTED_SPARK_ARTIFACT_ID", r"[0-9]{1,20}"),
+              "step_outcomes": outcomes,
+              "bstats_verified": False,
+              "bstats_verification": "failed" if outcomes["verify_bstats"] == "failure" else "unavailable",
+          }
+          destination = Path(os.environ["RUNNER_TEMP"]) / "restricted-failure-report.json"
+          destination.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+
+      - name: Upload restricted failure report
+        if: ${{ always() && steps.verify-bstats.outcome != 'success' && steps.restricted-failure-report.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: restricted-failure-status-${{ matrix.platform }}-${{ matrix.scenario }}-${{ matrix.count }}-${{ matrix.profiler_mode }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/restricted-failure-report.json
+          if-no-files-found: error
           retention-days: 14

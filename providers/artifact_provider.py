@@ -9,10 +9,10 @@ head SHA.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pathlib
-import shutil
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -137,11 +137,41 @@ def discover(
     component: str,
     platform_name: str,
     expected_sha: str | None = None,
+    expected_run_id: str | int | None = None,
+    expected_artifact_id: str | int | None = None,
+    expected_artifact_digest: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     config = COMPONENTS[component]
     repo = config["repo"]
     branch = config["branch"]
     exact_sha = (expected_sha or "").strip()
+
+    if expected_run_id is not None:
+        run = _get_json(f"/repos/{repo}/actions/runs/{expected_run_id}")
+        if (
+            str(run.get("id")) != str(expected_run_id)
+            or run.get("conclusion") != "success"
+            or (run.get("repository") or {}).get("full_name", "").lower() != repo.lower()
+            or not exact_sha
+            or run.get("head_sha") != exact_sha
+        ):
+            raise ArtifactResolutionError("Pinned workflow run does not match repository, success, or expected SHA")
+        if expected_artifact_id is not None:
+            artifact = _get_json(f"/repos/{repo}/actions/artifacts/{expected_artifact_id}")
+            if (
+                str(artifact.get("id")) != str(expected_artifact_id)
+                or str((artifact.get("workflow_run") or {}).get("id")) != str(expected_run_id)
+                or _artifact_score(component, platform_name, artifact) < 40
+            ):
+                raise ArtifactResolutionError("Pinned artifact does not match run or platform, or has expired")
+        else:
+            artifact = _select_from_run(component, platform_name, repo, run)
+        if artifact is None:
+            raise ArtifactResolutionError("Pinned run has no matching artifact")
+        _verify_digest_metadata(artifact, expected_artifact_digest, required=True)
+        return run, artifact
+    if expected_artifact_id is not None or expected_artifact_digest:
+        raise ArtifactResolutionError("Artifact pin requires an expected run ID")
 
     query_fields: dict[str, Any] = {"status": "success", "per_page": 100}
     if exact_sha:
@@ -172,23 +202,47 @@ def discover(
     )
 
 
+def _digest(value: str) -> str:
+    value = value.removeprefix("sha256:").lower()
+    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+        raise ArtifactResolutionError("Invalid SHA256 artifact digest")
+    return value
+
+
+def _verify_digest_metadata(artifact: dict[str, Any], expected: str | None, *, required: bool) -> None:
+    official = artifact.get("digest")
+    if not official:
+        if required or expected:
+            raise ArtifactResolutionError("Pinned artifact is missing its official digest")
+        return
+    official_hash = _digest(str(official))
+    if expected and _digest(expected) != official_hash:
+        raise ArtifactResolutionError("Expected artifact digest does not match official digest")
+
+
 def _download_artifact(repo: str, artifact: dict[str, Any], destination: pathlib.Path) -> pathlib.Path:
     destination.mkdir(parents=True, exist_ok=True)
     archive = destination / "artifact.zip"
     url = f"{API}/repos/{repo}/actions/artifacts/{artifact['id']}/zip"
     opener = urllib.request.build_opener(_SafeRedirect())
+    digest = hashlib.sha256()
     try:
         with (
             opener.open(_request(url, accept="application/vnd.github+json"), timeout=120) as response,
             archive.open("wb") as out,
         ):
-            shutil.copyfileobj(response, out, length=1024 * 1024)
+            while chunk := response.read(1024 * 1024):
+                digest.update(chunk)
+                out.write(chunk)
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", "replace")
         raise ArtifactResolutionError(
             f"Artifact download failed ({exc.code}) for {repo}/{artifact.get('name')}: {body[:600]}"
         ) from exc
 
+    artifact["downloaded_sha256"] = digest.hexdigest()
+    if artifact.get("digest") and _digest(str(artifact["digest"])) != digest.hexdigest():
+        raise ArtifactResolutionError("Downloaded artifact bytes do not match official digest")
     extract_dir = destination / "payload"
     extract_dir.mkdir(exist_ok=True)
     try:
@@ -228,6 +282,8 @@ def _metadata(component: str, repo: str, run: dict[str, Any], artifact: dict[str
             "name": artifact.get("name"),
             "size_in_bytes": artifact.get("size_in_bytes"),
             "expires_at": artifact.get("expires_at"),
+            "digest": artifact.get("digest"),
+            "downloaded_sha256": artifact.get("downloaded_sha256"),
         },
     }
 
@@ -242,12 +298,20 @@ def resolve_artifacts(
     metadata_path: pathlib.Path | str = "metadata.json",
     spark_sha: str | None = None,
     endstone_sha: str | None = None,
+    spark_run_id: str | int | None = None,
+    spark_artifact_id: str | int | None = None,
+    spark_artifact_digest: str | None = None,
 ) -> dict[str, Any]:
     if platform_name not in {"linux", "windows"}:
         raise ValueError(f"Unsupported platform: {platform_name}")
 
     exact_spark_sha = (spark_sha or os.environ.get("EXPECTED_SPARK_SHA", "")).strip() or None
     exact_endstone_sha = (endstone_sha or os.environ.get("EXPECTED_ENDSTONE_SHA", "")).strip() or None
+    pins = {
+        "expected_run_id": spark_run_id if spark_run_id is not None else os.environ.get("EXPECTED_SPARK_RUN_ID") or None,
+        "expected_artifact_id": spark_artifact_id if spark_artifact_id is not None else os.environ.get("EXPECTED_SPARK_ARTIFACT_ID") or None,
+        "expected_artifact_digest": spark_artifact_digest if spark_artifact_digest is not None else os.environ.get("EXPECTED_SPARK_ARTIFACT_DIGEST") or None,
+    }
     root = pathlib.Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
     result: dict[str, Any] = {"platform": platform_name, "components": {}}
@@ -261,11 +325,13 @@ def resolve_artifacts(
             component,
             platform_name,
             expected_sha=expected_shas[component],
+            **({key: value for key, value in pins.items() if value is not None} if component == "spark" else {}),
         )
         info = _metadata(component, config["repo"], run, artifact)
         result["components"][component] = info
         save_metadata(result, metadata_path)
         payload = _download_artifact(config["repo"], artifact, root / component)
+        info["artifact"]["downloaded_sha256"] = artifact.get("downloaded_sha256")
         info["payload_dir"] = str(payload)
         save_metadata(result, metadata_path)
         print(

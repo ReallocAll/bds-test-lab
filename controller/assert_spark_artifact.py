@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 
 from providers.artifact_provider import discover
 
@@ -10,9 +11,16 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--platform", required=True, choices=["linux", "windows"])
     parser.add_argument("--expected-sha", required=True)
+    parser.add_argument("--expected-run-id", default=os.environ.get("EXPECTED_SPARK_RUN_ID") or None)
+    parser.add_argument("--expected-artifact-id", default=os.environ.get("EXPECTED_SPARK_ARTIFACT_ID") or None)
+    parser.add_argument("--expected-artifact-digest", default=os.environ.get("EXPECTED_SPARK_ARTIFACT_DIGEST") or None)
     args = parser.parse_args()
 
-    run, artifact = discover("spark", args.platform, expected_sha=args.expected_sha)
+    run, artifact = discover(
+        "spark", args.platform, expected_sha=args.expected_sha,
+        expected_run_id=args.expected_run_id, expected_artifact_id=args.expected_artifact_id,
+        expected_artifact_digest=args.expected_artifact_digest,
+    )
     actual = str(run.get("head_sha") or "")
     if actual != args.expected_sha:
         raise SystemExit(

@@ -72,6 +72,7 @@ class FleetBotProcess(BotProcess):
             bufsize=1,
             env=child_process_env(),
         )
+        self.capture_process_identity()
         self._reader = threading.Thread(target=self._read_loop, name="fleet-bot-log-reader", daemon=True)
         self._reader.start()
 
@@ -151,7 +152,6 @@ class FleetSparkValidation(IntegrationTest):
         assert self.server is not None
         self.wait_post_start_initialization()
         if not self.server.graceful_stop(60):
-            self.server.force_kill_tree()
             raise RuntimeError("BDS did not stop after server.properties bootstrap")
         self.server.close()
         self.server = None
@@ -319,7 +319,10 @@ class FleetSparkValidation(IntegrationTest):
         if self.bot is None:
             return
         assert self.server is not None
-        code = self.bot.terminate(20)
+        stopped = self.bot.graceful_stop(20)
+        code = stopped.get("returncode")
+        if not stopped["success"]:
+            raise RuntimeError(f"Fleet graceful shutdown failed: {stopped['outcome']}")
         if code != 0:
             raise RuntimeError(f"Fleet exited with code {code} after SIGTERM")
         events = self.bot.event_snapshot()
@@ -343,6 +346,82 @@ class FleetSparkValidation(IntegrationTest):
             output=" | ".join(output[-30:]),
             shutdown_event=shutdown,
         )
+
+    def _shutdown_owned_runtime(self) -> None:
+        if self.server is None:
+            return
+        graceful = self.server.graceful_stop(60)
+        self.record_server_lifecycle()
+        if not graceful:
+            raise RuntimeError("BDS did not shut down gracefully within timeout")
+        self.server.close()
+        leftovers = self.residual_processes()
+        if leftovers:
+            self.record_server_lifecycle()
+            raise RuntimeError("Residual BDS process detected after shutdown: " + " | ".join(leftovers[:5]))
+        self.result["shutdown_status"] = "graceful"
+        self.record_server_lifecycle()
+        self.check("shutdown", "PASS", "graceful; no residual BDS process")
+
+    def cleanup_after_failure(self) -> None:
+        cleanup = self.result.setdefault("failure_cleanup", {})
+        for name, resource, timeout in (("fleet", self.bot, 20.0), ("server", self.server, 30.0)):
+            outcome = {"attempted": False, "outcome": "not_started", "forced": False, "residual": []}
+            cleanup[name] = outcome
+            if resource is None or resource.process is None:
+                continue
+            outcome["attempted"] = True
+            graceful = False
+            try:
+                attempt = resource.graceful_stop(timeout)
+                outcome["graceful_attempt"] = attempt
+                graceful = attempt.get("success") is True if isinstance(attempt, dict) else attempt is True
+                outcome["outcome"] = "graceful" if graceful else "graceful_failed"
+            except Exception as exc:  # noqa: BLE001 - resources must be cleaned independently
+                outcome.update(outcome="graceful_error", error=f"{type(exc).__name__}: {exc}")
+
+            def inspect_residuals(resource, name: str, outcome: dict) -> tuple[bool, bool]:
+                outcome.pop("residual_error", None)
+                try:
+                    records = resource.owned_snapshot() if name == "fleet" else resource.process_tree_snapshot()
+                    outcome["residual"] = records
+                    alive = any(r.get("alive") is True and r.get("identity_match") is True
+                                and r.get("pid") is not None and r.get("create_time") is not None for r in records)
+                    unknown = any(r.get("identity_match") is not True or r.get("alive") not in (True, False)
+                                  or r.get("error") or r.get("pid") is None or r.get("create_time") is None for r in records)
+                    tree_error = getattr(resource, "_process_tree_error", None) if name == "server" else None
+                    if tree_error:
+                        outcome["residual_error"] = tree_error
+                        unknown = True
+                    return alive, unknown
+                except Exception as exc:  # noqa: BLE001 - preserve failed residual verification
+                    outcome["residual"] = []
+                    outcome["residual_error"] = f"{type(exc).__name__}: {exc}"
+                    return False, True
+
+            alive, unknown = inspect_residuals(resource, name, outcome)
+            outcome["residual_before_fallback"] = outcome["residual"]
+            if "residual_error" in outcome:
+                outcome["residual_before_fallback_error"] = outcome["residual_error"]
+            if not graceful or alive:
+                try:
+                    fallback = resource.force_kill_owned(5.0)
+                    outcome["fallback"] = fallback
+                    outcome["forced"] = fallback["forced"]
+                    outcome["outcome"] = "forced" if fallback["forced"] else "fallback_" + fallback["outcome"]
+                except Exception as exc:  # noqa: BLE001 - fallback failure must not skip the other resource
+                    outcome["fallback_error"] = f"{type(exc).__name__}: {exc}"
+                    outcome["outcome"] = "fallback_error"
+                alive, unknown = inspect_residuals(resource, name, outcome)
+            outcome["residual_status"] = "UNVERIFIED" if unknown else "residual_processes" if alive else "clean"
+            if unknown or alive:
+                outcome["outcome"] = outcome["residual_status"]
+            if name == "server":
+                self.result["shutdown_status"] = "forced_after_failure" if outcome["outcome"] == "forced" else outcome["outcome"]
+            try:
+                self._write_results()
+            except Exception as exc:  # noqa: BLE001 - evidence I/O must not skip cleanup
+                outcome["persistence_error"] = f"{type(exc).__name__}: {exc}"
 
     def execute(self) -> int:
         stage = "initialization"
@@ -383,39 +462,41 @@ class FleetSparkValidation(IntegrationTest):
             self.stop_fleet()
 
             stage = "shutdown"
-            self.shutdown()
+            self._shutdown_owned_runtime()
             self.result["status"] = "PASS"
             self.result["state"] = "completed"
             self._write_results()
             return 0
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - persist integration failures
             self.result["status"] = "FAIL"
             self.result["state"] = "completed"
             self.result["failed_stage"] = stage
             self.result["error_summary"] = f"{type(exc).__name__}: {exc}"[:1200]
             diagnostic = traceback.format_exc()
             try:
-                if self.bot is not None and self.bot.is_alive():
-                    self.bot.force_close()
-                if self.server is not None and self.server.is_alive():
-                    self.server.force_kill_tree()
-                    self.result["shutdown_status"] = "forced_after_failure"
-                    self.server.close()
-            except Exception:
+                self.cleanup_after_failure()
+            except Exception:  # noqa: BLE001 - preserve the original failure
                 diagnostic += "\n\nCleanup failure:\n" + traceback.format_exc()
-            last_lines = self.server.snapshot()[-300:] if self.server is not None else []
-            self.diagnostics.write_text(
-                diagnostic + "\n\nLast BDS log lines:\n" + "\n".join(last_lines),
-                encoding="utf-8",
-            )
-            self._write_results()
+            try:
+                last_lines = self.server.snapshot()[-300:] if self.server is not None else []
+                self.diagnostics.write_text(
+                    diagnostic + "\n\nLast BDS log lines:\n" + "\n".join(last_lines),
+                    encoding="utf-8",
+                )
+            except Exception as diagnostic_error:  # noqa: BLE001 - preserve the original failure
+                self.result["diagnostic_error"] = f"{type(diagnostic_error).__name__}: {diagnostic_error}"
             return 1
         finally:
-            if self.bot is not None and self.bot.is_alive():
-                self.bot.force_close()
             self.result["completed_at"] = now_iso()
-            self.split_logs()
-            self._write_results()
+            for operation in (self.split_logs, self._write_results):
+                try:
+                    operation()
+                except Exception as finalization_error:
+                    if self.result.get("status") != "FAIL":
+                        raise
+                    self.result.setdefault("finalization_errors", []).append(
+                        f"{type(finalization_error).__name__}: {finalization_error}"
+                    )
             print(json.dumps(self.result, indent=2, sort_keys=True), flush=True)
 
 

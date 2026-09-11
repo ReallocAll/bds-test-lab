@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import os
 import pathlib
@@ -11,6 +12,8 @@ import shutil
 import signal
 import subprocess
 import sys
+import tarfile
+import tempfile
 import threading
 import time
 import traceback
@@ -79,6 +82,99 @@ def locate_one(root: pathlib.Path, patterns: list[str]) -> pathlib.Path:
         raise FileNotFoundError(f"No file matching {patterns} under {root}")
     matches.sort(key=lambda p: (len(p.parts), str(p)))
     return matches[0]
+
+
+def extract_spark_linux(archive: pathlib.Path, destination: pathlib.Path) -> list[pathlib.Path]:
+    expected = {"endstone_spark.so", ".spark-native/libspark_allocation_gateway_v1.so"}
+    with tarfile.open(archive, "r:gz") as package:
+        members = []
+        for member in package:
+            members.append(member)
+            if (
+                len(members) > 2
+                or member.name not in expected
+                or not member.isfile()
+                or member.size < 0
+                or sum(item.size for item in members) > 256 * 1024 * 1024
+            ):
+                raise ValueError("Spark Linux package contains invalid or oversized entries")
+        if (
+            len(members) != 2
+            or {member.name for member in members} != expected
+            or any(not member.isfile() or member.size < 0 for member in members)
+            or sum(member.size for member in members) > 256 * 1024 * 1024
+        ):
+            raise ValueError("Spark Linux package must contain exactly the plugin and allocation gateway")
+        paths = []
+        for member in members:
+            target = destination / member.name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with package.extractfile(member) as source, target.open("wb") as output:
+                shutil.copyfileobj(source, output, length=1024 * 1024)
+            paths.append(target)
+        return paths
+
+
+def owned_process_snapshot(pid: int | None, create_time: float | None) -> dict[str, Any]:
+    record = {"pid": pid, "create_time": create_time, "identity_match": False, "alive": None}
+    if pid is None or create_time is None:
+        record["error"] = "identity-unavailable"
+        return record
+    try:
+        process = psutil.Process(pid)
+        if process.create_time() != create_time:
+            record.update(alive=False, error="identity-mismatch")
+        else:
+            record.update(identity_match=True, alive=process.is_running())
+    except psutil.NoSuchProcess:
+        record.update(identity_match=True, alive=False)
+    except (psutil.AccessDenied, OSError) as exc:
+        record["error"] = type(exc).__name__
+    return record
+
+
+def force_owned_processes(records: list[dict[str, Any]], timeout: float = 5.0) -> dict[str, Any]:
+    deadline = time.monotonic() + max(0.0, min(timeout, 5.0))
+    result: dict[str, Any] = {
+        "outcome": "not_started" if not records else "completed",
+        "forced": False, "before": records, "killed": [], "skipped": [], "errors": [], "residual": [],
+    }
+    killed = []
+    for record in records:
+        pid, created = record.get("pid"), record.get("create_time")
+        if record.get("identity_match") is not True or created is None or pid is None:
+            result["skipped"].append({"pid": pid, "reason": "unverified-identity"})
+            continue
+        if record.get("alive") is False:
+            continue
+        if time.monotonic() >= deadline:
+            result["skipped"].append({"pid": pid, "reason": "deadline"})
+            continue
+        try:
+            process = psutil.Process(pid)
+            if process.create_time() != created:
+                result["skipped"].append({"pid": pid, "reason": "identity-changed"})
+                continue
+            if time.monotonic() >= deadline:
+                result["skipped"].append({"pid": pid, "reason": "deadline"})
+                continue
+            process.kill()
+            result["forced"] = True
+            result["killed"].append({"pid": pid, "create_time": created})
+            killed.append(process)
+        except psutil.NoSuchProcess:
+            pass
+        except (psutil.AccessDenied, OSError) as exc:
+            result["errors"].append({"pid": pid, "error": type(exc).__name__})
+    if killed:
+        try:
+            psutil.wait_procs(killed, timeout=max(0.0, deadline - time.monotonic()))
+        except (psutil.Error, OSError) as exc:
+            result["errors"].append({"error": type(exc).__name__})
+    result["residual"] = [owned_process_snapshot(r.get("pid"), r.get("create_time")) for r in records]
+    if any(r["alive"] is not False for r in result["residual"]) or result["errors"]:
+        result["outcome"] = "incomplete"
+    return result
 
 
 class ServerProcess:
@@ -278,6 +374,78 @@ class ServerProcess:
             for record in self.process_tree_snapshot()
             if record.get("alive") is True and record.get("identity_match") is True
         ]
+
+    def bds_identity_snapshot(self, server_dir: pathlib.Path) -> dict[str, Any]:
+        records = self.process_tree_snapshot()
+        evidence: dict[str, Any] = {
+            "status": "UNVERIFIED", "launch": {"pid": self.pid, "create_time": self.create_time},
+            "bds": None, "errors": [],
+        }
+        root = next((r for r in records if r.get("pid") == self.pid), None)
+        if (self.pid is None or self.create_time is None or self.process is None
+                or self.process.pid != self.pid or self.process.poll() is not None
+                or self._root_identity_status != "verified"
+                or not root or root.get("identity_match") is not True or root.get("alive") is not True
+                or root.get("create_time") != self.create_time or self._process_tree_error):
+            evidence["errors"].append("launch-identity-unverified")
+            return evidence
+        directory = server_dir.resolve()
+        expected = {(directory / name).resolve() for name in ("bedrock_server", "bedrock_server.exe")}
+        expected = {path for path in expected if path.is_relative_to(directory) and path.is_file()}
+        if not expected:
+            evidence["errors"].append("expected-binary-unavailable")
+            return evidence
+        matches = []
+        for record in records:
+            if record.get("alive") is False:
+                continue
+            if record.get("identity_match") is not True or record.get("alive") is not True:
+                evidence["errors"].append(f"process-identity-unverified:{record['pid']}")
+                continue
+            try:
+                process = psutil.Process(record["pid"])
+                if process.create_time() != record["create_time"]:
+                    evidence["errors"].append(f"process-identity-changed:{record['pid']}")
+                    continue
+                executable = pathlib.Path(process.exe()).resolve()
+                paths = {executable} if executable in expected else {
+                    pathlib.Path(item.path).resolve() for item in process.memory_maps()
+                    if item.path and pathlib.Path(item.path).name in ("bedrock_server", "bedrock_server.exe")
+                } & expected
+                if process.create_time() != record["create_time"] or not process.is_running():
+                    evidence["errors"].append(f"process-identity-changed:{record['pid']}")
+                    continue
+                for path in sorted(paths):
+                    stat = path.stat()
+                    matches.append({"pid": record["pid"], "create_time": record["create_time"],
+                                    "binary_path": str(path), "source": "executable" if path == executable else "module",
+                                    "binary_identity": {"device": stat.st_dev, "inode": stat.st_ino,
+                                                        "size": stat.st_size, "mtime_ns": stat.st_mtime_ns},
+                                    "owned": True})
+            except psutil.NoSuchProcess:
+                continue
+            except (psutil.AccessDenied, OSError) as exc:
+                evidence["errors"].append(f"{type(exc).__name__}:{record['pid']}")
+        current_root = owned_process_snapshot(self.pid, self.create_time)
+        if current_root["identity_match"] is not True or current_root["alive"] is not True:
+            evidence["errors"].append("launch-identity-changed")
+        if len(matches) == 1:
+            current_bds = owned_process_snapshot(matches[0]["pid"], matches[0]["create_time"])
+            if current_bds["identity_match"] is not True or current_bds["alive"] is not True:
+                evidence["errors"].append("bds-identity-changed")
+        if len(matches) == 1 and not evidence["errors"]:
+            evidence.update(status="VERIFIED", bds=matches[0])
+        else:
+            evidence["errors"].append(f"expected-one-bds-process:found-{len(matches)}")
+        return evidence
+
+    def force_kill_owned(self, timeout: float = 5.0) -> dict[str, Any]:
+        deadline = time.monotonic() + max(0.0, min(timeout, 5.0))
+        records = self.process_tree_snapshot() if self.pid is not None else []
+        outcome = force_owned_processes(records, max(0.0, deadline - time.monotonic()))
+        self._forced = self._forced or outcome["forced"]
+        self.lifecycle_diagnostic["owned_fallback"] = outcome
+        return outcome
 
     @staticmethod
     def _bds_child_liveness(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -574,19 +742,43 @@ class IntegrationTest:
         self.check("endstone-wheel-located", "PASS", str(wheel.relative_to(self.root)))
         run_checked([sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--force-reinstall", str(wheel)], timeout=300)
         spark_root = self.downloads / "spark" / "payload"
-        spark_binary = locate_one(spark_root, ["endstone_spark.so"] if self.platform == "linux" else ["endstone_spark.dll"])
         self.server_dir.mkdir(parents=True, exist_ok=True)
         plugin_dir = self.server_dir / "plugins"
         plugin_dir.mkdir(parents=True, exist_ok=True)
         self._prepare_bstats_before_start()
-        target = plugin_dir / spark_binary.name
-        shutil.copy2(spark_binary, target)
-        self.check("spark-plugin-deployed", "PASS", str(target.relative_to(self.root)))
-        if self.platform == "windows":
-            allocation_shim = locate_one(spark_root, ["spark_allocation_shim.dll"])
-            shim_target = plugin_dir / allocation_shim.name
-            shutil.copy2(allocation_shim, shim_target)
-            self.check("spark-allocation-shim-deployed", "PASS", str(shim_target.relative_to(self.root)))
+        with tempfile.TemporaryDirectory(prefix="spark-package-") as temporary:
+            archives = list(spark_root.rglob("*.tar.gz")) if self.platform == "linux" else []
+            if archives:
+                if len(archives) != 1:
+                    raise ValueError("Expected exactly one Spark Linux package")
+                staging = pathlib.Path(temporary)
+                sources = [(path, path.relative_to(staging)) for path in extract_spark_linux(archives[0], staging)]
+            else:
+                binary = locate_one(spark_root, ["endstone_spark.so"] if self.platform == "linux" else ["endstone_spark.dll"])
+                sources = [(binary, pathlib.Path(binary.name))]
+                if self.platform == "windows":
+                    shims = list(spark_root.rglob("spark_allocation_shim.dll"))
+                    if shims:
+                        shim = locate_one(spark_root, ["spark_allocation_shim.dll"])
+                        sources.append((shim, pathlib.Path(shim.name)))
+            installed = []
+            for source, relative in sources:
+                with source.open("rb") as input_file:
+                    digest = hashlib.file_digest(input_file, "sha256").hexdigest()
+                is_plugin = relative.name in {"endstone_spark.so", "endstone_spark.dll"}
+                expected_key = "EXPECTED_SPARK_PLUGIN_SHA256" if is_plugin else "EXPECTED_SPARK_HELPER_SHA256"
+                expected = os.environ.get(expected_key, "").strip().lower()
+                if expected and digest != expected:
+                    raise ValueError(f"{relative.as_posix()} SHA256 does not match {expected_key}")
+                installed.append({"relative_path": (pathlib.Path("plugins") / relative).as_posix(), "size": source.stat().st_size, "sha256": digest})
+            for source, relative in sources:
+                target = plugin_dir / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+                name = "spark-plugin-deployed" if relative.name.startswith("endstone_spark.") else "spark-allocation-shim-deployed" if self.platform == "windows" else "spark-allocation-gateway-deployed"
+                self.check(name, "PASS", str(target.relative_to(self.root)))
+            self.metadata.setdefault("components", {}).setdefault("spark", {})["spark_installed_files"] = installed
+            write_json(self.metadata_path, self.metadata)
 
     def _prepare_bstats_before_start(self) -> None:
         if not getattr(self, "disable_bstats", False):

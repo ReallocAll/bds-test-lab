@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import io
 import os
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -10,6 +13,62 @@ from providers import artifact_provider
 
 
 class ArtifactProviderTest(unittest.TestCase):
+    def test_exact_pins_validate_run_artifact_and_digest(self) -> None:
+        run = {"id": 10, "conclusion": "success", "head_sha": "a" * 40,
+               "repository": {"full_name": "ReallocAll/spark"}}
+        artifact = {"id": 20, "name": "spark-linux", "expired": False,
+                    "workflow_run": {"id": 10}, "digest": "sha256:" + "b" * 64}
+        with mock.patch.object(artifact_provider, "_get_json", side_effect=[run, artifact]):
+            self.assertEqual(artifact_provider.discover("spark", "linux", "a" * 40, 10, 20, "b" * 64), (run, artifact))
+        for field, value in (("id", 21), ("name", "spark-windows"), ("expired", True),
+                             ("workflow_run", {"id": 11}), ("digest", None), ("digest", "sha256:" + "c" * 64)):
+            with self.subTest(field=field, value=value), mock.patch.object(
+                artifact_provider, "_get_json", side_effect=[run, {**artifact, field: value}]
+            ), self.assertRaises(artifact_provider.ArtifactResolutionError):
+                artifact_provider.discover("spark", "linux", "a" * 40, 10, 20, "b" * 64)
+        for field, value in (("id", 11), ("conclusion", "failure"), ("head_sha", "c" * 40),
+                             ("repository", {"full_name": "other/spark"})):
+            with self.subTest(field=field), mock.patch.object(
+                artifact_provider, "_get_json", return_value={**run, field: value}
+            ), self.assertRaises(artifact_provider.ArtifactResolutionError):
+                artifact_provider.discover("spark", "linux", "a" * 40, 10, 20)
+
+    def test_download_verifies_actual_zip_bytes_before_extracting(self) -> None:
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, "w") as archive:
+            archive.writestr("endstone_spark.dll", b"plugin")
+        data = stream.getvalue()
+        digest = hashlib.sha256(data).hexdigest()
+        for expected, succeeds in ((digest, True), ("0" * 64, False)):
+            with self.subTest(succeeds=succeeds), tempfile.TemporaryDirectory() as temporary, mock.patch.object(
+                artifact_provider, "_request", return_value=mock.sentinel.request
+            ), mock.patch.object(artifact_provider.urllib.request, "build_opener") as opener:
+                opener.return_value.open.return_value = io.BytesIO(data)
+                artifact = {"id": 20, "digest": "sha256:" + expected}
+                if succeeds:
+                    payload = artifact_provider._download_artifact("ReallocAll/spark", artifact, Path(temporary))
+                    self.assertEqual((payload / "endstone_spark.dll").read_bytes(), b"plugin")
+                    self.assertEqual(artifact["downloaded_sha256"], digest)
+                else:
+                    with self.assertRaises(artifact_provider.ArtifactResolutionError):
+                        artifact_provider._download_artifact("ReallocAll/spark", artifact, Path(temporary))
+                    self.assertFalse((Path(temporary) / "payload").exists())
+
+    def test_pin_environment_and_explicit_precedence(self) -> None:
+        environment = {"EXPECTED_SPARK_RUN_ID": "10", "EXPECTED_SPARK_ARTIFACT_ID": "20",
+                       "EXPECTED_SPARK_ARTIFACT_DIGEST": "b" * 64}
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(os.environ, environment), mock.patch.object(
+            artifact_provider, "discover", return_value=({"id": 10}, {"id": 20})
+        ) as discover, mock.patch.object(artifact_provider, "_download_artifact", return_value=Path(temporary)), mock.patch.object(artifact_provider, "save_metadata"):
+            artifact_provider.resolve_artifacts("linux", temporary)
+            self.assertEqual(discover.call_args.kwargs["expected_run_id"], "10")
+            self.assertEqual(discover.call_args.kwargs["expected_artifact_id"], "20")
+            self.assertEqual(discover.call_args.kwargs["expected_artifact_digest"], "b" * 64)
+            artifact_provider.resolve_artifacts("linux", temporary, spark_run_id=11, spark_artifact_id=21, spark_artifact_digest="c" * 64)
+            self.assertEqual(discover.call_args.kwargs["expected_run_id"], 11)
+            self.assertEqual(discover.call_args.kwargs["expected_artifact_id"], 21)
+            self.assertEqual(discover.call_args.kwargs["expected_artifact_digest"], "c" * 64)
+
     def test_default_discovery_stays_on_configured_branch(self) -> None:
         run = {
             "id": 10,

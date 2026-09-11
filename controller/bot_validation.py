@@ -12,12 +12,16 @@ import time
 import traceback
 from typing import Any
 
+import psutil
+
 from controller.run_test import (
     READY_HINTS,
     ServerProcess,
     child_process_env,
+    force_owned_processes,
     locate_one,
     now_iso,
+    owned_process_snapshot,
     run_checked,
 )
 from providers.artifact_provider import _download_artifact, discover
@@ -42,6 +46,8 @@ class BotProcess:
         self.binary = binary.resolve()
         self.log_path = log_path
         self.process: subprocess.Popen[str] | None = None
+        self.pid: int | None = None
+        self.create_time: float | None = None
         self.events: list[dict[str, Any]] = []
         self.lines: list[str] = []
         self._lock = threading.Lock()
@@ -79,6 +85,7 @@ class BotProcess:
             creationflags=creationflags,
             env=child_process_env(),
         )
+        self.capture_process_identity()
         self._reader = threading.Thread(target=self._read_loop, name="bot-log-reader", daemon=True)
         self._reader.start()
 
@@ -140,6 +147,52 @@ class BotProcess:
             self._log.close()
             self._log = None
         return code
+
+    def capture_process_identity(self) -> None:
+        self.pid = self.process.pid if self.process is not None else None
+        self.create_time = None
+        if self.pid is not None and self.process.poll() is None:
+            try:
+                created = psutil.Process(self.pid).create_time()
+                if self.process.poll() is None:
+                    self.create_time = created
+            except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+                pass
+
+    def owned_snapshot(self) -> list[dict[str, Any]]:
+        return [] if self.pid is None else [owned_process_snapshot(self.pid, self.create_time)]
+
+    def graceful_stop(self, timeout: float = 15.0) -> dict[str, Any]:
+        deadline = time.monotonic() + max(0.0, min(timeout, 30.0))
+        outcome: dict[str, Any] = {"outcome": "not_started", "success": True, "forced": False, "returncode": None}
+        if self.process is None:
+            return outcome
+        records = self.owned_snapshot()
+        outcome["before"] = records
+        if not records or records[0].get("identity_match") is not True:
+            outcome.update(outcome="unverified", success=False)
+            return outcome
+        if self.process.poll() is None:
+            termination_signal = signal.CTRL_BREAK_EVENT if sys.platform == "win32" else signal.SIGTERM
+            self.process.send_signal(termination_signal)
+            try:
+                self.process.wait(timeout=max(0.0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                outcome.update(outcome="timeout", success=False)
+                return outcome
+        code = self.process.returncode
+        outcome.update(outcome="graceful" if code == 0 else "nonzero-exit", success=code == 0, returncode=code)
+        if self._reader is not None:
+            self._reader.join(timeout=max(0.0, deadline - time.monotonic()))
+        if self._log is not None and (self._reader is None or not self._reader.is_alive()):
+            self._log.close()
+            self._log = None
+        return outcome
+
+    def force_kill_owned(self, timeout: float = 5.0) -> dict[str, Any]:
+        deadline = time.monotonic() + max(0.0, min(timeout, 5.0))
+        records = self.owned_snapshot()
+        return force_owned_processes(records, max(0.0, deadline - time.monotonic()))
 
     def force_close(self) -> None:
         if self.process is not None and self.process.poll() is None:
