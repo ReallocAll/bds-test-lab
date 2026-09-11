@@ -20,7 +20,7 @@ class ProfileEvidenceTests(unittest.TestCase):
     def validator(self, root, mode="execution"):
         validator = object.__new__(module.CrossPlatformFleetSparkValidation)
         validator.root = Path(root)
-        validator.result = {"player_snapshots": []}
+        validator.result = {"player_snapshots": [], "platform": "linux"}
         validator.profiler_mode = mode
         validator.profile_seconds = 30
         validator.count = 1
@@ -28,6 +28,8 @@ class ProfileEvidenceTests(unittest.TestCase):
         validator.generation = "current-generation"
         validator._write_results = mock.Mock()
         validator.server = mock.Mock()
+        validator.server.snapshot.return_value = []
+        validator.server.command.return_value = 0
         validator.server.process.pid = 123
         validator.server_dir = Path(root)
         validator.server.bds_identity_snapshot.return_value = {
@@ -39,11 +41,116 @@ class ProfileEvidenceTests(unittest.TestCase):
         }
         return validator
 
-    def quality(self, mode="execution", players=True, **kwargs):
+    def test_recorded_bds_list_grammar_on_both_platforms(self):
+        fixtures = (
+            ("linux", 1, "TestBot"),
+            ("linux", 5, "TestBot-02, TestBot-01, TestBot-04, TestBot-05, TestBot-03"),
+            ("windows", 1, "TestBot"),
+            ("windows", 5, "TestBot-04, TestBot-05, TestBot-01, TestBot-02, TestBot-03"),
+        )
+        for platform, count, names in fixtures:
+            with self.subTest(platform=platform, count=count):
+                validator = self.validator(".")
+                validator.count = count
+                validator.server.wait_command_output.return_value = [
+                    f"[12:00:00 INFO]: There are {count}/30 players online:",
+                    f"[12:00:00 INFO]: {names}",
+                ]
+                snapshot = validator.player_snapshot("before")
+                self.assertTrue(snapshot["valid"])
+                self.assertEqual(sorted(snapshot["names"]), sorted(validator.expected_names()))
+        for name in (": TestBot", "prefix TestBot", "TestBot-01", "TestBot, TestBot", "Player connected: TestBot"):
+            validator = self.validator(".")
+            validator.server.wait_command_output.return_value = [
+                "[12:00:00 INFO]: There are 1/30 players online:", f"[12:00:00 INFO]: {name}",
+            ]
+            self.assertFalse(validator.player_snapshot("before")["valid"])
+
+    def test_recorded_windows_allocation_counter_types(self):
+        values = diagnostic_values(allocation=True)
+        recorded_counters = {
+            "Allocation diagnostics drain truncated": "0",
+            "Allocation diagnostics drain truncated allocation events": "0",
+            "Allocation diagnostics drain truncated thread observation events": "0",
+            "Allocation diagnostics drain truncated tick events": "0",
+            "Allocation diagnostics exhausted insertion probe failures": "0",
+            "Allocation stop budget truncated records": "0",
+        }
+        values.update(recorded_counters)
+        quality = self.quality("allocation", diagnostics=values)
+        self.assertEqual(quality["status"], "PASS")
+        self.assertEqual(quality["diagnostics"]["loss_counters"], dict.fromkeys(recorded_counters, 0))
+        for key in recorded_counters:
+            with self.subTest(key=key):
+                quality = self.quality("allocation", diagnostics=values | {key: "7"})
+                self.assertEqual(quality["status"], "DEGRADED")
+                self.assertEqual(quality["diagnostics"]["loss_counters"][key], 7)
+                for malformed in ("false", "", "-1", "1.5", "NaN"):
+                    self.assertEqual(self.quality("allocation", diagnostics=values | {key: malformed})["status"], "FAIL")
+        for key in ("Allocation data incomplete", "Allocation history truncated", "Allocation profile storage exhausted"):
+            self.assertEqual(self.quality("allocation", diagnostics=values | {key: "0"})["status"], "FAIL")
+        missing = ("Allocation skipped modules", "Allocation failed modules")
+        observed = {key: value for key, value in values.items() if key not in missing}
+        quality = self.quality("allocation", diagnostics=observed)
+        self.assertEqual(quality["status"], "UNVERIFIED")
+        self.assertEqual(set(quality["missing_diagnostics"]), set(missing))
+
+    def test_windows_supported_entry_points_do_not_claim_module_census(self):
+        values = diagnostic_values(allocation=True)
+        for key in ("Allocation skipped modules", "Allocation failed modules"):
+            del values[key]
+        values.update({
+            "Allocation hook entry points covered": "19", "Allocation hook entry points total": "19",
+            "Allocation hook targets installed": "19", "Allocation hook aliases": "0",
+        })
+        quality = self.quality("allocation", platform_name="windows", diagnostics=values)
+        self.assertEqual(quality["status"], "PASS")
+        self.assertEqual(set(quality["not_applicable_diagnostics"]),
+                         {"Allocation skipped modules", "Allocation failed modules"})
+        self.assertEqual(quality["allocation_coverage"]["supported_entry_points"],
+                         {"covered": 19, "total": 19, "targets": 19, "aliases": 0})
+        self.assertEqual(quality["allocation_coverage"]["broader_module_census"],
+                         {"availability": "not_exposed", "status": "UNVERIFIED"})
+        self.assertNotIn("Allocation skipped modules", quality["diagnostics"]["raw"])
+        self.assertNotIn("Allocation failed modules", quality["diagnostics"]["raw"])
+        self.assertEqual(self.quality("allocation", diagnostics=values)["status"], "UNVERIFIED")
+        for key, value, status in (
+            ("Allocation samples dropped", "1", "DEGRADED"),
+            ("Allocation samples dropped", "invalid", "FAIL"),
+            ("Allocation diagnostics drain truncated", "2", "DEGRADED"),
+            ("Allocation data incomplete", "true", "DEGRADED"),
+            ("Allocation data incomplete", "0", "FAIL"),
+            ("Allocation hook entry points covered", "invalid", "FAIL"),
+        ):
+            with self.subTest(key=key, value=value):
+                self.assertEqual(self.quality("allocation", platform_name="windows", diagnostics=values | {key: value})["status"], status)
+
+    def test_allocation_start_rejection_fails_before_fallback_stop_or_url_acceptance(self):
+        rejection = "[12:00:00 ERROR]: Couldn't start the profiler: cannot initialize the Linux allocation gateway: missing ELF dependency identity"
+        for with_url in (False, True):
+            validator = self.validator(".", "allocation")
+            validator.player_snapshot = mock.Mock()
+            validator.collect_payload = mock.Mock()
+            lines = [rejection]
+            if with_url:
+                lines.append("View the profile at https://spark.lucko.me/fixture")
+            validator.server.snapshot.return_value = lines
+            with self.assertRaisesRegex(RuntimeError, "missing ELF dependency identity"):
+                validator.profile_execution()
+            validator.server.command.assert_called_once_with("spark profiler start --timeout 30 --alloc")
+            validator.collect_payload.assert_not_called()
+            self.assertEqual(validator.result["quality"]["status"], "FAIL")
+            self.assertEqual(validator.result["profile_start_failure"]["requested_mode"], "allocation")
+            if with_url:
+                self.assertEqual(validator.result["rejected_profile_viewer_url"], "https://spark.lucko.me/fixture")
+        validator.server.snapshot.return_value = [rejection, "View the profile at https://spark.lucko.me/fixture"]
+        self.assertEqual(validator.profile_viewer_url(1), "https://spark.lucko.me/fixture")
+
+    def quality(self, mode="execution", players=True, platform_name="linux", **kwargs):
         raw = profile_fixture(
             "allocation" if mode == "allocation" else "default", end_ms=31000, **kwargs
         )
-        return module.profile_quality(parse_sampler_data(raw), mode, 30, players)
+        return module.profile_quality(parse_sampler_data(raw), mode, 30, players, platform_name=platform_name)
 
     def test_modes_and_diagnostics(self):
         for mode in ("execution", "allocation"):

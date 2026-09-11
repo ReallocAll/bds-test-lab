@@ -32,6 +32,20 @@ from controller.python_profile_payload import (
 )
 from controller.run_test import IntegrationTest, child_process_env, now_iso, write_json
 
+QUALITY_BOOLEAN_FLAGS = frozenset({
+    "Execution data incomplete", "Execution history truncated", "Execution profile storage exhausted",
+    "Allocation data incomplete", "Allocation history truncated", "Allocation profile storage exhausted",
+})
+QUALITY_LOSS_COUNTERS = frozenset({
+    "Allocation diagnostics drain truncated",
+    "Allocation diagnostics drain truncated allocation events",
+    "Allocation diagnostics drain truncated thread observation events",
+    "Allocation diagnostics drain truncated tick events",
+    "Allocation diagnostics exhausted insertion probe failures",
+    "Allocation stop budget truncated records",
+})
+LINUX_ALLOCATION_DIAGNOSTICS = frozenset({"Allocation skipped modules", "Allocation failed modules"})
+
 
 def validate_provenance_env() -> None:
     for key in ("EXPECTED_SPARK_SHA", "EXPECTED_ENDSTONE_SHA", "BOT_REF"):
@@ -45,10 +59,14 @@ def validate_provenance_env() -> None:
 
 
 def profile_quality(
-    profile, mode: str, seconds: int, player_window_valid: bool
+    profile, mode: str, seconds: int, player_window_valid: bool, platform_name: str = "linux"
 ) -> dict:
+    if platform_name not in ("linux", "windows"):
+        raise ValueError("platform_name must be linux or windows")
     summary = profile_summary(profile)
     required = ALLOCATION_DIAGNOSTICS if mode == "allocation" else EXECUTION_DIAGNOSTICS
+    not_applicable = sorted(LINUX_ALLOCATION_DIAGNOSTICS) if mode == "allocation" and platform_name == "windows" else []
+    required = tuple(key for key in required if key not in not_applicable)
     raw = {
         key: value
         for key, value in profile.extra_metadata.items()
@@ -60,15 +78,36 @@ def profile_quality(
     }
     missing = [key for key in required if key not in raw]
     failures = []
-    drops, flags = {}, {}
+    coverage = None
+    if mode == "allocation" and platform_name == "windows":
+        entry_points = {}
+        for label, key in (
+            ("covered", "Allocation hook entry points covered"),
+            ("total", "Allocation hook entry points total"),
+            ("targets", "Allocation hook targets installed"),
+            ("aliases", "Allocation hook aliases"),
+        ):
+            entry_points[label] = None
+            if key in raw:
+                try:
+                    entry_points[label] = _require_nonnegative_int(raw[key], key)
+                except ValueError as exc:
+                    failures.append(str(exc))
+        coverage = {
+            "supported_entry_points": entry_points,
+            "broader_module_census": {"availability": "not_exposed", "status": "UNVERIFIED"},
+        }
+    drops, flags, loss_counters = {}, {}, {}
     for key, value in raw.items():
         try:
-            if any(
-                term in key.lower() for term in ("incomplete", "exhausted", "truncated")
-            ):
+            if key in QUALITY_BOOLEAN_FLAGS:
                 flags[key] = _require_bool(value, key)
+            elif key in QUALITY_LOSS_COUNTERS:
+                loss_counters[key] = _require_nonnegative_int(value, key)
             elif any(term in key.lower() for term in ("drop", "overflow")):
                 drops[key] = _require_nonnegative_int(value, key)
+            elif any(term in key.lower() for term in ("incomplete", "exhausted", "truncated")):
+                failures.append(f"unknown quality diagnostic type: {key}")
         except ValueError as exc:
             failures.append(str(exc))
     if profile.sampler_mode != (1 if mode == "allocation" else 0):
@@ -92,15 +131,18 @@ def profile_quality(
         else "UNVERIFIED"
         if missing
         else "DEGRADED"
-        if any(drops.values()) or any(flags.values())
+        if any(drops.values()) or any(flags.values()) or any(loss_counters.values())
         else "PASS"
     )
     return {
         "status": status,
         "failures": failures,
         "missing_diagnostics": missing,
+        "not_applicable_diagnostics": not_applicable,
+        "platform": platform_name,
+        "allocation_coverage": coverage,
         "observed": summary,
-        "diagnostics": {"raw": raw, "drops": drops, "incomplete_flags": flags},
+        "diagnostics": {"raw": raw, "drops": drops, "incomplete_flags": flags, "loss_counters": loss_counters},
     }
 
 
@@ -298,9 +340,9 @@ class CrossPlatformFleetSparkValidation(FleetSparkValidation):
         if len(headers) == 1:
             i, match = headers[0]
             count = int(match.group(1))
-            tail = output[i][match.end() :].lstrip(" :")
+            tail = output[i][match.end() :].strip().removeprefix(":").lstrip()
             if not tail and i + 1 < len(output):
-                tail = re.sub(r"^(?:\[[^\]]*\]\s*)+", "", output[i + 1]).strip()
+                tail = re.sub(r"^\[(?:\d{2}:\d{2}:\d{2} )?INFO\](?::)?\s*", "", output[i + 1]).strip()
             names = [name.strip() for name in tail.split(",") if name.strip()]
         snapshot = {
             "phase": phase,
@@ -393,6 +435,7 @@ class CrossPlatformFleetSparkValidation(FleetSparkValidation):
                 self.profiler_mode,
                 self.profile_seconds,
                 self.player_window_valid(),
+                platform_name=self.result["platform"],
             )
         except Exception as exc:  # noqa: BLE001 - persist evidence before graceful cleanup
             self.result["quality"] = {
@@ -400,6 +443,25 @@ class CrossPlatformFleetSparkValidation(FleetSparkValidation):
                 "failures": [f"{type(exc).__name__}: {exc}"],
             }
         self._write_results()
+
+    def profile_viewer_url(self, start: int) -> str | None:
+        assert self.server is not None
+        lines = self.server.snapshot()
+        url = self._viewer_url(lines, start)
+        for line in lines[start:]:
+            match = re.search(r"Couldn't start the profiler:\s*(.+)", line)
+            if match:
+                reason = match.group(1)
+                self.result["profile_start_failure"] = {
+                    "reason": reason, "output": line, "command_start_index": start,
+                    "observed_at": now_iso(), "requested_mode": self.profiler_mode,
+                }
+                if url:
+                    self.result["rejected_profile_viewer_url"] = url
+                self.result["quality"] = {"status": "FAIL", "failures": [f"profiler start rejected: {reason}"]}
+                self._write_results()
+                raise RuntimeError(f"Profiler start rejected: {reason}")
+        return url
 
     def profile_execution(self) -> tuple[str, list[int]]:
         assert self.server is not None
@@ -417,7 +479,7 @@ class CrossPlatformFleetSparkValidation(FleetSparkValidation):
         probes = 0
         url = None
         while time.monotonic() < deadline:
-            url = self._viewer_url(self.server.snapshot(), start)
+            url = self.profile_viewer_url(start)
             if url:
                 break
             if not self.server.is_alive():
@@ -432,7 +494,7 @@ class CrossPlatformFleetSparkValidation(FleetSparkValidation):
             self.server.command("spark profiler stop")
             deadline = time.monotonic() + 60
             while time.monotonic() < deadline:
-                url = self._viewer_url(self.server.snapshot(), start)
+                url = self.profile_viewer_url(start)
                 if url:
                     break
                 if not self.server.is_alive():
