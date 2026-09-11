@@ -85,13 +85,13 @@ def locate_one(root: pathlib.Path, patterns: list[str]) -> pathlib.Path:
 
 
 def extract_spark_linux(archive: pathlib.Path, destination: pathlib.Path) -> list[pathlib.Path]:
-    expected = {"endstone_spark.so", ".spark-native/libspark_allocation_gateway_v1.so"}
+    expected = {"endstone_spark.so"}
     with tarfile.open(archive, "r:gz") as package:
         members = []
         for member in package:
             members.append(member)
             if (
-                len(members) > 2
+                len(members) > 1
                 or member.name not in expected
                 or not member.isfile()
                 or member.size < 0
@@ -99,12 +99,12 @@ def extract_spark_linux(archive: pathlib.Path, destination: pathlib.Path) -> lis
             ):
                 raise ValueError("Spark Linux package contains invalid or oversized entries")
         if (
-            len(members) != 2
+            len(members) != 1
             or {member.name for member in members} != expected
             or any(not member.isfile() or member.size < 0 for member in members)
             or sum(member.size for member in members) > 256 * 1024 * 1024
         ):
-            raise ValueError("Spark Linux package must contain exactly the plugin and allocation gateway")
+            raise ValueError("Spark Linux package must contain exactly endstone_spark.so")
         paths = []
         for member in members:
             target = destination / member.name

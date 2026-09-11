@@ -36,7 +36,7 @@ class SparkArtifactInstallationTest(unittest.TestCase):
             archive.return_value.__enter__.return_value.extractfile.assert_not_called()
 
     def test_installation_packages_and_legacy(self) -> None:
-        for mode in ("package", "legacy", "windows", "wrong-plugin", "wrong-helper"):
+        for mode in ("package", "legacy", "windows", "wrong-plugin"):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary, mock.patch.dict(os.environ, {}, clear=True):
                 root = Path(temporary)
                 fixture = IntegrationTest.__new__(IntegrationTest)
@@ -51,12 +51,12 @@ class SparkArtifactInstallationTest(unittest.TestCase):
                 spark.mkdir(parents=True)
                 endstone.mkdir(parents=True)
                 (endstone / "endstone-test.whl").write_bytes(b"wheel")
-                if mode in {"package", "wrong-plugin", "wrong-helper"}:
-                    package(spark / "spark-linux.tar.gz", [(PLUGIN, b"plugin", tarfile.REGTYPE), (HELPER, b"helper", tarfile.REGTYPE)])
+                if mode in {"package", "wrong-plugin"}:
+                    package(spark / "spark-linux.tar.gz", [(PLUGIN, b"plugin", tarfile.REGTYPE)])
                 else:
                     (spark / ("endstone_spark.dll" if mode == "windows" else PLUGIN)).write_bytes(b"plugin")
                 if mode.startswith("wrong-"):
-                    os.environ["EXPECTED_SPARK_PLUGIN_SHA256" if mode == "wrong-plugin" else "EXPECTED_SPARK_HELPER_SHA256"] = "0" * 64
+                    os.environ["EXPECTED_SPARK_PLUGIN_SHA256"] = "0" * 64
                 with mock.patch("controller.run_test.resolve_artifacts", return_value={}), mock.patch("controller.run_test.run_checked"):
                     if mode.startswith("wrong-"):
                         with self.assertRaisesRegex(ValueError, "SHA256"):
@@ -65,22 +65,22 @@ class SparkArtifactInstallationTest(unittest.TestCase):
                         continue
                     fixture.install_artifacts()
                 evidence = json.loads(fixture.metadata_path.read_text())["components"]["spark"]["spark_installed_files"]
-                self.assertEqual(len(evidence), 2 if mode == "package" else 1)
+                self.assertEqual(len(evidence), 1)
                 for item in evidence:
                     content = (fixture.server_dir / item["relative_path"]).read_bytes()
                     self.assertEqual(item["size"], len(content))
                     self.assertEqual(item["sha256"], hashlib.sha256(content).hexdigest())
                 if mode == "package":
-                    self.assertEqual((fixture.server_dir / "plugins" / HELPER).read_bytes(), b"helper")
+                    self.assertFalse((fixture.server_dir / "plugins" / HELPER).exists())
 
     def test_rejects_invalid_packages_before_extracting(self) -> None:
         plugin = (PLUGIN, b"plugin", tarfile.REGTYPE)
         helper = (HELPER, b"helper", tarfile.REGTYPE)
-        cases = [[plugin], [plugin, plugin], [plugin, helper, ("extra", b"", tarfile.REGTYPE)]]
-        cases.extend([[plugin, (name, b"", kind)] for name, kind in (
+        cases = [[], [plugin, helper], [plugin, plugin], [plugin, ("extra", b"", tarfile.REGTYPE)]]
+        cases.extend([[(name, b"", kind)] for name, kind in (
             ("../escape", tarfile.REGTYPE), ("/absolute", tarfile.REGTYPE),
-            (".spark-native/../escape", tarfile.REGTYPE), (HELPER, tarfile.SYMTYPE),
-            (HELPER, tarfile.LNKTYPE), (HELPER, tarfile.DIRTYPE))])
+            (".spark-native/../escape", tarfile.REGTYPE), (PLUGIN, tarfile.SYMTYPE),
+            (PLUGIN, tarfile.LNKTYPE), (PLUGIN, tarfile.DIRTYPE))])
         for entries in cases:
             with self.subTest(entries=entries), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)

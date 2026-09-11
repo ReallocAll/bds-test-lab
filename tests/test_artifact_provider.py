@@ -13,6 +13,52 @@ from providers import artifact_provider
 
 
 class ArtifactProviderTest(unittest.TestCase):
+    def test_endstone_pins_are_verified_before_download(self) -> None:
+        environment = {
+            "EXPECTED_ENDSTONE_SHA": "a" * 40,
+            "EXPECTED_ENDSTONE_RUN_ID": "10",
+            "EXPECTED_ENDSTONE_ARTIFACT_ID": "20",
+        }
+        run = {"id": 10, "conclusion": "success", "head_sha": "a" * 40,
+               "repository": {"full_name": "EndstoneMC/endstone"}}
+        artifact = {"id": 20, "name": "endstone-linux.zip", "expired": False,
+                    "workflow_run": {"id": 10}, "digest": "sha256:" + "b" * 64}
+        cases = (
+            ({**run, "head_sha": "c" * 40}, artifact),
+            ({**run, "conclusion": "failure"}, artifact),
+            (run, {**artifact, "workflow_run": {"id": 11}}),
+            (run, {**artifact, "name": "endstone-windows.zip"}),
+            (run, {**artifact, "digest": None}),
+        )
+        for observed_run, observed_artifact in cases:
+            with self.subTest(run=observed_run, artifact=observed_artifact), tempfile.TemporaryDirectory() as temporary, mock.patch.dict(
+                os.environ, environment, clear=True
+            ), mock.patch.object(artifact_provider, "_get_json", side_effect=[observed_run, observed_artifact]), mock.patch.object(
+                artifact_provider, "_download_artifact"
+            ) as download, self.assertRaises(artifact_provider.ArtifactResolutionError):
+                try:
+                    artifact_provider.resolve_artifacts("linux", temporary, Path(temporary) / "metadata.json")
+                finally:
+                    download.assert_not_called()
+
+    def test_endstone_pin_environment_and_explicit_precedence(self) -> None:
+        environment = {"EXPECTED_ENDSTONE_RUN_ID": "10", "EXPECTED_ENDSTONE_ARTIFACT_ID": "20",
+                       "EXPECTED_ENDSTONE_ARTIFACT_DIGEST": "b" * 64}
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(os.environ, environment, clear=True), mock.patch.object(
+            artifact_provider, "discover", return_value=({"id": 10}, {"id": 20})
+        ) as discover, mock.patch.object(artifact_provider, "_download_artifact", return_value=Path(temporary)), mock.patch.object(artifact_provider, "save_metadata"):
+            artifact_provider.resolve_artifacts("linux", temporary)
+            self.assertEqual(discover.call_args_list[0].kwargs, {
+                "expected_sha": None, "expected_run_id": "10", "expected_artifact_id": "20",
+                "expected_artifact_digest": "b" * 64,
+            })
+            discover.reset_mock()
+            artifact_provider.resolve_artifacts("linux", temporary, endstone_run_id=11, endstone_artifact_id=21, endstone_artifact_digest="c" * 64)
+            self.assertEqual(discover.call_args_list[0].kwargs, {
+                "expected_sha": None, "expected_run_id": 11, "expected_artifact_id": 21,
+                "expected_artifact_digest": "c" * 64,
+            })
+
     def test_exact_pins_validate_run_artifact_and_digest(self) -> None:
         run = {"id": 10, "conclusion": "success", "head_sha": "a" * 40,
                "repository": {"full_name": "ReallocAll/spark"}}

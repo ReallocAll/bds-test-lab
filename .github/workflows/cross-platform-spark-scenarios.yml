@@ -1,38 +1,24 @@
 name: Spark Cross-Platform Player Scenarios
 
 on:
-  push:
-    branches:
-      - test/cross-platform-spark-scenarios
-    paths:
-      - ".github/workflows/cross-platform-spark-scenarios.yml"
-      - "controller/cross_platform_fleet_validation.py"
-      - "controller/fleet_spark_validation.py"
-      - "controller/bot_validation.py"
-      - "controller/run_test.py"
-      - "controller/bstats.py"
-      - "controller/verify_bstats_evidence.py"
-      - "providers/artifact_provider.py"
-      - "scenario-trigger.json"
   workflow_dispatch:
     inputs:
       spark_sha:
         description: "Exact ReallocAll/spark SHA to validate"
         required: false
-        default: "c1ed938058ebfd3b417b50bc70c718e989eed60f"
       bot_ref:
         description: "Exact ReallocAll/bds-test-bot ref"
         required: false
-        default: "a0a83240e9e8f12d4806ba31194fb1807d7b5dd1"
+        default: "f175e4a6551d1973628b5ca926a497e9962c1302"
       profile_seconds:
         description: "Seconds per online Spark profile"
         required: false
-        default: "30"
+        default: "60"
       profiler_mode:
         description: "Profiler modes to collect"
         type: choice
         options: [execution, allocation, all]
-        default: execution
+        default: all
       spark_run_id:
         description: "Exact Spark build run ID"
         type: string
@@ -49,6 +35,7 @@ on:
         description: "Exact Endstone SHA"
         type: string
         required: false
+        default: "46eff9f125f52eac76472d84339ead8fbf51fcd2"
 
 concurrency:
   group: spark-cross-platform-player-scenarios-${{ github.ref }}
@@ -61,11 +48,13 @@ permissions:
 env:
   GH_TOKEN: ${{ secrets.REPO_PAT }}
   PYTHONUNBUFFERED: "1"
-  EXPECTED_SPARK_SHA: ${{ github.event.inputs.spark_sha || 'c1ed938058ebfd3b417b50bc70c718e989eed60f' }}
-  BOT_REF: ${{ github.event.inputs.bot_ref || 'a0a83240e9e8f12d4806ba31194fb1807d7b5dd1' }}
-  PROFILE_SECONDS: ${{ github.event.inputs.profile_seconds || '30' }}
+  EXPECTED_SPARK_SHA: ${{ inputs.spark_sha }}
+  BOT_REF: ${{ inputs.bot_ref || 'f175e4a6551d1973628b5ca926a497e9962c1302' }}
+  EXPECTED_BOT_PROTOCOL: "2169"
+  PROFILE_SECONDS: ${{ inputs.profile_seconds || '60' }}
   EXPECTED_SPARK_RUN_ID: ${{ inputs.spark_run_id }}
-  EXPECTED_ENDSTONE_SHA: ${{ inputs.endstone_sha }}
+  EXPECTED_ENDSTONE_SHA: ${{ inputs.endstone_sha || '46eff9f125f52eac76472d84339ead8fbf51fcd2' }}
+  EXPECTED_ENDSTONE_RUN_ID: "33567087207"
 
 jobs:
   player-scenario:
@@ -89,6 +78,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       EXPECTED_SPARK_ARTIFACT_ID: ${{ matrix.platform == 'windows' && inputs.spark_windows_artifact_id || matrix.platform == 'linux' && inputs.spark_linux_artifact_id || '' }}
+      EXPECTED_ENDSTONE_ARTIFACT_ID: ${{ matrix.platform == 'windows' && '9824065779' || '9824066404' }}
       SPARK_WINDOWS_ARTIFACT_ID: ${{ inputs.spark_windows_artifact_id }}
       SPARK_LINUX_ARTIFACT_ID: ${{ inputs.spark_linux_artifact_id }}
       CASE_PLATFORM: ${{ matrix.platform }}
@@ -116,11 +106,15 @@ jobs:
           import os, re
           for key in ("EXPECTED_SPARK_SHA", "BOT_REF", "EXPECTED_ENDSTONE_SHA"):
               value = os.environ.get(key, "")
-              if (key != "EXPECTED_ENDSTONE_SHA" or value) and not re.fullmatch(r"[0-9a-fA-F]{40}", value):
+              if not re.fullmatch(r"[0-9a-fA-F]{40}", value):
                   raise SystemExit(f"{key} must be a 40-character hexadecimal SHA")
-          for key in ("EXPECTED_SPARK_RUN_ID", "EXPECTED_SPARK_ARTIFACT_ID", "SPARK_WINDOWS_ARTIFACT_ID", "SPARK_LINUX_ARTIFACT_ID", "PROFILE_SECONDS"):
+          if os.environ["BOT_REF"] != "f175e4a6551d1973628b5ca926a497e9962c1302":
+              raise SystemExit("BOT_REF must match the frozen protocol-2169 bot")
+          if os.environ["EXPECTED_ENDSTONE_SHA"] != "46eff9f125f52eac76472d84339ead8fbf51fcd2":
+              raise SystemExit("EXPECTED_ENDSTONE_SHA must match the frozen Endstone run")
+          for key in ("EXPECTED_SPARK_RUN_ID", "EXPECTED_SPARK_ARTIFACT_ID", "SPARK_WINDOWS_ARTIFACT_ID", "SPARK_LINUX_ARTIFACT_ID", "EXPECTED_ENDSTONE_RUN_ID", "EXPECTED_ENDSTONE_ARTIFACT_ID", "PROFILE_SECONDS"):
               value = os.environ.get(key, "")
-              if (key == "PROFILE_SECONDS" or value) and not re.fullmatch(r"[0-9]+", value):
+              if not re.fullmatch(r"[0-9]+", value):
                   raise SystemExit(f"{key} must contain only digits")
           PY
 
@@ -152,6 +146,37 @@ jobs:
           go mod download
           go test ./...
           go build -trimpath -o "../dist/${BOT_NAME}" ./cmd/bds-test-bot
+          python - <<'PY'
+          import hashlib, json, os, re, subprocess
+          from pathlib import Path
+          def output(*args):
+              return subprocess.check_output(args, text=True).strip()
+          sha = output("git", "rev-parse", "HEAD")
+          if sha != os.environ["BOT_REF"]:
+              raise SystemExit("Checked-out bot SHA does not match BOT_REF")
+          package = json.loads(output("go", "list", "-json", "github.com/sandertv/gophertunnel/minecraft/protocol"))
+          source = Path(package["Dir"], "info.go").read_bytes()
+          protocol = re.findall(rb"(?m)^\s*CurrentProtocol\s*=\s*([0-9]+)\s*$", source)
+          version = re.findall(rb'(?m)^\s*CurrentVersion\s*=\s*"([0-9.]+)"\s*$', source)
+          if protocol != [os.environ["EXPECTED_BOT_PROTOCOL"].encode()] or len(version) != 1:
+              raise SystemExit("Resolved bot dependency protocol constants do not match")
+          module = package["Module"]
+          if module.get("Replace"):
+              raise SystemExit("Unexpected bot protocol module replacement")
+          binary = Path("../dist", os.environ["BOT_NAME"])
+          evidence = {
+              "bot_sha": sha,
+              "protocol": int(protocol[0]),
+              "minecraft_version": version[0].decode(),
+              "protocol_module": module["Path"],
+              "protocol_module_version": module["Version"],
+              "protocol_source_sha256": hashlib.sha256(source).hexdigest(),
+              "go_mod_sha256": hashlib.sha256(Path("go.mod").read_bytes()).hexdigest(),
+              "go_sum_sha256": hashlib.sha256(Path("go.sum").read_bytes()).hexdigest(),
+              "bot_binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+          }
+          Path("../bot-provenance.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
 
       - name: Install validation dependencies
         id: install-dependencies
@@ -213,6 +238,7 @@ jobs:
           name: spark-cross-platform-${{ matrix.platform }}-${{ matrix.scenario }}-${{ matrix.count }}-${{ matrix.profiler_mode }}-${{ github.run_id }}
           path: |
             metadata.json
+            bot-provenance.json
             bds.log
             endstone.log
             spark.log

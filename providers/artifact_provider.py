@@ -301,17 +301,26 @@ def resolve_artifacts(
     spark_run_id: str | int | None = None,
     spark_artifact_id: str | int | None = None,
     spark_artifact_digest: str | None = None,
+    endstone_run_id: str | int | None = None,
+    endstone_artifact_id: str | int | None = None,
+    endstone_artifact_digest: str | None = None,
 ) -> dict[str, Any]:
     if platform_name not in {"linux", "windows"}:
         raise ValueError(f"Unsupported platform: {platform_name}")
 
     exact_spark_sha = (spark_sha or os.environ.get("EXPECTED_SPARK_SHA", "")).strip() or None
     exact_endstone_sha = (endstone_sha or os.environ.get("EXPECTED_ENDSTONE_SHA", "")).strip() or None
-    pins = {
+    spark_pins = {
         "expected_run_id": spark_run_id if spark_run_id is not None else os.environ.get("EXPECTED_SPARK_RUN_ID") or None,
         "expected_artifact_id": spark_artifact_id if spark_artifact_id is not None else os.environ.get("EXPECTED_SPARK_ARTIFACT_ID") or None,
         "expected_artifact_digest": spark_artifact_digest if spark_artifact_digest is not None else os.environ.get("EXPECTED_SPARK_ARTIFACT_DIGEST") or None,
     }
+    endstone_pins = {
+        "expected_run_id": endstone_run_id if endstone_run_id is not None else os.environ.get("EXPECTED_ENDSTONE_RUN_ID") or None,
+        "expected_artifact_id": endstone_artifact_id if endstone_artifact_id is not None else os.environ.get("EXPECTED_ENDSTONE_ARTIFACT_ID") or None,
+        "expected_artifact_digest": endstone_artifact_digest if endstone_artifact_digest is not None else os.environ.get("EXPECTED_ENDSTONE_ARTIFACT_DIGEST") or None,
+    }
+    pins = {"spark": spark_pins, "endstone": endstone_pins}
     root = pathlib.Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
     result: dict[str, Any] = {"platform": platform_name, "components": {}}
@@ -325,7 +334,7 @@ def resolve_artifacts(
             component,
             platform_name,
             expected_sha=expected_shas[component],
-            **({key: value for key, value in pins.items() if value is not None} if component == "spark" else {}),
+            **{key: value for key, value in pins[component].items() if value is not None},
         )
         info = _metadata(component, config["repo"], run, artifact)
         result["components"][component] = info

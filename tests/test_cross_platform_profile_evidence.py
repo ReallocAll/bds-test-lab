@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import os
 import tempfile
 import unittest
@@ -348,13 +349,17 @@ class ProfileEvidenceTests(unittest.TestCase):
             / ".github/workflows/cross-platform-spark-scenarios.yml"
         )
         workflow = yaml.safe_load(path.read_text())
-        inputs = workflow.get("on", workflow.get(True))["workflow_dispatch"]["inputs"]
+        triggers = workflow.get("on", workflow.get(True))
+        self.assertEqual(set(triggers), {"workflow_dispatch"})
+        inputs = triggers["workflow_dispatch"]["inputs"]
         self.assertEqual(
             inputs["profiler_mode"]["options"], ["execution", "allocation", "all"]
         )
-        self.assertEqual(inputs["profiler_mode"]["default"], "execution")
+        self.assertEqual(inputs["profiler_mode"]["default"], "all")
+        self.assertEqual(inputs["profile_seconds"]["default"], "60")
+        self.assertNotIn("default", inputs["spark_sha"])
         self.assertEqual(
-            inputs["bot_ref"]["default"], "a0a83240e9e8f12d4806ba31194fb1807d7b5dd1"
+            inputs["bot_ref"]["default"], "f175e4a6551d1973628b5ca926a497e9962c1302"
         )
         job = workflow["jobs"]["player-scenario"]
         matrix = job["strategy"]["matrix"]
@@ -378,8 +383,10 @@ class ProfileEvidenceTests(unittest.TestCase):
             workflow["env"]["EXPECTED_SPARK_RUN_ID"], "${{ inputs.spark_run_id }}"
         )
         self.assertEqual(
-            workflow["env"]["EXPECTED_ENDSTONE_SHA"], "${{ inputs.endstone_sha }}"
+            workflow["env"]["EXPECTED_ENDSTONE_SHA"], "${{ inputs.endstone_sha || '46eff9f125f52eac76472d84339ead8fbf51fcd2' }}"
         )
+        self.assertEqual(workflow["env"]["EXPECTED_ENDSTONE_RUN_ID"], "33567087207")
+        self.assertEqual(job["env"]["EXPECTED_ENDSTONE_ARTIFACT_ID"], "${{ matrix.platform == 'windows' && '9824065779' || '9824066404' }}")
         for step in job["steps"]:
             if "run" in step:
                 self.assertNotIn("${{", step["run"])
@@ -388,6 +395,38 @@ class ProfileEvidenceTests(unittest.TestCase):
         )
         self.assertIn("${{ matrix.profiler_mode }}", artifact["with"]["name"])
         self.assertIn("*-raw.sparkprofile", artifact["with"]["path"])
+        self.assertIn("bot-provenance.json", artifact["with"]["path"])
+
+    def test_workflow_bot_provenance_checks_actual_sha_and_protocol(self):
+        path = Path(__file__).resolve().parents[1] / ".github/workflows/cross-platform-spark-scenarios.yml"
+        workflow = yaml.safe_load(path.read_text())
+        step = next(step for step in workflow["jobs"]["player-scenario"]["steps"] if step.get("id") == "build-bot")
+        script = step["run"].split("python - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+        sha = "f175e4a6551d1973628b5ca926a497e9962c1302"
+        for observed_sha, protocol, replaced, valid in (
+            (sha, 2169, False, True), ("a" * 40, 2169, False, False),
+            (sha, 999, False, False), (sha, 2169, True, False),
+        ):
+            with self.subTest(sha=observed_sha, protocol=protocol, replaced=replaced), mock.patch.dict(
+                os.environ, {"BOT_REF": sha, "EXPECTED_BOT_PROTOCOL": "2169", "BOT_NAME": "bot"}, clear=True
+            ), mock.patch("subprocess.check_output") as output, mock.patch.object(
+                Path, "read_bytes", return_value=f'const (\n CurrentProtocol = {protocol}\n CurrentVersion = "1.26.45"\n)'.encode()
+            ), mock.patch.object(Path, "write_text") as write:
+                dependency = {"Path": "github.com/sandertv/gophertunnel", "Version": "v1.59.1-test"}
+                if replaced:
+                    dependency["Replace"] = {"Dir": "unexpected"}
+                output.side_effect = [observed_sha, json.dumps({"Dir": "dependency", "Module": dependency})]
+                if valid:
+                    exec(compile(script, str(path), "exec"), {})
+                    evidence = json.loads(write.call_args.args[0])
+                    self.assertEqual(evidence["protocol"], 2169)
+                    self.assertEqual(evidence["bot_sha"], sha)
+                    self.assertEqual(len(evidence["bot_binary_sha256"]), 64)
+                    self.assertNotIn("Dir", evidence)
+                else:
+                    with self.assertRaises(SystemExit):
+                        exec(compile(script, str(path), "exec"), {})
+                    write.assert_not_called()
 
     def test_quality_exit_happens_after_inherited_cleanup(self):
         for quality, expected in (
