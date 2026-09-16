@@ -1,0 +1,21 @@
+name: Bootstrap independent Endstone event lab
+on:
+  push:
+    branches: [bootstrap/endstone-event-lab]
+    paths:
+      - .github/workflows/bootstrap-endstone-event-lab.yml
+      - .bootstrap-endstone-event-lab/**
+permissions:
+  contents: read
+jobs:
+  create:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Create private repository and commit reviewed files
+        env:
+          GH_TOKEN: ${{ secrets.REPO_PAT }}
+        run: python .bootstrap-endstone-event-lab/create.py
