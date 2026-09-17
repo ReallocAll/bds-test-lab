@@ -1,0 +1,124 @@
+name: One-time Spark PAPI v0.1.0 pin
+
+on:
+  push:
+    branches:
+      - codex/spark-papi-v0.1.0-20260917
+
+permissions:
+  contents: read
+
+jobs:
+  update-spark:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update synchronized Spark branches
+        env:
+          REPO_PAT: ${{ secrets.REPO_PAT }}
+        run: |
+          set -euo pipefail
+
+          OLD=f74116b9b9276b9bb64039c518ca42aa665d1a06
+          EXPECTED_PARENT=775e276303f8245f5c4eac93764cabd2685c0722
+          OLD_PAPI=3bc3dbf99010e7af09b967d913b5b6a7e182e989
+          NEW_PAPI=v0.1.0
+          USER_NAME=ReallocAll
+          USER_EMAIL=63277109+ReallocAll@users.noreply.github.com
+
+          git clone --no-tags https://github.com/EndstoneMC/spark.git spark
+          cd spark
+
+          git remote add personal https://github.com/ReallocAll/spark.git
+          for remote in origin personal; do
+            git fetch "$remote" main develop --no-tags
+          done
+
+          test "$(git rev-parse origin/main)" = "$OLD"
+          test "$(git rev-parse origin/develop)" = "$OLD"
+          test "$(git rev-parse personal/main)" = "$OLD"
+          test "$(git rev-parse personal/develop)" = "$OLD"
+
+          git checkout --detach "$OLD"
+          test "$(git rev-parse HEAD^)" = "$EXPECTED_PARENT"
+          test "$(git show -s --format='%an <%ae>' HEAD)" = 'github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>'
+
+          git config user.name "$USER_NAME"
+          git config user.email "$USER_EMAIL"
+
+          # Correct the documentation commit identity from the previous one-time workflow.
+          AUTHOR_DATE="$(git show -s --format=%aI HEAD)"
+          COMMITTER_DATE="$(git show -s --format=%cI HEAD)"
+          GIT_AUTHOR_NAME="$USER_NAME" \
+          GIT_AUTHOR_EMAIL="$USER_EMAIL" \
+          GIT_AUTHOR_DATE="$AUTHOR_DATE" \
+          GIT_COMMITTER_NAME="$USER_NAME" \
+          GIT_COMMITTER_EMAIL="$USER_EMAIL" \
+          GIT_COMMITTER_DATE="$COMMITTER_DATE" \
+            git commit --amend --no-edit --reset-author
+          DOCS_FIXED="$(git rev-parse HEAD)"
+          test "$(git show -s --format='%an <%ae>' HEAD)" = "$USER_NAME <$USER_EMAIL>"
+          test "$(git show -s --format='%cn <%ce>' HEAD)" = "$USER_NAME <$USER_EMAIL>"
+          test "$(git rev-parse HEAD^)" = "$EXPECTED_PARENT"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          old = "3bc3dbf99010e7af09b967d913b5b6a7e182e989"
+          new = "v0.1.0"
+          paths = [Path("CMakeLists.txt"), Path("tests/test_workflows.py")]
+          for path in paths:
+              text = path.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected exactly one old PAPI pin, found {count}")
+              path.write_text(text.replace(old, new), encoding="utf-8")
+          PY
+
+          git diff --check
+          test "$(git diff --name-only | sort)" = $'CMakeLists.txt\ntests/test_workflows.py'
+          ! grep -R --line-number --fixed-strings "$OLD_PAPI" CMakeLists.txt tests/test_workflows.py
+          grep -n --fixed-strings 'ENDSTONE_SPARK_PAPI_GIT_TAG "v0.1.0"' CMakeLists.txt
+          grep -n --fixed-strings '"ENDSTONE_SPARK_PAPI_GIT_TAG": "v0.1.0"' tests/test_workflows.py
+
+          python3 -m unittest tests.test_workflows
+
+          git add CMakeLists.txt tests/test_workflows.py
+          git commit -m 'build: pin PAPI headers to v0.1.0'
+          NEW="$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD^)" = "$DOCS_FIXED"
+          test "$(git show -s --format='%an <%ae>' HEAD)" = "$USER_NAME <$USER_EMAIL>"
+          test "$(git show -s --format='%cn <%ce>' HEAD)" = "$USER_NAME <$USER_EMAIL>"
+
+          git remote set-url origin "https://x-access-token:${REPO_PAT}@github.com/EndstoneMC/spark.git"
+          git remote set-url personal "https://x-access-token:${REPO_PAT}@github.com/ReallocAll/spark.git"
+
+          git push --atomic origin \
+            HEAD:refs/heads/main HEAD:refs/heads/develop \
+            --force-with-lease=refs/heads/main:$OLD \
+            --force-with-lease=refs/heads/develop:$OLD
+
+          git push --atomic personal \
+            HEAD:refs/heads/main HEAD:refs/heads/develop \
+            --force-with-lease=refs/heads/main:$OLD \
+            --force-with-lease=refs/heads/develop:$OLD
+
+          for remote in origin personal; do
+            test "$(git ls-remote "$remote" refs/heads/main | cut -f1)" = "$NEW"
+            test "$(git ls-remote "$remote" refs/heads/develop | cut -f1)" = "$NEW"
+          done
+
+          echo "DOCS_FIXED=$DOCS_FIXED"
+          echo "NEW=$NEW"
+
+  cleanup:
+    if: always()
+    needs: update-spark
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete one-time execution branch
+        env:
+          REPO_PAT: ${{ secrets.REPO_PAT }}
+        run: |
+          set -euo pipefail
+          git push "https://x-access-token:${REPO_PAT}@github.com/ReallocAll/bds-test-lab.git" \
+            --delete codex/spark-papi-v0.1.0-20260917 || true
