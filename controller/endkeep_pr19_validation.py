@@ -125,8 +125,14 @@ def run(platform: str) -> int:
         meta["online_records"] = len(online_records)
         meta["stage"] = "shutdown"
         evidence(**meta)
-        if not server.graceful_stop(80):
-            raise AssertionError("BDS failed graceful shutdown")
+        graceful = server.graceful_stop(80)
+        meta["shutdown_diagnostic"] = server.lifecycle_diagnostic
+        evidence(**meta)
+        if not graceful:
+            raise AssertionError(
+                "BDS shutdown did not satisfy process-tree contract: "
+                + json.dumps(server.lifecycle_diagnostic, default=str)[-4000:]
+            )
         server.close()
         started = False
 
