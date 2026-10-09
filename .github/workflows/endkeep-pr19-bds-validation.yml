@@ -30,7 +30,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: ReallocAll/endkeep
-          ref: 21a2389617c8c0e43f90abfde8872b8aca6e0db0
+          ref: e8fc4b325da4a12d7ae671e1aa336609c8d21418
           path: endkeep-src
           fetch-depth: 0
           persist-credentials: false
