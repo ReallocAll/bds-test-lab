@@ -1,0 +1,70 @@
+name: EndKeep PR19 real BDS integration (isolated)
+
+on:
+  push:
+    branches: [test/endkeep-pr19-bds]
+    paths:
+      - .github/workflows/endkeep-pr19-bds-validation.yml
+      - controller/endkeep_pr19_validation.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-bds:
+    name: Real BDS EndKeep (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux, os: ubuntu-24.04 }
+          - { platform: windows, os: windows-2025 }
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Checkout exact EndKeep PR candidate
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/endkeep
+          ref: 21a2389617c8c0e43f90abfde8872b8aca6e0db0
+          path: endkeep-src
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - name: Install Endstone and lab controller dependencies
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check 'endstone>=0.11,<0.12' build psutil
+      - name: Build and install exact PR Wheel
+        shell: bash
+        run: |
+          python -m build --wheel --outdir endkeep-dist endkeep-src
+          python -m pip install --disable-pip-version-check endkeep-dist/*.whl
+          python -m pip check
+          python - <<'PY'
+          from importlib.metadata import version
+          print("Endstone", version("endstone"), "EndKeep", version("endstone-endkeep"), "Amulet", version("amulet-leveldb"))
+          PY
+      - name: Real BDS startup, two backups, verify and restore
+        shell: bash
+        env:
+          PYTHONUNBUFFERED: '1'
+        run: python -m controller.endkeep_pr19_validation --platform ${{ matrix.platform }}
+      - name: Upload BDS evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: endkeep-bds-evidence-${{ matrix.platform }}
+          path: |
+            endkeep-bds-result.json
+            endkeep-bds.log
+            endkeep-error.txt
+            work/${{ matrix.platform }}/backups/worker.log
+          if-no-files-found: warn
+          retention-days: 14
