@@ -56,7 +56,7 @@ def run(platform: str) -> int:
 
     template = files("endstone_endkeep").joinpath("config.toml").read_text("utf-8")
     template = template.replace('path = "backups"', f'path = "{storage.as_posix()}"')
-    template = template.replace("min_free_space_gib = 5", "min_free_space_gib = 0")
+    template = template.replace("min_free_space_gib = 5", "min_free_space_gib = 1")
     template = template.replace("compression_threads = 4", "compression_threads = 1")
     (plugin_dir / "config.toml").write_text(template, encoding="utf-8")
 
