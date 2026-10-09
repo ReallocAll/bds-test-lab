@@ -125,14 +125,25 @@ def run(platform: str) -> int:
         meta["online_records"] = len(online_records)
         meta["stage"] = "shutdown"
         evidence(**meta)
-        graceful = server.graceful_stop(80)
-        meta["shutdown_diagnostic"] = server.lifecycle_diagnostic
-        evidence(**meta)
-        if not graceful:
-            raise AssertionError(
-                "BDS shutdown did not satisfy process-tree contract: "
-                + json.dumps(server.lifecycle_diagnostic, default=str)[-4000:]
-            )
+        # EndKeep deliberately keeps its worker alive across plugin disable so
+        # a reload can reattach. The headless lab must explicitly retire that
+        # authenticated worker after the native BDS wrapper has exited.
+        server.command("stop")
+        assert server.process is not None
+        code = server.process.wait(timeout=80)
+        if code != 0:
+            raise AssertionError(f"BDS native stop returned {code}")
+        from endstone_endkeep.worker.client import RepositoryWorkerClient
+        from endstone_endkeep.worker.protocol import RuntimeInfo
+
+        runtime_path = storage / "worker-runtime.json"
+        if runtime_path.exists():
+            worker = RuntimeInfo.load(runtime_path)
+            client = RepositoryWorkerClient(runtime_path, worker, desired_priority=worker.priority)
+            client.shutdown()
+            RepositoryWorkerClient._wait_for_exit(worker.pid, runtime_path)
+            if RepositoryWorkerClient._pid_alive(worker.pid):
+                raise AssertionError("worker remained alive after authenticated shutdown")
         server.close()
         started = False
 
