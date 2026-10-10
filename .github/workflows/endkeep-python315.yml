@@ -1,0 +1,99 @@
+name: EndKeep Python 3.15 real BDS
+
+on:
+  push:
+    branches: [feat/endkeep-python315-bds]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  endkeep:
+    name: CPython 3.15 / ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux, os: ubuntu-24.04, artifact: endstone-0.11.14.dev6-cp315-cp315-manylinux_2_31_x86_64.whl }
+          - { platform: windows, os: windows-2025, artifact: endstone-0.11.14.dev6-cp315-cp315-win_amd64.whl }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout bds-test-lab
+        uses: actions/checkout@v7
+
+      - name: Checkout exact EndKeep candidate
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/endkeep
+          ref: feat/python315-compat
+          fetch-depth: 0
+          path: endkeep
+
+      - name: Set up uv and CPython 3.15
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Provision CPython 3.15 environment
+        run: |
+          uv python install 3.15
+          uv venv .venv --python 3.15
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            PYTHON=.venv/Scripts/python.exe
+          else
+            PYTHON=.venv/bin/python
+          fi
+          "$PYTHON" -c 'import sys; assert sys.version_info[:2] == (3, 15), sys.version'
+          echo "PYTHON=$PYTHON" >> "$GITHUB_ENV"
+
+      - name: Download exact latest Endstone cp315 Build artifact
+        env:
+          GH_TOKEN: ${{ secrets.REPO_PAT }}
+        run: |
+          test -n "$GH_TOKEN"
+          mkdir -p endstone-artifact
+          gh run download 38045137884             --repo EndstoneMC/endstone             --name '${{ matrix.artifact }}'             --dir endstone-artifact
+          test -f 'endstone-artifact/${{ matrix.artifact }}'
+
+      - name: Install candidate and resolve pinned cp315 dependency
+        run: |
+          uv pip install --python "$PYTHON" 'endstone-artifact/${{ matrix.artifact }}' psutil
+          uv pip install --python "$PYTHON" -e './endkeep[dev]'
+          uv pip check --python "$PYTHON"
+          "$PYTHON" - <<'PY'
+          from importlib.metadata import distribution, version
+          from amulet.leveldb import LevelDB
+          import sys
+          assert sys.version_info[:2] == (3, 15)
+          assert version("amulet-leveldb").split("+", 1)[0] == "3.0.7a0"
+          dist = distribution("endstone")
+          print("Python:", sys.version)
+          print("Endstone:", dist.version)
+          print("Amulet-LevelDB:", version("amulet-leveldb"))
+          PY
+          "$PYTHON" -m pytest -q endkeep/tests/test_amulet_reader.py
+
+      - name: Build plugin Wheel
+        run: |
+          uv build --wheel --out-dir endkeep-wheel ./endkeep
+          test -n "$(find endkeep-wheel -maxdepth 1 -name 'endstone_endkeep-*.whl' -print -quit)"
+
+      - name: Run real BDS snapshot and verification
+        run: '"$PYTHON" -m controller.endkeep_python315_validation'
+
+      - name: Save exact artifact and test evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: endkeep-python315-${{ matrix.platform }}
+          path: |
+            endkeep-results.json
+            endkeep-bds.log
+            endkeep-wheel/*.whl
+          if-no-files-found: warn
+          retention-days: 14
