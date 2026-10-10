@@ -7,7 +7,6 @@ The runner never transfers GitHub credentials to BDS or its worker process.
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import sys
 import time
@@ -119,8 +118,21 @@ def main() -> int:
         else:
             raise RuntimeError("Deep verification request was never accepted")
 
-        if not server.graceful_stop(timeout=70):
-            raise RuntimeError("BDS did not stop gracefully")
+        server.wait_for(
+            lambda rows: any("repository deep verify pass" in line.lower() for line in rows),
+            120,
+            "EndKeep deep repository verification PASS",
+        )
+        checkpoint("deep-verify-pass")
+        stopped = server.graceful_stop(timeout=70)
+        evidence["shutdown_lifecycle"] = server.lifecycle_diagnostic
+        evidence["shutdown_exit_code"] = server.process.returncode if server.process else None
+        checkpoint("shutdown-diagnostics", json.dumps(server.lifecycle_diagnostic, default=str)[-4000:])
+        if not stopped:
+            raise RuntimeError(
+                "BDS shutdown validation failed: " +
+                json.dumps(server.lifecycle_diagnostic, default=str)[-3500:]
+            )
         checkpoint("bds-graceful-stop")
         server.close()
         evidence["status"] = "PASS"
