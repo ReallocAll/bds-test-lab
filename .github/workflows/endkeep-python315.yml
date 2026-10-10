@@ -100,6 +100,19 @@ jobs:
           uv build --wheel --out-dir endkeep-wheel ./endkeep
           test -n "$(find endkeep-wheel -maxdepth 1 -name 'endstone_endkeep-*.whl' -print -quit)"
 
+      - name: Remove editable plugin before testing installed Wheel
+        run: |
+          uv pip uninstall --python "$PYTHON" endstone-endkeep
+          "$PYTHON" - <<'PY'
+          from importlib.metadata import PackageNotFoundError, version
+          try:
+              print(version("endstone-endkeep"))
+          except PackageNotFoundError:
+              print("Editable EndKeep uninstalled; the packaged Wheel is the only plugin source.")
+          else:
+              raise AssertionError("EndKeep is still installed before BDS Wheel loading")
+          PY
+
       - name: Run real BDS snapshot and verification
         run: '"$PYTHON" -m controller.endkeep_python315_validation'
 
