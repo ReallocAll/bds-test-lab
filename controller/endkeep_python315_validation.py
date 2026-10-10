@@ -129,10 +129,39 @@ def main() -> int:
         evidence["shutdown_exit_code"] = server.process.returncode if server.process else None
         checkpoint("shutdown-diagnostics", json.dumps(server.lifecycle_diagnostic, default=str)[-4000:])
         if not stopped:
-            raise RuntimeError(
-                "BDS shutdown validation failed: " +
-                json.dumps(server.lifecycle_diagnostic, default=str)[-3500:]
-            )
+            diagnostic = server.lifecycle_diagnostic
+            # EndKeep workers intentionally survive plugin reloads and can outlive BDS.
+            # Stop the identified worker explicitly, then still require *all* tracked
+            # descendants to exit. Never declare success while BDS remains alive.
+            if (
+                server.process is None
+                or server.process.returncode != 0
+                or diagnostic.get("bds_child_liveness_after")
+                or diagnostic.get("process_tree_verification") != "residual-processes"
+            ):
+                raise RuntimeError("BDS did not stop successfully: " + json.dumps(diagnostic, default=str)[-3500:])
+
+            sys.path.insert(0, str(root / "endkeep" / "src"))
+            from endstone_endkeep.worker.client import RepositoryWorkerClient
+
+            runtime_file = server_dir / "backups" / "worker-runtime.json"
+            runtime = RepositoryWorkerClient._load_runtime(runtime_file)
+            if runtime is None:
+                raise RuntimeError("EndKeep worker runtime missing during shutdown cleanup")
+            worker = RepositoryWorkerClient(runtime_file, runtime, desired_priority="background")
+            worker.shutdown()
+            checkpoint("endkeep-worker-shutdown", f"pid={runtime.pid}")
+
+            deadline = time.monotonic() + 20
+            remaining: list[str] = []
+            while time.monotonic() < deadline:
+                remaining = server.managed_residual_processes()
+                if not remaining:
+                    break
+                time.sleep(0.25)
+            if remaining:
+                raise RuntimeError("Unclean Windows process tree after worker shutdown: " + ", ".join(remaining))
+            checkpoint("all-child-processes-exited")
         checkpoint("bds-graceful-stop")
         server.close()
         evidence["status"] = "PASS"
