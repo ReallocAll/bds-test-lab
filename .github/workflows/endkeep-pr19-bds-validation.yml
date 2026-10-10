@@ -1,4 +1,4 @@
-name: EndKeep PR19 real BDS integration (isolated)
+name: EndKeep v0.3.0 real BDS (Python 3.12/3.13)
 
 on:
   push:
@@ -13,54 +13,59 @@ permissions:
 
 jobs:
   real-bds:
-    name: Real BDS EndKeep (${{ matrix.platform }})
+    name: BDS ${{ matrix.platform }} / Python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { platform: linux, os: ubuntu-24.04 }
-          - { platform: windows, os: windows-2025 }
+          - { platform: linux, os: ubuntu-24.04, python: '3.12' }
+          - { platform: linux, os: ubuntu-24.04, python: '3.13' }
+          - { platform: windows, os: windows-2025, python: '3.12' }
+          - { platform: windows, os: windows-2025, python: '3.13' }
+
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Checkout exact EndKeep PR candidate
-        uses: actions/checkout@v7
-        with:
-          repository: ReallocAll/endkeep
-          ref: e8fc4b325da4a12d7ae671e1aa336609c8d21418
-          path: endkeep-src
-          fetch-depth: 0
-          persist-credentials: false
+
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.14'
-      - name: Install Endstone and lab controller dependencies
+          python-version: ${{ matrix.python }}
+
+      - name: Install exact supported Endstone plus lab requirements
         shell: bash
         run: |
-          python -m pip install --disable-pip-version-check 'endstone>=0.11,<0.12' build psutil
-      - name: Build and install exact PR Wheel
+          python -m pip install --disable-pip-version-check 'endstone==0.11.13' 'psutil>=6'
+
+      - name: Install published EndKeep v0.3.0 Wheel with its native dependencies
         shell: bash
         run: |
-          python -m build --wheel --outdir endkeep-dist endkeep-src
-          python -m pip install --disable-pip-version-check endkeep-dist/*.whl
+          python -m pip install --disable-pip-version-check \
+            'https://github.com/ReallocAll/endkeep/releases/download/v0.3.0/endstone_endkeep-0.3.0-py3-none-any.whl#sha256=e319d1038f352caf3f919fb37f130c704c438e8fcff1478147b1a895f4c4af03'
           python -m pip check
           python - <<'PY'
+          import sys
           from importlib.metadata import version
-          print("Endstone", version("endstone"), "EndKeep", version("endstone-endkeep"), "Amulet", version("amulet-leveldb"))
+          assert version("endstone") == "0.11.13"
+          assert version("endstone-endkeep") == "0.3.0"
+          amulet = version("amulet-leveldb")
+          assert amulet == "3.0.7a0+0.g736228e.dirty", amulet
+          print("Verified published EndKeep and backported Amulet:", sys.version, amulet)
           PY
-      - name: Real BDS startup, two backups, verify and restore
+
+      - name: Real BDS startup, BASE/DELTA, deep verify, export and offline restore
         shell: bash
         env:
           PYTHONUNBUFFERED: '1'
         run: python -m controller.endkeep_pr19_validation --platform ${{ matrix.platform }}
+
       - name: Upload BDS evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: endkeep-bds-evidence-${{ matrix.platform }}
+          name: endkeep-v030-bds-${{ matrix.platform }}-py${{ matrix.python }}
           path: |
             endkeep-bds-result.json
             endkeep-bds.log
