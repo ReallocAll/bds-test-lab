@@ -58,7 +58,16 @@ jobs:
           test -n "$GH_TOKEN"
           mkdir -p endstone-artifact
           gh run download 38045137884             --repo EndstoneMC/endstone             --name '${{ matrix.artifact }}'             --dir endstone-artifact
-          test -f 'endstone-artifact/${{ matrix.artifact }}'
+          echo 'Downloaded artifact layout:'
+          find endstone-artifact -maxdepth 5 -type f -print
+          ENDSTONE_WHEEL="$(find endstone-artifact -type f -name '*cp315*.whl' -print -quit)"
+          if [[ -z "$ENDSTONE_WHEEL" ]]; then
+            echo '::error::cp315 Wheel not present in downloaded artifact'
+            exit 1
+          fi
+          if [[ "$ENDSTONE_WHEEL" != "endstone-artifact/${{ matrix.artifact }}" ]]; then
+            cp "$ENDSTONE_WHEEL" 'endstone-artifact/${{ matrix.artifact }}'
+          fi
 
       - name: Install candidate and resolve pinned cp315 dependency
         run: |
