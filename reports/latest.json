@@ -1,69 +1,69 @@
 {
-  "completed_at": "2026-09-09T00:55:57.726996Z",
+  "completed_at": "2026-10-10T12:05:30.586237Z",
   "components": {
     "endstone": {
       "platforms": {
         "linux": {
-          "artifact": "endstone-0.11.11.dev396-linux-x86_64.zip",
-          "artifact_id": 9824066404,
-          "run_id": 33567087207,
-          "run_url": "https://github.com/EndstoneMC/endstone/actions/runs/33567087207",
-          "sha": "46eff9f125f52eac76472d84339ead8fbf51fcd2",
+          "artifact": "endstone-0.11.11.dev399-linux-x86_64.zip",
+          "artifact_id": 10324072863,
+          "run_id": 34776302629,
+          "run_url": "https://github.com/EndstoneMC/endstone/actions/runs/34776302629",
+          "sha": "cce09d21a290ce804346ac2643a557ac915d3be8",
           "workflow": "Build"
         },
         "windows": {
-          "artifact": "endstone-0.11.11.dev396-windows-x86_64.zip",
-          "artifact_id": 9824065779,
-          "run_id": 33567087207,
-          "run_url": "https://github.com/EndstoneMC/endstone/actions/runs/33567087207",
-          "sha": "46eff9f125f52eac76472d84339ead8fbf51fcd2",
+          "artifact": "endstone-0.11.11.dev399-windows-x86_64.zip",
+          "artifact_id": 10324087754,
+          "run_id": 34776302629,
+          "run_url": "https://github.com/EndstoneMC/endstone/actions/runs/34776302629",
+          "sha": "cce09d21a290ce804346ac2643a557ac915d3be8",
           "workflow": "Build"
         }
       },
-      "run_id": 33567087207,
-      "run_url": "https://github.com/EndstoneMC/endstone/actions/runs/33567087207",
-      "sha": "46eff9f125f52eac76472d84339ead8fbf51fcd2"
+      "run_id": 34776302629,
+      "run_url": "https://github.com/EndstoneMC/endstone/actions/runs/34776302629",
+      "sha": "cce09d21a290ce804346ac2643a557ac915d3be8"
     },
     "spark": {
       "platforms": {
         "linux": {
-          "artifact": "spark-linux-34105662869",
-          "artifact_id": 10012449196,
-          "run_id": 34105662869,
-          "run_url": "https://github.com/ReallocAll/spark/actions/runs/34105662869",
-          "sha": "7d18dd0b70ea26d05a450c22a5e83bf2c2863968",
+          "artifact": "spark-linux-37222040777",
+          "artifact_id": 11310677592,
+          "run_id": 37222040777,
+          "run_url": "https://github.com/ReallocAll/spark/actions/runs/37222040777",
+          "sha": "2656b5315d17815fdabb420aa26c33d0eafea69f",
           "workflow": "Build"
         },
         "windows": {
-          "artifact": "spark-windows-34105662869",
-          "artifact_id": 10012441697,
-          "run_id": 34105662869,
-          "run_url": "https://github.com/ReallocAll/spark/actions/runs/34105662869",
-          "sha": "7d18dd0b70ea26d05a450c22a5e83bf2c2863968",
+          "artifact": "spark-windows-37222040777",
+          "artifact_id": 11310982326,
+          "run_id": 37222040777,
+          "run_url": "https://github.com/ReallocAll/spark/actions/runs/37222040777",
+          "sha": "2656b5315d17815fdabb420aa26c33d0eafea69f",
           "workflow": "Build"
         }
       },
-      "run_id": 34105662869,
-      "run_url": "https://github.com/ReallocAll/spark/actions/runs/34105662869",
-      "sha": "7d18dd0b70ea26d05a450c22a5e83bf2c2863968"
+      "run_id": 37222040777,
+      "run_url": "https://github.com/ReallocAll/spark/actions/runs/37222040777",
+      "sha": "2656b5315d17815fdabb420aa26c33d0eafea69f"
     }
   },
-  "endstone_sha": "46eff9f125f52eac76472d84339ead8fbf51fcd2",
-  "lab_commit": "e625a0e24ad3b4cad0faa47a49203b7615222d18",
-  "lab_run_id": "34294830959",
-  "lab_run_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/34294830959",
+  "endstone_sha": "cce09d21a290ce804346ac2643a557ac915d3be8",
+  "lab_commit": "2e7c98006dd91850ed7fa3106dc21387f962bc27",
+  "lab_run_id": "38050638465",
+  "lab_run_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/38050638465",
   "platforms": {
     "linux": {
-      "actions_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/34294830959",
-      "allocation_profile_viewer_url": "https://spark.lucko.me/RKIak5aifK",
-      "bds_version": "26.45",
+      "actions_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/38050638465",
+      "allocation_profile_viewer_url": null,
+      "bds_version": null,
       "checks": [
         {
           "name": "artifact-discovery",
           "status": "PASS"
         },
         {
-          "detail": "downloads/endstone/payload/endstone-0.11.11.dev396-linux-x86_64/endstone-0.11.11.dev396-cp313-cp313-manylinux_2_31_x86_64.whl",
+          "detail": "downloads/endstone/payload/endstone-0.11.11.dev399-linux-x86_64/endstone-0.11.11.dev399-cp313-cp313-manylinux_2_31_x86_64.whl",
           "name": "endstone-wheel-located",
           "status": "PASS"
         },
@@ -99,300 +99,36 @@
         {
           "name": "ready",
           "status": "PASS"
-        },
-        {
-          "name": "spark-load-enable",
-          "status": "PASS"
-        },
-        {
-          "detail": "spark profiler info",
-          "name": "spark-profiler-info",
-          "status": "PASS"
-        },
-        {
-          "detail": "spark tps",
-          "name": "spark-tps",
-          "status": "PASS"
-        },
-        {
-          "detail": "spark health",
-          "name": "spark-health",
-          "status": "PASS"
-        },
-        {
-          "detail": "spark activity",
-          "name": "spark-activity",
-          "status": "PASS"
-        },
-        {
-          "name": "execution-profiler",
-          "status": "PASS",
-          "viewer_url": "https://spark.lucko.me/vaUu3WzEJb"
-        },
-        {
-          "name": "allocation-profiler",
-          "status": "PASS",
-          "viewer_url": "https://spark.lucko.me/RKIak5aifK"
-        },
-        {
-          "bytes": 16,
-          "canonical_enabled": false,
-          "detail": "canonical bStats config installed before BDS startup",
-          "evidence_path": "bstats-config.toml",
-          "name": "bstats-disabled",
-          "relative_path": "plugins/bstats/config.toml",
-          "sha256": "4ddaf7b63170a13e8224532a142dfc1dc8e77dac63933cebe8cc9afc42fd44a0",
-          "status": "PASS"
-        },
-        {
-          "name": "bds-start",
-          "status": "PASS"
-        },
-        {
-          "name": "ready",
-          "status": "PASS"
-        },
-        {
-          "name": "spark-load-enable",
-          "status": "PASS"
-        },
-        {
-          "detail": "controlled hard kill produced a replayable journal and recovered profile",
-          "name": "crash-recovery",
-          "sha256": "993b3505ba30e39fcb31ad114b1a6703fb006b2a7ed96021582cee17d36eccf8",
-          "status": "PASS",
-          "viewer_url": "https://spark.lucko.me/5DUG3ehBoK"
-        },
-        {
-          "detail": "spark profiler info",
-          "name": "post-soak-command",
-          "status": "PASS"
-        },
-        {
-          "detail": "BDS remained responsive for 30 minutes",
-          "name": "soak-stability",
-          "rss_growth_bytes": 5443584,
-          "rss_peak_bytes": 863313920,
-          "status": "PASS",
-          "thread_delta": 1,
-          "threads_peak": 28
-        },
-        {
-          "detail": "graceful; no residual BDS process",
-          "name": "shutdown",
-          "status": "PASS"
         }
       ],
-      "error_summary": null,
-      "execution_profile_viewer_url": "https://spark.lucko.me/vaUu3WzEJb",
-      "failed_stage": null,
-      "profiles": [
-        {
-          "duration_seconds": 12,
-          "kind": "execution",
-          "notes": "Headless execution profiler",
-          "profile_key": "vaUu3WzEJb",
-          "server_version": "26.45",
-          "url": "https://spark.lucko.me/vaUu3WzEJb"
-        },
-        {
-          "duration_seconds": 12,
-          "kind": "allocation",
-          "notes": "Headless native allocation profiler",
-          "profile_key": "RKIak5aifK",
-          "server_version": "26.45",
-          "url": "https://spark.lucko.me/RKIak5aifK"
-        },
-        {
-          "duration_seconds": 12,
-          "kind": "crash-recovery",
-          "notes": "Recovered from RecoveryWriter journal after controlled hard kill and uploaded by the lab.",
-          "profile_key": "5DUG3ehBoK",
-          "server_version": "26.45",
-          "sha256": "993b3505ba30e39fcb31ad114b1a6703fb006b2a7ed96021582cee17d36eccf8",
-          "url": "https://spark.lucko.me/5DUG3ehBoK"
-        }
-      ],
+      "error_summary": "TimeoutError: Timed out after 30s waiting for Spark enable",
+      "execution_profile_viewer_url": null,
+      "failed_stage": "bds-start",
+      "profiles": [],
       "recovery": {
-        "crash_replay": "PASS",
-        "journal_segments_before_restart": 1,
-        "recovered_profile_path": "work/linux/bedrock_server/plugins/spark/profiles/profile-1788913526901.sparkprofile",
-        "recovered_profile_sha256": "993b3505ba30e39fcb31ad114b1a6703fb006b2a7ed96021582cee17d36eccf8",
-        "recovered_profile_viewer_url": "https://spark.lucko.me/5DUG3ehBoK"
+        "crash_replay": "not_started",
+        "journal_segments_before_restart": 0,
+        "recovered_profile_path": null,
+        "recovered_profile_sha256": null,
+        "recovered_profile_viewer_url": null
       },
-      "shutdown_status": "graceful",
+      "shutdown_status": "forced_after_failure",
       "soak": {
         "duration_minutes": 30,
-        "rss_end_bytes": 863313920,
-        "rss_growth_bytes": 5443584,
-        "rss_peak_bytes": 863313920,
-        "rss_start_bytes": 857870336,
-        "samples": [
-          {
-            "elapsed_seconds": 0,
-            "rss_bytes": 857870336,
-            "threads": 27
-          },
-          {
-            "elapsed_seconds": 60,
-            "rss_bytes": 857976832,
-            "threads": 27
-          },
-          {
-            "elapsed_seconds": 120,
-            "rss_bytes": 858206208,
-            "threads": 27
-          },
-          {
-            "elapsed_seconds": 180,
-            "rss_bytes": 858710016,
-            "threads": 27
-          },
-          {
-            "elapsed_seconds": 240,
-            "rss_bytes": 861581312,
-            "threads": 28
-          },
-          {
-            "elapsed_seconds": 300,
-            "rss_bytes": 862068736,
-            "threads": 28
-          },
-          {
-            "elapsed_seconds": 360,
-            "rss_bytes": 862216192,
-            "threads": 28
-          },
-          {
-            "elapsed_seconds": 420,
-            "rss_bytes": 862494720,
-            "threads": 28
-          },
-          {
-            "elapsed_seconds": 480,
-            "rss_bytes": 862535680,
-            "threads": 28
-          },
-          {
-            "elapsed_seconds": 540,
-            "rss_bytes": 862658560,
-            "threads": 28
-          },
-          {
-            "elapsed_seconds": 600,
-            "rss_bytes": 862691328,
-            "threads": 28
-          },
-          {
-            "elapsed_seconds": 660,
-            "rss_bytes": 862720000,
-            "threads": 28
-          },
-          {
-            "elapsed_seconds": 720,
-            "rss_bytes": 862748672,
-            "threads": 28
-          },
-          {
-            "elapsed_seconds": 780,
-            "rss_bytes": 862785536,
-            "threads": 28
-          },
-          {
-            "elapsed_seconds": 840,
-            "rss_bytes": 862834688,
-            "threads": 28
-          },
-          {
-            "elapsed_seconds": 900,
-            "rss_bytes": 862871552,
-            "threads": 28
-          },
-          {
-            "elapsed_seconds": 960,
-            "rss_bytes": 862904320,
-            "threads": 28
-          },
-          {
-            "elapsed_seconds": 1020,
-            "rss_bytes": 862928896,
-            "threads": 28
-          },
-          {
-            "elapsed_seconds": 1080,
-            "rss_bytes": 862957568,
-            "threads": 28
-          },
-          {
-            "elapsed_seconds": 1140,
-            "rss_bytes": 862998528,
-            "threads": 28
-          },
-          {
-            "elapsed_seconds": 1200,
-            "rss_bytes": 863027200,
-            "threads": 28
-          },
-          {
-            "elapsed_seconds": 1260,
-            "rss_bytes": 863059968,
-            "threads": 28
-          },
-          {
-            "elapsed_seconds": 1320,
-            "rss_bytes": 863084544,
-            "threads": 28
-          },
-          {
-            "elapsed_seconds": 1380,
-            "rss_bytes": 863121408,
-            "threads": 28
-          },
-          {
-            "elapsed_seconds": 1440,
-            "rss_bytes": 863162368,
-            "threads": 28
-          },
-          {
-            "elapsed_seconds": 1500,
-            "rss_bytes": 863195136,
-            "threads": 28
-          },
-          {
-            "elapsed_seconds": 1560,
-            "rss_bytes": 863215616,
-            "threads": 28
-          },
-          {
-            "elapsed_seconds": 1620,
-            "rss_bytes": 863240192,
-            "threads": 28
-          },
-          {
-            "elapsed_seconds": 1680,
-            "rss_bytes": 863264768,
-            "threads": 28
-          },
-          {
-            "elapsed_seconds": 1740,
-            "rss_bytes": 863289344,
-            "threads": 28
-          },
-          {
-            "elapsed_seconds": 1800,
-            "rss_bytes": 863313920,
-            "threads": 28
-          }
-        ],
-        "thread_delta": 1,
-        "threads_end": 28,
-        "threads_peak": 28,
-        "threads_start": 27
+        "rss_end_bytes": null,
+        "rss_growth_bytes": null,
+        "rss_peak_bytes": null,
+        "rss_start_bytes": null,
+        "samples": [],
+        "thread_delta": null,
+        "threads_end": null,
+        "threads_peak": null,
+        "threads_start": null
       },
-      "status": "PASS"
+      "status": "FAIL"
     },
     "windows": {
-      "actions_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/34294830959",
+      "actions_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/38050638465",
       "allocation_profile_viewer_url": null,
       "bds_version": null,
       "checks": [
@@ -401,7 +137,7 @@
           "status": "PASS"
         },
         {
-          "detail": "downloads\\endstone\\payload\\endstone-0.11.11.dev396-windows-x86_64\\endstone-0.11.11.dev396-cp313-cp313-win_amd64.whl",
+          "detail": "downloads\\endstone\\payload\\endstone-0.11.11.dev399-windows-x86_64\\endstone-0.11.11.dev399-cp313-cp313-win_amd64.whl",
           "name": "endstone-wheel-located",
           "status": "PASS"
         },
@@ -449,6 +185,6 @@
     }
   },
   "schema_version": 2,
-  "spark_sha": "7d18dd0b70ea26d05a450c22a5e83bf2c2863968",
+  "spark_sha": "2656b5315d17815fdabb420aa26c33d0eafea69f",
   "state": "FAIL"
 }
