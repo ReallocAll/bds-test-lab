@@ -58,16 +58,24 @@ jobs:
           test -n "$GH_TOKEN"
           mkdir -p endstone-artifact
           gh run download 38045137884             --repo EndstoneMC/endstone             --name '${{ matrix.artifact }}'             --dir endstone-artifact
-          echo 'Downloaded artifact layout:'
-          find endstone-artifact -maxdepth 5 -type f -print
-          ENDSTONE_WHEEL="$(find endstone-artifact -type f -name '*cp315*.whl' -print -quit)"
-          if [[ -z "$ENDSTONE_WHEEL" ]]; then
-            echo '::error::cp315 Wheel not present in downloaded artifact'
-            exit 1
-          fi
-          if [[ "$ENDSTONE_WHEEL" != "endstone-artifact/${{ matrix.artifact }}" ]]; then
-            cp "$ENDSTONE_WHEEL" 'endstone-artifact/${{ matrix.artifact }}'
-          fi
+          # Upstream publishes non-archived artifacts: gh extracts Wheel members.
+          # Repackage those verified members as an ordinary installable Wheel.
+          ENDSTONE_WHEEL='${{ matrix.artifact }}' python - <<'PY'
+          import os
+          from pathlib import Path
+          from zipfile import ZIP_DEFLATED, ZipFile
+          root = Path("endstone-artifact")
+          target = root / os.environ["ENDSTONE_WHEEL"]
+          source_files = sorted(p for p in root.rglob("*") if p.is_file() and p != target)
+          assert any(".dist-info/" in p.as_posix() for p in source_files), "missing Wheel metadata"
+          assert any("endstone" in p.as_posix() for p in source_files), "missing Endstone payload"
+          with ZipFile(target, "w", compression=ZIP_DEFLATED, compresslevel=1) as wheel:
+              for path in source_files:
+                  wheel.write(path, path.relative_to(root).as_posix())
+          with ZipFile(target) as wheel:
+              assert wheel.testzip() is None
+          print(f"Repacked {len(source_files)} original Wheel members into {target}")
+          PY
 
       - name: Install candidate and resolve pinned cp315 dependency
         run: |
