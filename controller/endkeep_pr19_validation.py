@@ -43,6 +43,34 @@ def await_manifest(storage: pathlib.Path, size: int, timeout: float = 180) -> li
     raise TimeoutError(f"EndKeep did not commit {size} recovery points within {timeout}s")
 
 
+
+def wait_for_idle(server: ServerProcess, timeout: float = 90) -> None:
+    """Observe idle BDS/EndKeep state, not just manifest commit publication.
+
+    EndKeep commits the logical manifest before the worker has returned its
+    completion and the plugin has acknowledged the result. Starting a new
+    operation in that narrow window correctly returns 'repository is busy'.
+    """
+    deadline = time.monotonic() + timeout
+    last_status = ""
+    while time.monotonic() < deadline:
+        output = require_output(server, "backup status")
+        status_lines = [line for line in output.splitlines() if "EndKeep: enabled=" in line]
+        if status_lines:
+            last_status = status_lines[-1]
+            if (
+                "capture=idle" in last_status
+                and "repository=idle" in last_status
+                and "raw_pending=0" in last_status
+                and "health=HEALTHY" in last_status
+            ):
+                # Allow the async completion/ACK delivery to drain.
+                time.sleep(2)
+                return
+        time.sleep(2)
+    raise TimeoutError(f"EndKeep remained busy after {timeout}s: {last_status}")
+
+
 def run(platform: str) -> int:
     workspace = ROOT / "work" / platform / "bedrock_server"
     storage = (ROOT / "work" / platform / "backups").resolve()
@@ -97,6 +125,7 @@ def run(platform: str) -> int:
             time.sleep(3)
         require_output(server, "backup maintenance", accepted=("maintenance",))
         ids = await_manifest(storage, 1)
+        wait_for_idle(server)
         meta["stage"] = "backup2"
         meta["snapshots"] = ids
         evidence(**meta)
@@ -105,13 +134,17 @@ def run(platform: str) -> int:
         time.sleep(12)
         require_output(server, "backup maintenance", accepted=("maintenance",))
         ids = await_manifest(storage, 2)
+        wait_for_idle(server)
         meta["snapshots"] = ids
         meta["stage"] = "verify"
         evidence(**meta)
         # Exercise online verify command and read-only export path.
         require_output(server, "backup verify deep", accepted=("verif",))
-        time.sleep(15)
+        wait_for_idle(server)
+        if not any("Repository deep verify PASS" in line for line in server.snapshot()):
+            raise AssertionError("deep verification did not report PASS")
         require_output(server, "backup export " + ids[-1], accepted=("export",))
+        wait_for_idle(server)
         exports = storage / "exports" / ids[-1]
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline and not (exports / "db").is_dir():
