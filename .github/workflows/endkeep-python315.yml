@@ -53,7 +53,7 @@ jobs:
 
       - name: Download exact latest Endstone cp315 Build artifact
         env:
-          GH_TOKEN: ${{ secrets.REPO_PAT }}
+          GH_TOKEN: ${{ secrets.REPO_PAT || github.token }}
         run: |
           test -n "$GH_TOKEN"
           mkdir -p endstone-artifact
