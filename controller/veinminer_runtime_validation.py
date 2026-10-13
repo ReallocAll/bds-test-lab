@@ -69,13 +69,11 @@ def main() -> int:
             50,
             "VeinMiner enabled",
         )
-        server.wait_for(
-            lambda rows: any("连锁挖掘功能已启用" in line for line in rows),
-            30,
-            "server-level mining enabled by default",
+        assert not any(
+            "连锁挖掘功能已启用" in line or "额外连锁破坏仍禁用" in line
+            for line in server.snapshot()
         )
-        assert not any("额外连锁破坏仍禁用" in line for line in server.snapshot())
-        record("server-default-enabled", "No experimental.json; server feature is active")
+        record("concise-startup", "No redundant startup description or legacy safety-gate message")
 
         def command(cmd: str, expected: str) -> None:
             cursor = server.command(cmd)
@@ -86,8 +84,8 @@ def main() -> int:
                 raise RuntimeError(f"BDS exited during {cmd}")
             record(f"command-{cmd}", output[-300:])
 
-        command("vm reload", "玩家设置已重新加载")
-        command("vm on", "该指令只能由玩家使用")
+        command("vm reload", "设置已重载")
+        command("vm on", "仅限玩家使用")
 
         if not server.graceful_stop(timeout=70):
             raise RuntimeError(f"BDS failed clean shutdown: {server.lifecycle_diagnostic}")
