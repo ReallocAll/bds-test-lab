@@ -47,12 +47,16 @@ jobs:
             --dir veinminer-wheel
           find veinminer-wheel -type f
           test "$(find veinminer-wheel -name '*.whl' | wc -l)" -eq 1
-          python -m pip install --no-deps veinminer-wheel/*.whl
           python - <<'PY'
-          from importlib.metadata import distribution
-          dist = distribution("endstone-vein-miner")
-          assert dist.version == "2.0.3+server.5", dist.version
-          print("Source Wheel version:", dist.version)
+          import glob
+          import zipfile
+          from email.parser import Parser
+          wheel, = glob.glob("veinminer-wheel/*.whl")
+          with zipfile.ZipFile(wheel) as zip_file:
+              meta_name, = (name for name in zip_file.namelist() if name.endswith(".dist-info/METADATA"))
+              metadata = Parser().parsestr(zip_file.read(meta_name).decode())
+          assert metadata["Version"] == "2.0.3+server.5", metadata["Version"]
+          print("Source Wheel version:", metadata["Version"])
           PY
 
       - name: Real BDS startup, enabled status, commands, lifecycle
