@@ -16,8 +16,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
-      SOURCE_SHA: "30f754a96cc8836adbe8c17a51c23400da782553"
-      SOURCE_RUN_ID: "38445838337"
+      SOURCE_SHA: "0bced837be154a183398ab9153b25c7c74f19b66"
+      SOURCE_RUN_ID: "38446144547"
     steps:
       - name: Checkout bds-test-lab
         uses: actions/checkout@v7
