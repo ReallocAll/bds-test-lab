@@ -16,8 +16,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
-      SOURCE_SHA: "0bced837be154a183398ab9153b25c7c74f19b66"
-      SOURCE_RUN_ID: "38446144547"
+      SOURCE_SHA: "f3d31375c3ef896c8dab9e1a12419eade97cd9ce"
+      SOURCE_RUN_ID: "38447747098"
     steps:
       - name: Checkout bds-test-lab
         uses: actions/checkout@v7
@@ -55,7 +55,7 @@ jobs:
           with zipfile.ZipFile(wheel) as zip_file:
               meta_name, = (name for name in zip_file.namelist() if name.endswith(".dist-info/METADATA"))
               metadata = Parser().parsestr(zip_file.read(meta_name).decode())
-          assert metadata["Version"] == "2.1.1", metadata["Version"]
+          assert metadata["Version"] == "2.1.2", metadata["Version"]
           print("Source Wheel version:", metadata["Version"])
           PY
 
