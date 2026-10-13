@@ -37,6 +37,8 @@ def main() -> int:
         assert "农作物；挖上层保留根部。" in menu_source
         mining_source = archive.read("endstone_vein_miner/mining.py").decode("utf-8")
         assert "find_vertical_plant" in mining_source
+        assert "queue.append((nx, nz, *bounds))" in mining_source
+        assert "harvest_roots = sy == origin[0]" in mining_source
         assert "TianyanAudit" not in plugin_source
         assert "self._audit" not in plugin_source
         assert "ServerLimits" in plugin_source
@@ -93,7 +95,7 @@ def main() -> int:
         startup_lines = server.snapshot()
         assert sum("loading vein_miner" in line.lower() for line in startup_lines) == 1
         assert sum("enabling vein_miner" in line.lower() for line in startup_lines) == 1
-        assert any("enabling vein_miner v2.1.2" in line.lower() for line in startup_lines)
+        assert any("enabling vein_miner v2.1.3" in line.lower() for line in startup_lines)
         assert not any(
             "ambiguous plugin name" in line.lower()
             or ("failed to load" in line.lower() and "vein" in line.lower())
