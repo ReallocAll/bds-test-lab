@@ -1,0 +1,70 @@
+name: VeinMiner real BDS validation
+
+on:
+  push:
+    branches: [test/veinminer-default-on]
+    paths:
+      - ".github/workflows/veinminer-runtime.yml"
+      - "controller/veinminer_runtime_validation.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bds-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      SOURCE_SHA: "7a2412cac875fdd09ae74ed92809df13b984d170"
+      SOURCE_RUN_ID: "38386324229"
+    steps:
+      - name: Checkout bds-test-lab
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Install Endstone and test prerequisites
+        run: python -m pip install --disable-pip-version-check "endstone>=0.11,<0.12" psutil
+
+      - name: Verify exact VeinMiner source and download CI Wheel
+        env:
+          GH_TOKEN: ${{ secrets.REPO_PAT || github.token }}
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN"
+          sha="$(gh api "repos/ReallocAll/VeinMiner-Endstone/actions/runs/$SOURCE_RUN_ID" --jq '.head_sha')"
+          status="$(gh api "repos/ReallocAll/VeinMiner-Endstone/actions/runs/$SOURCE_RUN_ID" --jq '.conclusion')"
+          test "$sha" = "$SOURCE_SHA"
+          test "$status" = "success"
+          mkdir -p veinminer-wheel
+          gh run download "$SOURCE_RUN_ID" \
+            --repo ReallocAll/VeinMiner-Endstone \
+            --name veinminer-wheel-py3 \
+            --dir veinminer-wheel
+          find veinminer-wheel -type f
+          test "$(find veinminer-wheel -name '*.whl' | wc -l)" -eq 1
+          python -m pip install --no-deps veinminer-wheel/*.whl
+          python - <<'PY'
+          from importlib.metadata import distribution
+          dist = distribution("endstone-vein-miner")
+          assert dist.version == "2.0.3+server.3", dist.version
+          print("Source Wheel version:", dist.version)
+          PY
+
+      - name: Real BDS startup, enabled status, commands, lifecycle
+        run: python -m controller.veinminer_runtime_validation
+
+      - name: Upload real BDS evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: veinminer-real-bds-linux
+          path: |
+            veinminer-bds.log
+            veinminer-results.json
+          if-no-files-found: warn
+          retention-days: 14
