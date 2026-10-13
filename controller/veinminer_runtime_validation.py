@@ -29,6 +29,10 @@ def main() -> int:
 
     with zipfile.ZipFile(wheel) as archive:
         source = archive.read("endstone_vein_miner/settings.py").decode("utf-8")
+        plugin_source = archive.read("endstone_vein_miner/plugin.py").decode("utf-8")
+        assert "TianyanAudit" not in plugin_source
+        assert "self._audit" not in plugin_source
+        assert "ServerLimits" in plugin_source
     assignments = [
         node for node in ast.parse(source).body
         if isinstance(node, ast.Assign)
@@ -42,6 +46,7 @@ def main() -> int:
         "ores": True,
         "logs": False,
         "leaves": False,
+        "plants": False,
     }
 
     evidence: dict[str, object] = {
@@ -49,7 +54,7 @@ def main() -> int:
         "wheel": wheel.name,
         "python": sys.version,
         "checks": [],
-        "limitations": "No actual player mining or native Territory/Tianyan plugin was simulated.",
+        "limitations": "No actual touch-player mining or native Territory integration was simulated.",
     }
     log = root / "veinminer-bds.log"
     server = ServerProcess(
