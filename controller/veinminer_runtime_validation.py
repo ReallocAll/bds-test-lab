@@ -32,7 +32,8 @@ def main() -> int:
         plugin_source = archive.read("endstone_vein_miner/plugin.py").decode("utf-8")
         menu_source = archive.read("endstone_vein_miner/gui.py").decode("utf-8")
         assert "先开启总开关和对应类型" in menu_source
-        assert "默认蹲下触发；树叶使用斧子" in menu_source
+        assert "默认蹲下；树叶：斧子自然掉落，剪刀掉叶块。" in menu_source
+        assert "树叶连锁（斧/剪刀）" in menu_source
         assert "TianyanAudit" not in plugin_source
         assert "self._audit" not in plugin_source
         assert "ServerLimits" in plugin_source
@@ -89,7 +90,7 @@ def main() -> int:
         startup_lines = server.snapshot()
         assert sum("loading vein_miner" in line.lower() for line in startup_lines) == 1
         assert sum("enabling vein_miner" in line.lower() for line in startup_lines) == 1
-        assert any("enabling vein_miner v2.1.0" in line.lower() for line in startup_lines)
+        assert any("enabling vein_miner v2.1.1" in line.lower() for line in startup_lines)
         assert not any(
             "ambiguous plugin name" in line.lower()
             or ("failed to load" in line.lower() and "vein" in line.lower())
