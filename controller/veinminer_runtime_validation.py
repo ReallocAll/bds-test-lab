@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ast
 import json
+import zipfile
 import shutil
 import sys
 import traceback
@@ -25,9 +27,16 @@ def main() -> int:
     write_disabled_bstats_config(server_dir)
     assert not list(server_dir.rglob("experimental.json")), "Unexpected legacy safety gate"
 
-    from endstone_vein_miner.settings import DEFAULT_SETTINGS
-
-    assert DEFAULT_SETTINGS == {
+    with zipfile.ZipFile(wheel) as archive:
+        source = archive.read("endstone_vein_miner/settings.py").decode("utf-8")
+    assignments = [
+        node for node in ast.parse(source).body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "DEFAULT_SETTINGS" for target in node.targets)
+    ]
+    assert len(assignments) == 1
+    default_settings = ast.literal_eval(assignments[0].value)
+    assert default_settings == {
         "enabled": False,
         "require_sneak": True,
         "ores": True,
@@ -69,9 +78,15 @@ def main() -> int:
             50,
             "VeinMiner enabled",
         )
+        startup_lines = server.snapshot()
+        assert sum("loading vein_miner" in line.lower() for line in startup_lines) == 1
+        assert sum("enabling vein_miner" in line.lower() for line in startup_lines) == 1
         assert not any(
-            "连锁挖掘功能已启用" in line or "额外连锁破坏仍禁用" in line
-            for line in server.snapshot()
+            "ambiguous plugin name" in line.lower()
+            or ("failed to load" in line.lower() and "vein" in line.lower())
+            or "连锁挖掘功能已启用" in line
+            or "额外连锁破坏仍禁用" in line
+            for line in startup_lines
         )
         record("concise-startup", "No redundant startup description or legacy safety-gate message")
 
