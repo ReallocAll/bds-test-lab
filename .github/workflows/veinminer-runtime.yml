@@ -16,8 +16,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
-      SOURCE_SHA: "47f0a25f083196e218df97f568deacab27493378"
-      SOURCE_RUN_ID: "38387293483"
+      SOURCE_SHA: "7fb2766e9c7c333a25306f65c4b8cdd21e4f401e"
+      SOURCE_RUN_ID: "38398589492"
     steps:
       - name: Checkout bds-test-lab
         uses: actions/checkout@v7
@@ -51,7 +51,7 @@ jobs:
           python - <<'PY'
           from importlib.metadata import distribution
           dist = distribution("endstone-vein-miner")
-          assert dist.version == "2.0.3+server.4", dist.version
+          assert dist.version == "2.0.3+server.5", dist.version
           print("Source Wheel version:", dist.version)
           PY
 
