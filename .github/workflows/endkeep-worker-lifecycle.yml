@@ -82,7 +82,7 @@ jobs:
       - name: Install exactly matched test environment
         run: |
           uv pip install --python "$PYTHON" 'endstone-artifact/${{ matrix.artifact }}' psutil
-          uv pip install --python "$PYTHON" -e './endkeep[dev]'
+          uv pip install --python "$PYTHON" -e './endkeep[dev]' 'tqdm>=4.70.1,<5'
           uv pip check --python "$PYTHON"
           "$PYTHON" - <<'PY'
           from importlib.metadata import version
