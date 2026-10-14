@@ -261,6 +261,31 @@ class Validation:
         self.cmd("backup status")
         self.record("reload-after-temporary-timeout", True)
 
+        # A persistently unresponsive worker must fail closed, not spawn a second writer.
+        worker.suspend()
+        try:
+            assert self.server is not None
+            cursor = self.server.command("reload")
+            self.server.wait_for(
+                lambda rows: any(
+                    "failed to enable endkeep" in line.lower() for line in rows[cursor:]
+                ),
+                30, "unresponsive worker safely rejected",
+            )
+            self.record("permanent-rpc-unresponsive-no-second-writer",
+                        live(pid, born) and self.worker()[1].instance_id == runtime.instance_id,
+                        old_worker_pid=pid)
+        finally:
+            worker.resume()
+        self.cmd("reload", timeout=20)
+        assert self.server is not None
+        self.server.wait_for(
+            lambda rows: sum("endkeep enabled." in x.lower() for x in rows) >= 3,
+            40, "EndKeep reenabled after suspended worker resumed",
+        )
+        self.record("unresponsive-worker-recovered-after-resume",
+                    self.worker()[1].instance_id == runtime.instance_id, worker_pid=pid)
+
         before_head = (SERVER_DIR / "backups" / "repo" / "HEAD")
         head = before_head.read_bytes() if before_head.exists() else b""
         other = subprocess.run([
