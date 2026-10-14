@@ -200,7 +200,7 @@ class Validation:
         deadline = time.monotonic() + 240
         while time.monotonic() < deadline:
             status = client.refresh()
-            if status["job"]["state"] == "idle" and not status.get("pending_results"):
+            if not client.busy:
                 break
             time.sleep(0.1)
         else:
@@ -208,10 +208,30 @@ class Validation:
         pending = list((SERVER_DIR / "backups" / "raw").glob("[0-9]*"))
         self.record(name, not pending, pending_raw=[p.name for p in pending])
         cursor = len(self.server.snapshot())
-        self.cmd("backup verify deep")
+        accepted = self.cmd("backup verify deep")
+        if "deep repository verification started" not in accepted.lower():
+            raise RuntimeError(f"deep verify command was not accepted: {accepted}")
         self.server.wait_for(lambda rows: any("repository deep verify pass" in row.lower() for row in rows[cursor:]),
                              240, "deep verify after worker interruption")
         self.record(name + "-deep-verify", True)
+
+    def raw_digest(self, snapshot_ids: list[str]) -> str | None:
+        from hashlib import sha256
+
+        digest = sha256()
+        try:
+            for snapshot in sorted(snapshot_ids):
+                raw = SERVER_DIR / "backups" / "raw" / snapshot
+                payload = (raw / "snapshot.json").read_bytes()
+                digest.update(payload)
+                for entry in sorted(json.loads(payload)["files"], key=lambda item: item["path"]):
+                    digest.update(entry["path"].encode("utf-8"))
+                    with (raw / entry["path"]).open("rb") as stream:
+                        while chunk := stream.read(1024 * 1024):
+                            digest.update(chunk)
+            return digest.hexdigest()
+        except FileNotFoundError:
+            return None
 
     def interrupt_running_worker(self, phase: str, *, kill_bds: bool = False, kill_worker: bool = False) -> None:
         from endstone_endkeep.repository.lock import RepositoryLock
@@ -238,8 +258,9 @@ class Validation:
         repo = path.parent / "repo"
         head = (repo / "HEAD").read_bytes()
         raw_ids = [p.name for p in (path.parent / "raw").glob("[0-9]*") if p.is_dir()]
-        self.record(name + "-phase-observed", bool(raw_ids), worker_pid=pid, bds_pid=owner.pid,
-                    job=job, worker_suspended_for_phase_control=True)
+        raw_before = self.raw_digest(raw_ids)
+        self.record(name + "-phase-observed", bool(raw_ids) and raw_before is not None, worker_pid=pid, bds_pid=owner.pid,
+                    job=job, worker_suspended_for_phase_control=True, raw_before_sha256=raw_before)
         suspended = True
         try:
             if kill_worker:
@@ -261,19 +282,23 @@ class Validation:
                     self.server.command("stop")
                 owner_code = owner.wait(timeout=120)
                 died_at = time.monotonic()
+                self.server.process.wait(timeout=120)
                 worker.resume()
                 suspended = False
                 delay = self.wait_worker_exit(pid, born, timeout=10)
                 self.record(name + "-worker-self-exits", not live(pid, born) and not path.exists()
-                            and (kill_bds or owner_code == 0),
+                            and (kill_bds or self.server.process.returncode == 0),
                             bds_pid=owner.pid, worker_pid=pid, bds_exit_code=str(owner_code),
+                            bds_wrapper_exit_code=self.server.process.returncode,
                             bds_exit_to_worker_exit_s=round(time.monotonic() - died_at, 3),
                             worker_exit_delay_s=round(delay, 3), worker_residual_count=0,
                             termination="product cooperative cancellation")
                 self.server.process.wait(timeout=120)
+            raw_after = self.raw_digest(raw_ids)
             self.record(name + "-head-and-raw-preserved", (repo / "HEAD").read_bytes() == head
-                        and all((path.parent / "raw" / raw).is_dir() for raw in raw_ids),
-                        pending_raw=raw_ids, head=head.decode().strip())
+                        and raw_before is not None and raw_after == raw_before,
+                        pending_raw=raw_ids, head=head.decode().strip(),
+                        raw_before_sha256=raw_before, raw_after_sha256=raw_after)
         finally:
             if suspended and live(pid, born):
                 worker.resume()
