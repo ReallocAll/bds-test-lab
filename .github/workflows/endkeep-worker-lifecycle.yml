@@ -1,0 +1,114 @@
+name: EndKeep worker lifecycle / real BDS
+
+on:
+  push:
+    branches: [fix/endkeep-worker-lifecycle-lab]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ENDKEEP_SHA: 23348fca29eee50b554c4be9883bc3c0843fee53
+
+jobs:
+  lifecycle:
+    name: ${{ matrix.platform }} / CPython 3.14
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux, os: ubuntu-24.04, artifact: endstone-0.11.14.dev6-cp314-cp314-manylinux_2_31_x86_64.whl }
+          - { platform: windows, os: windows-2025, artifact: endstone-0.11.14.dev6-cp314-cp314-win_amd64.whl }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout real BDS controller
+        uses: actions/checkout@v7
+
+      - name: Checkout exact EndKeep SHA
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/endkeep
+          ref: ${{ env.ENDKEEP_SHA }}
+          fetch-depth: 0
+          path: endkeep
+          persist-credentials: false
+
+      - name: Enforce candidate provenance
+        run: test "$(git -C endkeep rev-parse HEAD)" = "$ENDKEEP_SHA"
+
+      - name: Set up uv and Python 3.14
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Provision interpreter
+        run: |
+          uv python install 3.14
+          uv venv .venv --python 3.14
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            echo 'PYTHON=.venv/Scripts/python.exe' >> "$GITHUB_ENV"
+          else
+            echo 'PYTHON=.venv/bin/python' >> "$GITHUB_ENV"
+          fi
+
+      - name: Download matching Endstone real BDS runner
+        env:
+          GH_TOKEN: ${{ secrets.REPO_PAT || github.token }}
+        run: |
+          mkdir -p endstone-artifact
+          gh run download 38045137884 --repo EndstoneMC/endstone \
+            --name '${{ matrix.artifact }}' --dir endstone-artifact
+          ENDSTONE_WHEEL='${{ matrix.artifact }}' python - <<'PY'
+          import os
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_DEFLATED
+          root = Path("endstone-artifact")
+          dest = root / os.environ["ENDSTONE_WHEEL"]
+          members = sorted(p for p in root.rglob("*") if p.is_file() and p != dest)
+          assert any(".dist-info/" in p.as_posix() for p in members)
+          with ZipFile(dest, "w", compression=ZIP_DEFLATED, compresslevel=1) as out:
+              for p in members:
+                  out.write(p, p.relative_to(root).as_posix())
+          with ZipFile(dest) as archive:
+              assert archive.testzip() is None
+          PY
+
+      - name: Install exactly matched test environment
+        run: |
+          uv pip install --python "$PYTHON" 'endstone-artifact/${{ matrix.artifact }}' psutil
+          uv pip install --python "$PYTHON" -e './endkeep[dev]'
+          uv pip check --python "$PYTHON"
+          "$PYTHON" - <<'PY'
+          from importlib.metadata import version
+          assert version("amulet-leveldb").split("+", 1)[0] == "3.0.8a1"
+          print("Endstone:", version("endstone"))
+          print("Amulet:", version("amulet-leveldb"))
+          PY
+
+      - name: Validate and build exact candidate Wheel
+        run: |
+          "$PYTHON" -m pytest -q endkeep/tests/test_worker.py
+          uv build --wheel --out-dir endkeep-wheel ./endkeep
+          test -n "$(find endkeep-wheel -maxdepth 1 -name 'endstone_endkeep-*.whl' -print -quit)"
+          uv pip uninstall --python "$PYTHON" endstone-endkeep
+
+      - name: Run real BDS lifecycle scenarios (no worker test cleanup before verdict)
+        run: '"$PYTHON" -m controller.endkeep_worker_lifecycle_validation'
+
+      - name: Upload audit evidence and candidate
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: endkeep-worker-lifecycle-${{ matrix.platform }}
+          path: |
+            endkeep-lifecycle-results.json
+            endkeep-lifecycle-bds.log
+            endkeep-wheel/*.whl
+            work/endkeep-worker-lifecycle/bedrock_server/backups/worker.log
+          if-no-files-found: warn
+          retention-days: 14
