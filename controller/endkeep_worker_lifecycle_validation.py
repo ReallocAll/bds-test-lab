@@ -267,6 +267,7 @@ class Validation:
             sys.executable, "-m", "endstone_endkeep.worker", "--storage-root", str(path.parent),
             "--runtime-file", str(path), "--priority", "background",
             "--controller-pid", str(os.getpid()), "--controller-start", "invalid",
+            "--launch-id", "competing-worker-real-bds",
         ], env=env, capture_output=True, text=True, timeout=20)
         self.record("two-worker-writer-lock", other.returncode != 0 and "repository is locked" in other.stderr.lower()
                     and live(pid, born) and
