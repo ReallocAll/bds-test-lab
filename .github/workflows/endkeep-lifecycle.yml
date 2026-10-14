@@ -26,7 +26,7 @@ jobs:
       run:
         shell: bash
     env:
-      ENDKEEP_SHA: 7befa9e86b724d97cad4c0059a570bc90e88a0be
+      ENDKEEP_SHA: 853864921a4540ce7acb1188cd2056748fb415d1
       RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - uses: actions/checkout@v7
