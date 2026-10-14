@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 env:
-  ENDKEEP_SHA: af861bdb27fb6eb340080159068fdc86411f6f46
+  ENDKEEP_SHA: 250963a9526703b8dd5ed9858674032bbec86354
 
 jobs:
   lifecycle:
@@ -105,6 +105,9 @@ jobs:
           cp reload-diagnostic-wheel/*.whl work/endkeep-worker-lifecycle/bedrock_server/plugins/
 
       - name: Run real BDS lifecycle scenarios (no worker test cleanup before verdict)
+        env:
+          PIP_LOG: ${{ github.workspace }}/endkeep-pip-install.log
+          PIP_VERBOSE: '2'
         run: '"$PYTHON" -m controller.endkeep_worker_lifecycle_validation'
 
       - name: Diagnose Windows vanilla Endstone reload after failure
@@ -158,6 +161,7 @@ jobs:
         with:
           name: endkeep-worker-lifecycle-${{ matrix.platform }}
           path: |
+            endkeep-pip-install.log
             endkeep-lifecycle-results.json
             endkeep-vanilla-reload-result.json
             endkeep-vanilla-reload.log
