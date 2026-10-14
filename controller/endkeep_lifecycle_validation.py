@@ -12,7 +12,7 @@ import sys
 import threading
 import time
 import traceback
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from importlib.metadata import version
 from pathlib import Path
 
@@ -62,8 +62,9 @@ def main() -> int:
     with ZipFile(wheel) as archive:
         config = tomlkit.parse(archive.read("endstone_endkeep/config.toml").decode())
     config["storage"]["min_free_space_gib"] = 0
-    config["capture"]["times"] = []
-    config["maintenance"]["times"] = []
+    later = datetime.now(UTC) + timedelta(hours=6)
+    config["capture"]["times"] = [later.strftime("%H:%M")]
+    config["maintenance"]["times"] = [(later + timedelta(minutes=1)).strftime("%H:%M")]
     (config_dir / "config.toml").write_text(tomlkit.dumps(config), encoding="utf-8")
     storage = server_dir / "backups"
     runtime_path = storage / "worker-runtime.json"
@@ -289,7 +290,9 @@ def main() -> int:
 
     def verify_restore(name):
         manifests = ManifestStore(storage / "repo")
-        objects = ObjectStore(storage / "repo")
+        objects = ObjectStore(
+            storage / "repo", compression_level=6, compression_threads=1
+        )
         with RepositoryLock(storage / "repo"):
             report = RepositoryVerifier(manifests, objects).verify(deep=True)
             manifest = manifests.load_current()
