@@ -143,7 +143,7 @@ class Validation:
         self.server.close()
         self.server = None
 
-    def start_logicalization(self, name: str):
+    def start_logicalization(self, name: str, *, workload: str | None = None):
         assert self.server is not None
         cursor = len(self.server.snapshot())
         self.cmd("backup create", timeout=30)
@@ -155,11 +155,135 @@ class Validation:
             time.sleep(0.1)
         raw_ids = [p.name for p in (SERVER_DIR / "backups" / "raw").iterdir()
                    if p.is_dir() and not p.name.startswith(".")]
+        if workload is not None:
+            raw = SERVER_DIR / "backups" / "raw" / sorted(raw_ids)[-1]
+            metadata = json.loads((raw / "snapshot.json").read_text(encoding="utf-8"))
+            folder = raw / metadata["world_name"] / "endkeep-lifecycle-load"
+            folder.mkdir()
+            added = []
+            if workload == "Clone":
+                payload = os.urandom(4096)
+                for index in range(8192):
+                    target = folder / f"{index:05d}.bin"
+                    target.write_bytes(payload)
+                    added.append({"path": target.relative_to(raw).as_posix(), "snapshot_bytes": len(payload)})
+            else:
+                target = folder / "large.bin"
+                with target.open("wb") as stream:
+                    for _ in range(512):
+                        stream.write(os.urandom(1024 * 1024))
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                added.append({"path": target.relative_to(raw).as_posix(), "snapshot_bytes": target.stat().st_size})
+            metadata["files"].extend(added)
+            metadata["total_bytes"] += sum(item["snapshot_bytes"] for item in added)
+            with (raw / "snapshot.json").open("w", encoding="utf-8") as stream:
+                json.dump(metadata, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            self.record(name + "-controlled-load", True, raw_snapshot=raw.name,
+                        fixture="real BDS RAW plus test-only sidecar payload", files=len(added),
+                        bytes=sum(item["snapshot_bytes"] for item in added), target_phase=workload)
         accepted = client.start_maintenance("LOGIC_ONLY")
         state = client.status["job"].get("state")
         self.record(name, bool(raw_ids) and accepted and state == "running",
                     raw_snapshots=raw_ids, job_state=state, worker_pid=client.runtime.pid)
         return client
+
+    def drain_raw(self, name: str) -> None:
+        client = self.client()
+        deadline = time.monotonic() + 30
+        while not client.start_maintenance("LOGIC_ONLY"):
+            if time.monotonic() >= deadline:
+                raise TimeoutError("worker did not accept recovered RAW maintenance")
+            time.sleep(0.1)
+        deadline = time.monotonic() + 240
+        while time.monotonic() < deadline:
+            status = client.refresh()
+            if status["job"]["state"] == "idle" and not status.get("pending_results"):
+                break
+            time.sleep(0.1)
+        else:
+            raise TimeoutError("recovered RAW maintenance did not finish")
+        pending = list((SERVER_DIR / "backups" / "raw").glob("[0-9]*"))
+        self.record(name, not pending, pending_raw=[p.name for p in pending])
+        cursor = len(self.server.snapshot())
+        self.cmd("backup verify deep")
+        self.server.wait_for(lambda rows: any("repository deep verify pass" in row.lower() for row in rows[cursor:]),
+                             240, "deep verify after worker interruption")
+        self.record(name + "-deep-verify", True)
+
+    def interrupt_running_worker(self, phase: str, *, kill_bds: bool = False, kill_worker: bool = False) -> None:
+        from endstone_endkeep.repository.lock import RepositoryLock
+
+        pid, born = self.start()
+        mode = "worker-kill" if kill_worker else ("bds-kill" if kill_bds else "normal-stop")
+        name = f"{mode}-during-{phase.lower()}"
+        client = self.start_logicalization(name + "-job", workload=phase)
+        deadline = time.monotonic() + 30
+        while True:
+            status = client.refresh()
+            job = status["job"]
+            if job["state"] == "running" and job["stages"][job["stage_index"]] == phase:
+                break
+            if time.monotonic() >= deadline or job["state"] == "idle":
+                raise RuntimeError(f"did not observe actual {phase} phase: {job}")
+            time.sleep(0.005)
+        owner = psutil.Process(int(status["worker"]["controller_pid"]))
+        worker = psutil.Process(pid)
+        worker.suspend()
+        # Pin an observed real job phase while BDS receives its stop/kill.
+        # Resuming never substitutes for product shutdown or cleanup.
+        path, runtime = self.runtime()
+        repo = path.parent / "repo"
+        head = (repo / "HEAD").read_bytes()
+        raw_ids = [p.name for p in (path.parent / "raw").glob("[0-9]*") if p.is_dir()]
+        self.record(name + "-phase-observed", bool(raw_ids), worker_pid=pid, bds_pid=owner.pid,
+                    job=job, worker_suspended_for_phase_control=True)
+        suspended = True
+        try:
+            if kill_worker:
+                worker.kill()
+                worker_code = worker.wait(timeout=10)
+                suspended = False
+                self.record(name + "-bds-survives", owner.is_running() and self.server.is_alive(),
+                            worker_pid=pid, bds_pid=owner.pid, worker_exit_code=str(worker_code))
+                self.cmd("list")
+                # Kernel locks must be released by process death, not test cleanup.
+                with RepositoryLock(path.parent / "worker-owner"), RepositoryLock(repo):
+                    self.record(name + "-locks-released", True)
+                self.server.command("stop")
+                self.server.process.wait(timeout=120)
+            else:
+                if kill_bds:
+                    owner.kill()
+                else:
+                    self.server.command("stop")
+                owner_code = owner.wait(timeout=120)
+                died_at = time.monotonic()
+                worker.resume()
+                suspended = False
+                delay = self.wait_worker_exit(pid, born, timeout=10)
+                self.record(name + "-worker-self-exits", not live(pid, born) and not path.exists()
+                            and (kill_bds or owner_code == 0),
+                            bds_pid=owner.pid, worker_pid=pid, bds_exit_code=str(owner_code),
+                            bds_exit_to_worker_exit_s=round(time.monotonic() - died_at, 3),
+                            worker_exit_delay_s=round(delay, 3), worker_residual_count=0,
+                            termination="product cooperative cancellation")
+                self.server.process.wait(timeout=120)
+            self.record(name + "-head-and-raw-preserved", (repo / "HEAD").read_bytes() == head
+                        and all((path.parent / "raw" / raw).is_dir() for raw in raw_ids),
+                        pending_raw=raw_ids, head=head.decode().strip())
+        finally:
+            if suspended and live(pid, born):
+                worker.resume()
+        self.server.close()
+        self.server = None
+        self.start()
+        self.record(name + "-restart-recovery", True, logs=[row for row in self.server.snapshot()
+                    if "startup recovery" in row.lower()][-3:])
+        self.drain_raw(name + "-recovered-raw-committed")
+        self.stop(name=name + "-recovered-clean-stop")
 
     def main(self) -> None:
         (SERVER_DIR / "plugins").mkdir(parents=True, exist_ok=True)
@@ -242,11 +366,7 @@ class Validation:
         pid, born = self.start()
         recovery_logs = [x for x in self.server.snapshot() if "startup recovery" in x.lower()]
         self.record("startup-recovery-reported", bool(recovery_logs), logs=recovery_logs[-4:])
-        self.cmd("backup verify deep")
-        self.server.wait_for(
-            lambda rows: any("repository deep verify pass" in x.lower() for x in rows),
-            150, "deep verify pass",
-        )
+        self.drain_raw("startup-recovery-raw-drained")
         self.record("real-bds-deep-verify", True)
         self.stop(name="recovery-followed-by-clean-stop")
         repo = SERVER_DIR / "backups" / "repo"
@@ -366,6 +486,15 @@ class Validation:
                     (before_head.read_bytes() if before_head.exists() else b"") == head,
                     competing_exit_code=other.returncode, competing_stderr=other.stderr[-1500:])
         self.stop(name="final-clean-stop")
+        self.interrupt_running_worker("Clone")
+        self.interrupt_running_worker("Sidecar")
+        self.interrupt_running_worker("Sidecar", kill_bds=True)
+        self.interrupt_running_worker("Sidecar", kill_worker=True)
+        restored_after_kill = WORK / "restored-after-worker-kill"
+        result = subprocess.run([sys.executable, "-m", "endstone_endkeep.offline.cli", "--repo", str(repo),
+                                 "restore", str(restored_after_kill)], env=env, capture_output=True, text=True, timeout=240)
+        self.record("actual-restore-after-direct-worker-kill", result.returncode == 0,
+                    stdout=result.stdout[-1000:], stderr=result.stderr[-1000:])
 
     def run(self) -> int:
         try:

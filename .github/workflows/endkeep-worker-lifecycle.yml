@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 env:
-  ENDKEEP_SHA: 1d4e10b1c6b3d7f7f3d47ad57c44e68fc7dd8bae
+  ENDKEEP_SHA: c1ca1e9194314cc0a3448dc012710e9ae01a9fc8
 
 jobs:
   lifecycle:
@@ -96,7 +96,7 @@ jobs:
 
       - name: Validate and build exact candidate Wheel
         run: |
-          "$PYTHON" -m pytest -q endkeep/tests/test_worker.py
+          "$PYTHON" -m pytest -q endkeep/tests/test_worker.py endkeep/tests/test_shutdown.py
           uv build --wheel --out-dir endkeep-wheel ./endkeep
           test -n "$(find endkeep-wheel -maxdepth 1 -name 'endstone_endkeep-*.whl' -print -quit)"
           uv pip uninstall --python "$PYTHON" endstone-endkeep
