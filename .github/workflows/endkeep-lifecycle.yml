@@ -1,0 +1,106 @@
+name: EndKeep Worker lifecycle real BDS
+
+on:
+  push:
+    branches: [fix/endkeep-worker-lifecycle]
+    paths: ['controller/endkeep_lifecycle_validation.py', '.github/workflows/endkeep-lifecycle.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lifecycle:
+    name: Python ${{ matrix.python }} / ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux, os: ubuntu-24.04, python: '3.14', abi: cp314, suffix: manylinux_2_31_x86_64 }
+          - { platform: windows, os: windows-2025, python: '3.14', abi: cp314, suffix: win_amd64 }
+          - { platform: linux, os: ubuntu-24.04, python: '3.15', abi: cp315, suffix: manylinux_2_31_x86_64 }
+          - { platform: windows, os: windows-2025, python: '3.15', abi: cp315, suffix: win_amd64 }
+    defaults:
+      run:
+        shell: bash
+    env:
+      ENDKEEP_SHA: 7befa9e86b724d97cad4c0059a570bc90e88a0be
+      RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Checkout exact EndKeep candidate
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/endkeep
+          ref: ${{ env.ENDKEEP_SHA }}
+          fetch-depth: 0
+          path: endkeep
+      - uses: astral-sh/setup-uv@v7
+      - name: Provision CPython
+        run: |
+          uv python install '${{ matrix.python }}'
+          uv venv .venv --python '${{ matrix.python }}'
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            echo "PYTHON=.venv/Scripts/python.exe" >> "$GITHUB_ENV"
+          else
+            echo "PYTHON=.venv/bin/python" >> "$GITHUB_ENV"
+          fi
+      - name: Download pinned compatible Endstone artifact
+        env:
+          GH_TOKEN: ${{ secrets.REPO_PAT || github.token }}
+          ENDSTONE_WHEEL: endstone-0.11.14.dev6-${{ matrix.abi }}-${{ matrix.abi }}-${{ matrix.suffix }}.whl
+        run: |
+          mkdir -p endstone-artifact
+          gh run download 38045137884 --repo EndstoneMC/endstone --name "$ENDSTONE_WHEEL" --dir endstone-artifact
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from zipfile import ZIP_DEFLATED, ZipFile
+          root = Path("endstone-artifact")
+          target = root / os.environ["ENDSTONE_WHEEL"]
+          files = sorted(p for p in root.rglob("*") if p.is_file() and p != target)
+          assert any(".dist-info/" in p.as_posix() for p in files)
+          with ZipFile(target, "w", compression=ZIP_DEFLATED, compresslevel=1) as archive:
+              for path in files:
+                  archive.write(path, path.relative_to(root).as_posix())
+          with ZipFile(target) as archive:
+              assert archive.testzip() is None
+          PY
+      - name: Install and test exact candidate
+        run: |
+          test "$(git -C endkeep rev-parse HEAD)" = "$ENDKEEP_SHA"
+          uv pip install --python "$PYTHON" endstone-artifact/*.whl psutil
+          uv pip install --python "$PYTHON" -e './endkeep[dev]'
+          uv pip check --python "$PYTHON"
+          (cd endkeep && "../$PYTHON" -m pytest)
+      - name: Build Wheel and remove editable plugin
+        run: |
+          uv build --wheel --out-dir endkeep-wheel ./endkeep
+          uv pip uninstall --python "$PYTHON" endstone-endkeep
+          "$PYTHON" - <<'PY'
+          from importlib.metadata import PackageNotFoundError, version
+          try:
+              version("endstone-endkeep")
+          except PackageNotFoundError:
+              pass
+          else:
+              raise AssertionError("editable plugin still installed")
+          PY
+      - name: Execute real BDS lifecycle acceptance
+        run: '"$PYTHON" -m controller.endkeep_lifecycle_validation'
+      - name: Upload exact Wheel, process and repository evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: endkeep-lifecycle-${{ matrix.platform }}-${{ matrix.python }}
+          path: |
+            endkeep-lifecycle-results.json
+            endkeep-lifecycle-*.log
+            endkeep-worker.log
+            endkeep-worker-results.json
+            endkeep-wheel/*.whl
+          if-no-files-found: warn
+          retention-days: 30
+
