@@ -223,7 +223,7 @@ class Validation:
         owner = int(self.client().refresh()["worker"]["controller_pid"])
         actual = psutil.Process(owner)
         self.record("controller-is-real-bds", "bedrock_server" in actual.name().lower(),
-                    controller_pid=owner, name=actual.name())
+                    controller_pid=owner, process_name=actual.name())
         died_at = time.monotonic()
         actual.kill()
         actual.wait(timeout=30)
