@@ -92,7 +92,9 @@ def main() -> int:
 
     def workers():
         rows = []
-        for proc in psutil.process_iter(["pid", "cmdline", "create_time"]):
+        for proc in psutil.process_iter(
+            ["pid", "cmdline", "create_time", "ppid", "exe"]
+        ):
             args = proc.info["cmdline"] or []
             if "endstone_endkeep.worker" not in args or "--storage-root" not in args:
                 continue
@@ -100,8 +102,37 @@ def main() -> int:
                 Path(args[args.index("--storage-root") + 1]).resolve()
                 == storage.resolve()
             ):
-                rows.append({"pid": proc.pid, "created_at": proc.info["create_time"]})
+                rows.append(
+                    {
+                        "pid": proc.pid,
+                        "created_at": proc.info["create_time"],
+                        "parent_pid": proc.info["ppid"],
+                        "executable": proc.info["exe"],
+                    }
+                )
         return rows
+
+    def worker_processes():
+        rows = workers()
+        runtime = RepositoryWorkerClient._load_runtime(runtime_path)
+        ancestors = set()
+        if runtime is not None:
+            try:
+                ancestors = {p.pid for p in psutil.Process(runtime.pid).parents()}
+            except psutil.NoSuchProcess:
+                pass
+        for row in rows:
+            row["role"] = "worker"
+            # Windows venv python.exe redirects to the base interpreter and waits for it.
+            if os.name == "nt" and row["pid"] in ancestors:
+                assert (
+                    Path(row["executable"]).resolve() == Path(sys.executable).resolve()
+                ), row
+                row["role"] = "venv-launcher"
+        return rows
+
+    def writer_count():
+        return sum(row["role"] == "worker" for row in worker_processes())
 
     def inspect():
         runtime = RepositoryWorkerClient._load_runtime(runtime_path)
@@ -168,7 +199,7 @@ def main() -> int:
         worker = client.runtime
         owner_pid = status["worker"]["controller"]["pid"]
         proc = psutil.Process(owner_pid)
-        assert "bedrock_server" in proc.name().lower(), (
+        assert "bedrock_server" in Path(proc.exe()).name.lower(), (
             owner_pid,
             proc.name(),
             proc.cmdline(),
@@ -181,7 +212,9 @@ def main() -> int:
             "worker_created_at": psutil.Process(worker.pid).create_time(),
             "started_at": utc(),
             "rpc": "PASS",
-            "worker_count": len(workers()),
+            "worker_count": writer_count(),
+            "worker_processes": worker_processes(),
+            "bds_executable": proc.exe(),
         }
         known_workers[worker.pid] = worker.process_identity
         assert session["worker_count"] == 1, workers()
@@ -283,6 +316,8 @@ def main() -> int:
                 if state
                 and state["job_occupied"]
                 and state["job"]["kind"] == "maintenance"
+                and state["job"]["state"] == "running"
+                and state["job"]["detail"] is not None
                 else None
             )
 
@@ -357,7 +392,7 @@ def main() -> int:
             )
             after = inspect().runtime
             assert before.instance_id == after.instance_id and before.pid == after.pid
-            assert len(workers()) == 1
+            assert writer_count() == 1
             wait_for(idle, 120, "reload task result delivered")
             stop()
             return {
@@ -415,7 +450,7 @@ def main() -> int:
             server.close()
             start(expected_failure=True)
             assert (
-                len(workers()) == 1
+                writer_count() == 1
                 and inspect().runtime.instance_id == before.instance_id
             )
             server.command("stop")
@@ -464,7 +499,7 @@ def main() -> int:
                 check=False,
             )
             assert challenger.returncode != 0, challenger.stdout
-            assert runtime_path.read_bytes() == saved and len(workers()) == 1
+            assert runtime_path.read_bytes() == saved and writer_count() == 1
             with_repository_lock = False
             try:
                 with RepositoryLock(storage / "worker-control"):
