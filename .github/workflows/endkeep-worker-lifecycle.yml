@@ -9,19 +9,23 @@ permissions:
   contents: read
 
 env:
-  ENDKEEP_SHA: 250963a9526703b8dd5ed9858674032bbec86354
+  ENDKEEP_SHA: 64a691609358ce785270257c66777855df92fd7d
 
 jobs:
   lifecycle:
-    name: ${{ matrix.platform }} / CPython 3.14
+    name: ${{ matrix.platform }} / CPython ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { platform: linux, os: ubuntu-24.04, artifact: endstone-0.11.14.dev6-cp314-cp314-manylinux_2_31_x86_64.whl }
-          - { platform: windows, os: windows-2025, artifact: endstone-0.11.14.dev6-cp314-cp314-win_amd64.whl }
+          - { platform: linux, os: ubuntu-24.04, python: '3.14', artifact: endstone-0.11.14.dev6-cp314-cp314-manylinux_2_31_x86_64.whl }
+          - { platform: windows, os: windows-2025, python: '3.14', artifact: endstone-0.11.14.dev6-cp314-cp314-win_amd64.whl }
+          - { platform: linux, os: ubuntu-24.04, python: '3.15', artifact: endstone-0.11.14.dev6-cp315-cp315-manylinux_2_31_x86_64.whl }
+          - { platform: windows, os: windows-2025, python: '3.15', artifact: endstone-0.11.14.dev6-cp315-cp315-win_amd64.whl }
+    env:
+      ENDKEEP_DEPLOYMENT: ${{ matrix.platform == 'windows' && 'installed-wheel' || 'plugins-wheel' }}
     defaults:
       run:
         shell: bash
@@ -48,8 +52,8 @@ jobs:
 
       - name: Provision interpreter
         run: |
-          uv python install 3.14
-          uv venv .venv --python 3.14
+          uv python install '${{ matrix.python }}'
+          uv venv .venv --python '${{ matrix.python }}'
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             echo 'PYTHON=.venv/Scripts/python.exe' >> "$GITHUB_ENV"
           else
@@ -97,12 +101,18 @@ jobs:
           test -n "$(find endkeep-wheel -maxdepth 1 -name 'endstone_endkeep-*.whl' -print -quit)"
           uv pip uninstall --python "$PYTHON" endstone-endkeep
 
-      - name: Build isolated Windows reload stack diagnostic
+      - name: Build minimal Windows installer control
         if: runner.os == 'Windows'
-        run: |
-          uv build --wheel --out-dir reload-diagnostic-wheel ./fixtures/endstone-reload-diagnostic
-          mkdir -p work/endkeep-worker-lifecycle/bedrock_server/plugins
-          cp reload-diagnostic-wheel/*.whl work/endkeep-worker-lifecycle/bedrock_server/plugins/
+        run: uv build --wheel --out-dir reload-diagnostic-wheel ./fixtures/endstone-reload-diagnostic
+
+      - name: Test minimal Python plugin framework reload independently
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        run: '"$PYTHON" -m controller.endkeep_installer_control'
+
+      - name: Install exact built Wheel for Windows entry-point deployment
+        if: runner.os == 'Windows'
+        run: uv pip install --python "$PYTHON" --no-deps endkeep-wheel/*.whl
 
       - name: Run real BDS lifecycle scenarios (no worker test cleanup before verdict)
         env:
@@ -128,6 +138,10 @@ jobs:
           output = {"source_exists": source.is_dir()}
           if source.is_dir():
               shutil.copytree(source, target, dirs_exist_ok=True, ignore=shutil.ignore_patterns("plugins", "backups", "*.log"))
+              (target / "plugins").mkdir(exist_ok=True)
+              # Minimal Python plugin control exercises the same framework installer.
+              for wheel in (root / "reload-diagnostic-wheel").glob("*.whl"):
+                  shutil.copy2(wheel, target / "plugins" / wheel.name)
               process = ServerProcess([sys.executable, "-m", "endstone", "--yes", "--server-folder", str(target)],
                                       root, root / "endkeep-vanilla-reload.log")
               try:
@@ -159,8 +173,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: endkeep-worker-lifecycle-${{ matrix.platform }}
+          name: endkeep-worker-lifecycle-${{ matrix.platform }}-${{ matrix.python }}
           path: |
+            endkeep-installer-control.json
+            endkeep-installer-control.log
             endkeep-pip-install.log
             endkeep-lifecycle-results.json
             endkeep-vanilla-reload-result.json

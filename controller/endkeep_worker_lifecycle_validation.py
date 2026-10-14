@@ -50,6 +50,8 @@ class Validation:
         self.evidence = {
             "status": "RUNNING", "endkeep_sha": SHA, "python": sys.version,
             "platform": sys.platform, "started_at": utc(), "checks": self.checks,
+            "deployment": os.environ.get("ENDKEEP_DEPLOYMENT", "plugins-wheel"),
+            "actions_run_url": f"https://github.com/{os.environ.get("GITHUB_REPOSITORY", "ReallocAll/bds-test-lab")}/actions/runs/{os.environ.get("GITHUB_RUN_ID", "local")}",
             "endstone": __import__("importlib.metadata", fromlist=["version"]).version("endstone"),
             "amulet_leveldb": __import__("importlib.metadata", fromlist=["version"]).version("amulet-leveldb"),
         }
@@ -143,8 +145,12 @@ class Validation:
 
     def main(self) -> None:
         (SERVER_DIR / "plugins").mkdir(parents=True, exist_ok=True)
-        shutil.copy2(next((ROOT / "endkeep-wheel").glob("endstone_endkeep-*.whl")), SERVER_DIR / "plugins" /
-                     next((ROOT / "endkeep-wheel").glob("endstone_endkeep-*.whl")).name)
+        wheel = next((ROOT / "endkeep-wheel").glob("endstone_endkeep-*.whl"))
+        if os.environ.get("ENDKEEP_DEPLOYMENT") != "installed-wheel":
+            shutil.copy2(wheel, SERVER_DIR / "plugins" / wheel.name)
+        from hashlib import sha256
+        self.evidence["wheel_sha256"] = sha256(wheel.read_bytes()).hexdigest()
+        self.evidence["wheel_name"] = wheel.name
         write_disabled_bstats_config(SERVER_DIR)
         version_file = SERVER_DIR / "version.txt"
         first_pid, born = self.start()
