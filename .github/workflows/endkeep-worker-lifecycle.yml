@@ -9,8 +9,7 @@ permissions:
   contents: read
 
 env:
-  ENDKEEP_SHA: aa6d1fd39d4b586d55264c11a0745d9955df7df1
-  ENDKEEP_WORKER_STARTUP_DIAGNOSTIC: "1"
+  ENDKEEP_SHA: 7cda2dd4cdcf6eaccb9c25e73b8e1b5e76916bfb
 
 jobs:
   lifecycle:
