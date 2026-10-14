@@ -100,6 +100,51 @@ jobs:
       - name: Run real BDS lifecycle scenarios (no worker test cleanup before verdict)
         run: '"$PYTHON" -m controller.endkeep_worker_lifecycle_validation'
 
+      - name: Diagnose Windows vanilla Endstone reload after failure
+        if: failure() && runner.os == 'Windows'
+        continue-on-error: true
+        run: |
+          "$PYTHON" - <<'PY'
+          import json
+          import pathlib
+          import shutil
+          import time
+          import traceback
+          import sys
+          from controller.run_test import READY_HINTS, ServerProcess
+          root = pathlib.Path.cwd()
+          source = root / "work" / "endkeep-worker-lifecycle" / "bedrock_server"
+          target = root / "work" / "endkeep-vanilla-reload" / "bedrock_server"
+          output = {"source_exists": source.is_dir()}
+          if source.is_dir():
+              shutil.copytree(source, target, dirs_exist_ok=True, ignore=shutil.ignore_patterns("plugins", "backups", "*.log"))
+              process = ServerProcess([sys.executable, "-m", "endstone", "--yes", "--server-folder", str(target)],
+                                      root, root / "endkeep-vanilla-reload.log")
+              try:
+                  process.start()
+                  process.wait_for(
+                      lambda rows: any(any(hint in line.lower() for hint in READY_HINTS) for line in rows),
+                      120, "vanilla BDS ready")
+                  before = len(process.snapshot())
+                  process.command("reload")
+                  time.sleep(10)
+                  lines = process.snapshot()[before:]
+                  output["reload_output"] = lines[-30:]
+                  output["reload_success"] = any(
+                      ("reload" in line.lower() and ("complete" in line.lower() or "finished" in line.lower()))
+                      for line in lines)
+              except BaseException as exc:
+                  output["error"] = repr(exc)
+                  output["traceback"] = traceback.format_exc()
+              finally:
+                  if process.is_alive():
+                      if not process.graceful_stop(timeout=20):
+                          process.force_kill_tree()
+                  process.close()
+          (root / "endkeep-vanilla-reload-result.json").write_text(json.dumps(output, indent=2))
+          print(output)
+          PY
+
       - name: Upload audit evidence and candidate
         if: always()
         uses: actions/upload-artifact@v7
@@ -107,6 +152,8 @@ jobs:
           name: endkeep-worker-lifecycle-${{ matrix.platform }}
           path: |
             endkeep-lifecycle-results.json
+            endkeep-vanilla-reload-result.json
+            endkeep-vanilla-reload.log
             endkeep-lifecycle-bds.log
             endkeep-wheel/*.whl
             work/endkeep-worker-lifecycle/bedrock_server/backups/worker.log
