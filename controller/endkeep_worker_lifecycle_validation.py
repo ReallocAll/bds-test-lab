@@ -7,7 +7,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import signal
 import subprocess
 import sys
 import threading
@@ -143,7 +142,7 @@ class Validation:
         self.server = None
 
     def main(self) -> None:
-        SERVER_DIR.mkdir(parents=True, exist_ok=True)
+        (SERVER_DIR / "plugins").mkdir(parents=True, exist_ok=True)
         shutil.copy2(next((ROOT / "endkeep-wheel").glob("endstone_endkeep-*.whl")), SERVER_DIR / "plugins" /
                      next((ROOT / "endkeep-wheel").glob("endstone_endkeep-*.whl")).name)
         write_disabled_bstats_config(SERVER_DIR)
@@ -163,11 +162,13 @@ class Validation:
         pid, born = self.start()
         self.cmd("reload", timeout=30)
         assert self.server is not None
-        lines = self.server.snapshot()
         # Actual Endstone reload must execute the plugin disable and enable hooks.
-        self.record("real-plugin-reload-hooks",
-                    sum("endkeep disabled." in s.lower() for s in lines) >= 1
-                    and sum("endkeep enabled." in s.lower() for s in lines) >= 2)
+        lines = self.server.wait_for(
+            lambda rows: sum("endkeep disabled." in s.lower() for s in rows) >= 1
+            and sum("endkeep enabled." in s.lower() for s in rows) >= 2,
+            60, "EndKeep plugin hot reload",
+        )
+        self.record("real-plugin-reload-hooks", True, disable_count=sum("endkeep disabled." in s.lower() for s in lines))
         self.cmd("backup status")
         after, _ = self.worker()[1:]
         self.record("reload-reuses-worker", pid == after.pid, before=pid, after=after.pid)
@@ -260,7 +261,8 @@ class Validation:
             "--runtime-file", str(path), "--priority", "background",
             "--controller-pid", str(os.getpid()), "--controller-start", "invalid",
         ], env=env, capture_output=True, text=True, timeout=20)
-        self.record("two-worker-writer-lock", other.returncode != 0 and live(pid, born) and
+        self.record("two-worker-writer-lock", other.returncode != 0 and "repository is locked" in other.stderr.lower()
+                    and live(pid, born) and
                     self.worker()[1].instance_id == runtime.instance_id and
                     (before_head.read_bytes() if before_head.exists() else b"") == head,
                     competing_exit_code=other.returncode, competing_stderr=other.stderr[-1500:])
