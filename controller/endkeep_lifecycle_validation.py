@@ -61,7 +61,7 @@ def main() -> int:
 
     with ZipFile(wheel) as archive:
         config = tomlkit.parse(archive.read("endstone_endkeep/config.toml").decode())
-    config["storage"]["min_free_space_gib"] = 0
+    config["storage"]["min_free_space_gib"] = 1
     later = datetime.now(UTC) + timedelta(hours=6)
     config["capture"]["times"] = [later.strftime("%H:%M")]
     config["maintenance"]["times"] = [(later + timedelta(minutes=1)).strftime("%H:%M")]
