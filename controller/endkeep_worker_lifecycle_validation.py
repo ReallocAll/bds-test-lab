@@ -222,8 +222,13 @@ class Validation:
         pid, born = self.start()
         owner = int(self.client().refresh()["worker"]["controller_pid"])
         actual = psutil.Process(owner)
-        self.record("controller-is-real-bds", "bedrock_server" in actual.name().lower(),
-                    controller_pid=owner, process_name=actual.name())
+        command_line = actual.cmdline()
+        launched_bds = any(
+            "bedrock_server" in arg.lower() or "endstone" in arg.lower()
+            for arg in command_line
+        )
+        self.record("controller-is-real-bds", launched_bds and owner != pid,
+                    controller_pid=owner, process_name=actual.name(), command_line=command_line)
         died_at = time.monotonic()
         actual.kill()
         actual.wait(timeout=30)
