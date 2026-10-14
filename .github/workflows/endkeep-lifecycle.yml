@@ -50,10 +50,10 @@ jobs:
       - name: Download pinned compatible Endstone artifact
         env:
           GH_TOKEN: ${{ secrets.REPO_PAT || github.token }}
-          ENDSTONE_WHEEL: endstone-0.11.14.dev6-${{ matrix.abi }}-${{ matrix.abi }}-${{ matrix.suffix }}.whl
+          ENDSTONE_WHEEL: endstone-0.11.14-${{ matrix.abi }}-${{ matrix.abi }}-${{ matrix.suffix }}.whl
         run: |
           mkdir -p endstone-artifact
-          gh run download 38045137884 --repo EndstoneMC/endstone --name "$ENDSTONE_WHEEL" --dir endstone-artifact
+          gh run download 38234994919 --repo EndstoneMC/endstone --name "$ENDSTONE_WHEEL" --dir endstone-artifact
           python - <<'PY'
           import os
           from pathlib import Path
