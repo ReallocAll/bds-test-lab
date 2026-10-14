@@ -178,16 +178,23 @@ class Validation:
         self.cmd("backup create", timeout=30)
         deadline = time.monotonic() + 150
         started = False
-        while time.monotonic() < deadline:
-            out = self.cmd("backup maintenance", timeout=4)
-            if "maintenance started" in out.lower():
-                started = True
-                break
-            time.sleep(2)
-        self.record("maintenance-accepted", started)
-        # Try to stop while the real Worker is executing; do not invent overlap.
-        state = self.client().refresh()["job"].get("state")
-        self.record("stop-during-real-job-observed", state in ("running", "cancel_requested"), job_state=state)
+        observed_state = None
+        last_rejection = ""
+        while time.monotonic() < deadline and not started:
+            assert self.server is not None
+            start_idx = self.server.command("backup maintenance")
+            probe_deadline = time.monotonic() + 2
+            while time.monotonic() < probe_deadline:
+                observed_state = self.client().refresh()["job"].get("state")
+                if observed_state in ("running", "cancel_requested"):
+                    started = True
+                    break
+                time.sleep(0.005)
+            if not started:
+                last_rejection = "\\n".join(self.server.snapshot()[start_idx:])[-1200:]
+                time.sleep(1)
+        self.record("stop-during-real-job-observed", started, job_state=observed_state,
+                    last_output=last_rejection)
         self.stop(name="stop-during-job-no-orphan")
         pid, born = self.start()
         recovery_logs = [x for x in self.server.snapshot() if "startup recovery" in x.lower()]
