@@ -97,6 +97,13 @@ jobs:
           test -n "$(find endkeep-wheel -maxdepth 1 -name 'endstone_endkeep-*.whl' -print -quit)"
           uv pip uninstall --python "$PYTHON" endstone-endkeep
 
+      - name: Build isolated Windows reload stack diagnostic
+        if: runner.os == 'Windows'
+        run: |
+          uv build --wheel --out-dir reload-diagnostic-wheel ./fixtures/endstone-reload-diagnostic
+          mkdir -p work/endkeep-worker-lifecycle/bedrock_server/plugins
+          cp reload-diagnostic-wheel/*.whl work/endkeep-worker-lifecycle/bedrock_server/plugins/
+
       - name: Run real BDS lifecycle scenarios (no worker test cleanup before verdict)
         run: '"$PYTHON" -m controller.endkeep_worker_lifecycle_validation'
 
