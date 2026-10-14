@@ -262,7 +262,7 @@ def main() -> int:
             "Worker self-exit",
         )
         assert not runtime_path.exists(), "runtime file survived Worker exit"
-        assert workers() == [], workers()
+        wait_for(lambda: not workers(), 5, "Worker and Windows launchers self-exit")
         row = evidence["sessions"][-1]
         row.update(
             {
@@ -281,6 +281,7 @@ def main() -> int:
             row["repository_lock_released"] = True
         server.close()
         save()
+        print(json.dumps({"session": row}), flush=True)
 
     def command(cmd, timeout=15):
         offset = server.command(cmd)
