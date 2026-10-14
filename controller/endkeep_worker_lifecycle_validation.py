@@ -143,6 +143,24 @@ class Validation:
         self.server.close()
         self.server = None
 
+    def start_logicalization(self, name: str):
+        assert self.server is not None
+        cursor = len(self.server.snapshot())
+        self.cmd("backup create", timeout=30)
+        self.server.wait_for(lambda rows: any(" captured:" in row for row in rows[cursor:]),
+                             120, "real RAW capture publication")
+        client = self.client()
+        deadline = time.monotonic() + 30
+        while client.refresh().get("pending_results") and time.monotonic() < deadline:
+            time.sleep(0.1)
+        raw_ids = [p.name for p in (SERVER_DIR / "backups" / "raw").iterdir()
+                   if p.is_dir() and not p.name.startswith(".")]
+        accepted = client.start_maintenance("LOGIC_ONLY")
+        state = client.status["job"].get("state")
+        self.record(name, bool(raw_ids) and accepted and state == "running",
+                    raw_snapshots=raw_ids, job_state=state, worker_pid=client.runtime.pid)
+        return client
+
     def main(self) -> None:
         (SERVER_DIR / "plugins").mkdir(parents=True, exist_ok=True)
         wheel = next((ROOT / "endkeep-wheel").glob("endstone_endkeep-*.whl"))
@@ -152,6 +170,7 @@ class Validation:
         self.evidence["wheel_sha256"] = sha256(wheel.read_bytes()).hexdigest()
         self.evidence["wheel_name"] = wheel.name
         write_disabled_bstats_config(SERVER_DIR)
+        (SERVER_DIR / "server.properties").write_text("allow-cheats=true\nallow-list=true\nonline-mode=false\n", encoding="utf-8")
         version_file = SERVER_DIR / "version.txt"
         first_pid, born = self.start()
         self.record("start-worker", True, worker_pid=first_pid, worker_created_at=utc())
@@ -179,6 +198,24 @@ class Validation:
         after, _ = self.worker()[1:]
         self.record("reload-reuses-worker", pid == after.pid, before=pid, after=after.pid)
         self.stop(name="reload-followed-by-clean-stop")
+
+        pid, born = self.start()
+        area = self.cmd("tickingarea add circle 0 64 0 2 endkeep_lab true", timeout=30)
+        self.record("real-world-chunk-generation", "added" in area.lower(), output=area[-1200:])
+        # Let BDS finish generating the small persistent ticking area.
+        time.sleep(10)
+        client = self.start_logicalization("reload-during-real-logicalization")
+        instance = client.runtime.instance_id
+        self.cmd("reload", timeout=40)
+        self.server.wait_for(lambda rows: sum("endkeep enabled." in row.lower() for row in rows) >= 2,
+                             60, "reload during logicalization completed")
+        self.record("running-job-reload-handoff", self.worker()[1].instance_id == instance,
+                    before_pid=pid, after_pid=self.worker()[1].pid)
+        self.cmd("backup verify deep", timeout=30)
+        self.server.wait_for(lambda rows: any("repository deep verify pass" in row.lower() for row in rows),
+                             180, "reload task repository integrity")
+        self.record("reload-task-deep-verify", True)
+        self.stop(name="running-reload-clean-stop")
 
         pid, born = self.start()
         self.cmd("backup create", timeout=30)
@@ -235,6 +272,20 @@ class Validation:
         )
         self.record("controller-is-real-bds", launched_bds and owner != pid,
                     controller_pid=owner, process_name=actual.name(), command_line=command_line)
+        self.start_logicalization("sigkill-during-real-logicalization")
+        actual.suspend()
+        try:
+            deadline = time.monotonic() + 180
+            client = self.client()
+            while not client.refresh().get("pending_results") and time.monotonic() < deadline:
+                time.sleep(0.1)
+            self.record("unacked-result-before-bds-kill", bool(client.status.get("pending_results")),
+                        worker_pid=pid, pending_results=client.status.get("pending_results"))
+            journal = SERVER_DIR / "backups" / "worker-results.json"
+            self.record("unacked-result-durable-before-bds-kill", bool(json.loads(journal.read_text())["results"]))
+        except BaseException:
+            actual.resume()
+            raise
         died_at = time.monotonic()
         actual.kill()
         actual.wait(timeout=30)
@@ -247,6 +298,10 @@ class Validation:
         self.server = None
         pid, born = self.start()
         self.record("restart-after-sigkill", True, worker_pid=pid)
+        self.cmd("backup verify deep")
+        self.server.wait_for(lambda rows: any("repository deep verify pass" in row.lower() for row in rows),
+                             180, "repository integrity after unacknowledged orphan exit")
+        self.record("post-sigkill-deep-verify", True)
         self.stop(name="post-sigkill-clean-stop")
 
         pid, born = self.start()
