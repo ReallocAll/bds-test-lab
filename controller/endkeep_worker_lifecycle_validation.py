@@ -170,7 +170,7 @@ class Validation:
         self.evidence["wheel_sha256"] = sha256(wheel.read_bytes()).hexdigest()
         self.evidence["wheel_name"] = wheel.name
         write_disabled_bstats_config(SERVER_DIR)
-        (SERVER_DIR / "server.properties").write_text("allow-cheats=true\nallow-list=true\nonline-mode=false\n", encoding="utf-8")
+        (SERVER_DIR / "server.properties").write_text("allow-cheats=true\nallow-list=true\nonline-mode=true\n", encoding="utf-8")
         version_file = SERVER_DIR / "version.txt"
         first_pid, born = self.start()
         self.record("start-worker", True, worker_pid=first_pid, worker_created_at=utc())

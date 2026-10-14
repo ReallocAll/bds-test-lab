@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 env:
-  ENDKEEP_SHA: 606640427be659440b608d922e04269276c914c2
+  ENDKEEP_SHA: 080099013f693be7c7812e3890543e356daef131
 
 jobs:
   lifecycle:
