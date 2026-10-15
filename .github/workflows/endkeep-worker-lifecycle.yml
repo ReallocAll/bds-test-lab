@@ -1,0 +1,176 @@
+name: EndKeep worker lifecycle / real BDS
+
+on:
+  push:
+    branches: [fix/endkeep-worker-lifecycle-lab]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ENDKEEP_SHA: 0672f0847001f5ff74bce39a273dc796e6eaad95
+
+jobs:
+  lifecycle:
+    name: ${{ matrix.platform }} / CPython ${{ matrix.python }} / ${{ matrix.deployment }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux, os: ubuntu-24.04, python: '3.12', artifact: endstone-0.11.14.dev6-cp312-cp312-manylinux_2_31_x86_64.whl, deployment: plugins-wheel }
+          - { platform: windows, os: windows-2025, python: '3.12', artifact: endstone-0.11.14.dev6-cp312-cp312-win_amd64.whl, deployment: installed-wheel }
+          - { platform: linux, os: ubuntu-24.04, python: '3.12', artifact: endstone-0.11.14.dev6-cp312-cp312-manylinux_2_31_x86_64.whl, deployment: installed-wheel }
+          - { platform: linux, os: ubuntu-24.04, python: '3.13', artifact: endstone-0.11.14.dev6-cp313-cp313-manylinux_2_31_x86_64.whl, deployment: plugins-wheel }
+          - { platform: windows, os: windows-2025, python: '3.13', artifact: endstone-0.11.14.dev6-cp313-cp313-win_amd64.whl, deployment: installed-wheel }
+          - { platform: linux, os: ubuntu-24.04, python: '3.13', artifact: endstone-0.11.14.dev6-cp313-cp313-manylinux_2_31_x86_64.whl, deployment: installed-wheel }
+          - { platform: linux, os: ubuntu-24.04, python: '3.14', artifact: endstone-0.11.14.dev6-cp314-cp314-manylinux_2_31_x86_64.whl, deployment: plugins-wheel }
+          - { platform: windows, os: windows-2025, python: '3.14', artifact: endstone-0.11.14.dev6-cp314-cp314-win_amd64.whl, deployment: installed-wheel }
+          - { platform: linux, os: ubuntu-24.04, python: '3.15', artifact: endstone-0.11.14.dev6-cp315-cp315-manylinux_2_31_x86_64.whl, deployment: plugins-wheel }
+          - { platform: windows, os: windows-2025, python: '3.15', artifact: endstone-0.11.14.dev6-cp315-cp315-win_amd64.whl, deployment: installed-wheel }
+          - { platform: linux, os: ubuntu-24.04, python: '3.14', artifact: endstone-0.11.14.dev6-cp314-cp314-manylinux_2_31_x86_64.whl, deployment: installed-wheel }
+          - { platform: linux, os: ubuntu-24.04, python: '3.15', artifact: endstone-0.11.14.dev6-cp315-cp315-manylinux_2_31_x86_64.whl, deployment: installed-wheel }
+    env:
+      ENDKEEP_DEPLOYMENT: ${{ matrix.deployment }}
+      ENDSTONE_WHEEL: ${{ matrix.artifact }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout real BDS controller
+        uses: actions/checkout@v7
+
+      - name: Checkout exact EndKeep SHA
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/endkeep
+          ref: ${{ env.ENDKEEP_SHA }}
+          fetch-depth: 0
+          path: endkeep
+          persist-credentials: false
+
+      - name: Enforce candidate provenance
+        run: test "$(git -C endkeep rev-parse HEAD)" = "$ENDKEEP_SHA"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Provision interpreter
+        run: |
+          uv python install '${{ matrix.python }}'
+          uv venv .venv --python '${{ matrix.python }}'
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            echo 'PYTHON=.venv/Scripts/python.exe' >> "$GITHUB_ENV"
+          else
+            echo 'PYTHON=.venv/bin/python' >> "$GITHUB_ENV"
+          fi
+
+      - name: Download matching Endstone real BDS runner
+        env:
+          GH_TOKEN: ${{ secrets.REPO_PAT || github.token }}
+        run: |
+          mkdir -p endstone-artifact
+          gh run download 38045137884 --repo EndstoneMC/endstone \
+            --name '${{ matrix.artifact }}' --dir endstone-artifact
+          ENDSTONE_WHEEL='${{ matrix.artifact }}' python - <<'PY'
+          import os
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_DEFLATED
+          root = Path("endstone-artifact")
+          dest = root / os.environ["ENDSTONE_WHEEL"]
+          members = sorted(p for p in root.rglob("*") if p.is_file() and p != dest)
+          assert any(".dist-info/" in p.as_posix() for p in members)
+          with ZipFile(dest, "w", compression=ZIP_DEFLATED, compresslevel=1) as out:
+              for p in members:
+                  out.write(p, p.relative_to(root).as_posix())
+          with ZipFile(dest) as archive:
+              assert archive.testzip() is None
+          PY
+
+      - name: Install exactly matched test environment
+        run: |
+          uv pip install --python "$PYTHON" 'endstone-artifact/${{ matrix.artifact }}' psutil
+          uv pip install --python "$PYTHON" -e './endkeep[dev]' 'tqdm>=4.70.1,<5'
+          uv pip check --python "$PYTHON"
+          "$PYTHON" - <<'PY'
+          from importlib.metadata import version
+          assert version("amulet-leveldb").split("+", 1)[0] == "3.0.8a1"
+          print("Endstone:", version("endstone"))
+          print("Amulet:", version("amulet-leveldb"))
+          PY
+
+      - name: Verify unmodified Endstone runtime
+        run: |
+          "$PYTHON" - <<'PYCODE'
+          from hashlib import sha256
+          import json
+          import os
+          from pathlib import Path
+          import sysconfig
+          from zipfile import ZipFile
+          wheel = Path("endstone-artifact") / os.environ["ENDSTONE_WHEEL"]
+          evidence = {"modified": False, "wheel_sha256": sha256(wheel.read_bytes()).hexdigest(), "files": {}}
+          with ZipFile(wheel) as archive:
+              for relative in ("endstone/plugin/plugin_loader.py", "endstone/cli/base.py"):
+                  content = (Path(sysconfig.get_path("purelib")) / relative).read_bytes()
+                  assert content == archive.read(relative), relative
+                  evidence["files"][relative] = sha256(content).hexdigest()
+          Path("endstone-loader-provenance.json").write_text(json.dumps(evidence, indent=2))
+          print(evidence)
+          PYCODE
+
+      - name: Validate and build exact candidate Wheel
+        run: |
+          "$PYTHON" -m pytest -q endkeep/tests/test_worker.py endkeep/tests/test_shutdown.py
+          uv build --wheel --out-dir endkeep-wheel ./endkeep
+          test -n "$(find endkeep-wheel -maxdepth 1 -name 'endstone_endkeep-*.whl' -print -quit)"
+          uv pip uninstall --python "$PYTHON" endstone-endkeep amulet-leveldb amulet-utils zstandard
+
+      - name: Install candidate using the documented command
+        if: matrix.deployment == 'installed-wheel'
+        run: |
+          "$PYTHON" -m pip install --upgrade endkeep-wheel/*.whl
+          "$PYTHON" -m pip check
+
+      - name: Prepare Zstandard for Linux Python 3.15 wheel-directory installation
+        if: matrix.platform == 'linux' && matrix.python == '3.15' && matrix.deployment == 'plugins-wheel'
+        run: '"$PYTHON" -m pip install "zstandard>=0.23,<1"'
+
+      - name: Run real BDS lifecycle scenarios (no worker test cleanup before verdict)
+        env:
+          PIP_LOG: ${{ github.workspace }}/endkeep-pip-install.log
+          PIP_VERBOSE: '2'
+        run: '"$PYTHON" -m controller.endkeep_worker_lifecycle_validation'
+
+      - name: Confirm Endstone remained unmodified
+        if: always()
+        run: |
+          "$PYTHON" - <<'PYCODE'
+          from hashlib import sha256
+          import json
+          from pathlib import Path
+          import sysconfig
+          evidence = json.loads(Path("endstone-loader-provenance.json").read_text())
+          for relative, digest in evidence["files"].items():
+              assert sha256((Path(sysconfig.get_path("purelib")) / relative).read_bytes()).hexdigest() == digest, relative
+          PYCODE
+
+      - name: Upload audit evidence and candidate
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: endkeep-worker-lifecycle-${{ matrix.platform }}-${{ matrix.python }}-${{ matrix.deployment }}
+          path: |
+            endstone-loader-provenance.json
+            endkeep-pip-install.log
+            endkeep-lifecycle-results.json
+            endkeep-lifecycle-bds.log
+            endkeep-wheel/*.whl
+            work/endkeep-worker-lifecycle/bedrock_server/backups/worker.log
+          if-no-files-found: warn
+          retention-days: 14
+
