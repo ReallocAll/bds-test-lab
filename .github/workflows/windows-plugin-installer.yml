@@ -1,0 +1,111 @@
+name: Windows plugin installer diagnosis
+
+on:
+  push:
+    branches: [fix/windows-plugin-reload]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ENDKEEP_SHA: 36281dfae3ac30c760968250a57fe79728ccd113
+
+jobs:
+  lifecycle:
+    name: ${{ matrix.platform }} / CPython ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: windows, os: windows-2025, python: '3.14', artifact: endstone-0.11.14.dev6-cp314-cp314-win_amd64.whl }
+          - { platform: windows, os: windows-2025, python: '3.15', artifact: endstone-0.11.14.dev6-cp315-cp315-win_amd64.whl }
+    env:
+      ENDKEEP_DEPLOYMENT: ${{ matrix.platform == 'windows' && 'installed-wheel' || 'plugins-wheel' }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout real BDS controller
+        uses: actions/checkout@v7
+
+      - name: Checkout exact EndKeep SHA
+        uses: actions/checkout@v7
+        with:
+          repository: ReallocAll/endkeep
+          ref: ${{ env.ENDKEEP_SHA }}
+          fetch-depth: 0
+          path: endkeep
+          persist-credentials: false
+
+      - name: Enforce candidate provenance
+        run: test "$(git -C endkeep rev-parse HEAD)" = "$ENDKEEP_SHA"
+
+      - name: Set up uv and Python 3.14
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Provision interpreter
+        run: |
+          uv python install '${{ matrix.python }}'
+          uv venv .venv --python '${{ matrix.python }}'
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            echo 'PYTHON=.venv/Scripts/python.exe' >> "$GITHUB_ENV"
+          else
+            echo 'PYTHON=.venv/bin/python' >> "$GITHUB_ENV"
+          fi
+
+      - name: Download matching Endstone real BDS runner
+        env:
+          GH_TOKEN: ${{ secrets.REPO_PAT || github.token }}
+        run: |
+          mkdir -p endstone-artifact
+          gh run download 38045137884 --repo EndstoneMC/endstone \
+            --name '${{ matrix.artifact }}' --dir endstone-artifact
+          ENDSTONE_WHEEL='${{ matrix.artifact }}' python - <<'PY'
+          import os
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_DEFLATED
+          root = Path("endstone-artifact")
+          dest = root / os.environ["ENDSTONE_WHEEL"]
+          members = sorted(p for p in root.rglob("*") if p.is_file() and p != dest)
+          assert any(".dist-info/" in p.as_posix() for p in members)
+          with ZipFile(dest, "w", compression=ZIP_DEFLATED, compresslevel=1) as out:
+              for p in members:
+                  out.write(p, p.relative_to(root).as_posix())
+          with ZipFile(dest) as archive:
+              assert archive.testzip() is None
+          PY
+
+      - name: Install exactly matched test environment
+        run: |
+          uv pip install --python "$PYTHON" 'endstone-artifact/${{ matrix.artifact }}' psutil
+          uv pip install --python "$PYTHON" -e './endkeep[dev]' 'tqdm>=4.70.1,<5'
+          uv pip check --python "$PYTHON"
+          "$PYTHON" - <<'PY'
+          from importlib.metadata import version
+          assert version("amulet-leveldb").split("+", 1)[0] == "3.0.8a1"
+          print("Endstone:", version("endstone"))
+          print("Amulet:", version("amulet-leveldb"))
+          PY
+
+      - name: Build minimal installer control
+        run: uv build --wheel --out-dir reload-diagnostic-wheel ./fixtures/endstone-reload-diagnostic
+
+      - name: Reproduce minimal plugin reload with installer diagnostics
+        run: '"$PYTHON" -m controller.endkeep_installer_control'
+
+      - name: Upload diagnosis
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-installer-diagnosis-${{ matrix.python }}
+          path: |
+            endkeep-installer-control.json
+            endkeep-installer-control.log
+            endkeep-installer-pip.log
+            pip-traces/*.log
+          retention-days: 14
