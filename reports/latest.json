@@ -1,5 +1,5 @@
 {
-  "completed_at": "2026-10-10T12:05:30.586237Z",
+  "completed_at": "2026-10-15T02:39:30.312465Z",
   "components": {
     "endstone": {
       "platforms": {
@@ -49,12 +49,12 @@
     }
   },
   "endstone_sha": "cce09d21a290ce804346ac2643a557ac915d3be8",
-  "lab_commit": "2e7c98006dd91850ed7fa3106dc21387f962bc27",
-  "lab_run_id": "38050638465",
-  "lab_run_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/38050638465",
+  "lab_commit": "fcc690fa8243fbfaef10a25a82dc2033070e5daa",
+  "lab_run_id": "38672010997",
+  "lab_run_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/38672010997",
   "platforms": {
     "linux": {
-      "actions_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/38050638465",
+      "actions_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/38672010997",
       "allocation_profile_viewer_url": null,
       "bds_version": null,
       "checks": [
@@ -128,7 +128,7 @@
       "status": "FAIL"
     },
     "windows": {
-      "actions_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/38050638465",
+      "actions_url": "https://github.com/ReallocAll/bds-test-lab/actions/runs/38672010997",
       "allocation_profile_viewer_url": null,
       "bds_version": null,
       "checks": [

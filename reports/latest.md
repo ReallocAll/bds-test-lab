@@ -1,11 +1,11 @@
 # Latest BDS integration test
 
-- Lab commit: `2e7c98006dd91850ed7fa3106dc21387f962bc27`
-- Lab Actions: [38050638465](https://github.com/ReallocAll/bds-test-lab/actions/runs/38050638465)
+- Lab commit: `fcc690fa8243fbfaef10a25a82dc2033070e5daa`
+- Lab Actions: [38672010997](https://github.com/ReallocAll/bds-test-lab/actions/runs/38672010997)
 - State: **FAIL**
 - Spark SHA: `2656b5315d17815fdabb420aa26c33d0eafea69f`
 - Endstone SHA: `cce09d21a290ce804346ac2643a557ac915d3be8`
-- Completed: `2026-10-10T12:05:30.586237Z`
+- Completed: `2026-10-15T02:39:30.312465Z`
 
 ## Platforms
 
