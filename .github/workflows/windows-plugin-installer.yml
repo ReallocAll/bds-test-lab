@@ -92,6 +92,9 @@ jobs:
           print("Amulet:", version("amulet-leveldb"))
           PY
 
+      - name: Remove EndKeep before isolated control
+        run: uv pip uninstall --python "$PYTHON" endstone-endkeep
+
       - name: Build minimal installer control
         run: uv build --wheel --out-dir reload-diagnostic-wheel ./fixtures/endstone-reload-diagnostic
 

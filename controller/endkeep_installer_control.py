@@ -26,7 +26,6 @@ def main() -> int:
     trace = root / "pip-traces"
     trace.mkdir(exist_ok=True)
     os.environ["ENDKEEP_INSTALLER_TRACE"] = str(trace)
-    os.environ["PYTHONPATH"] = str(root / "fixtures" / "pip-trace")
     os.environ["PIP_LOG"] = str(root / "endkeep-installer-pip.log")
     os.environ["PIP_VERBOSE"] = "3"
     server = ServerProcess([sys.executable, "-m", "endstone", "--yes", "--server-folder", str(target)],
