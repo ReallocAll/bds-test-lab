@@ -13,15 +13,15 @@ env:
 
 jobs:
   lifecycle:
-    name: ${{ matrix.platform }} / CPython ${{ matrix.python }}
+    name: Windows installer / stdin ${{ matrix.stdin }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
+        stdin: [inherit, devnull]
         include:
           - { platform: windows, os: windows-2025, python: '3.14', artifact: endstone-0.11.14.dev6-cp314-cp314-win_amd64.whl }
-          - { platform: windows, os: windows-2025, python: '3.15', artifact: endstone-0.11.14.dev6-cp315-cp315-win_amd64.whl }
     env:
       ENDKEEP_DEPLOYMENT: ${{ matrix.platform == 'windows' && 'installed-wheel' || 'plugins-wheel' }}
     defaults:
@@ -95,6 +95,22 @@ jobs:
       - name: Remove EndKeep before isolated control
         run: uv pip uninstall --python "$PYTHON" endstone-endkeep
 
+      - name: Compare installer standard input
+        env:
+          INSTALLER_STDIN: ${{ matrix.stdin }}
+        run: |
+          "$PYTHON" - <<'PY'
+          import os
+          from pathlib import Path
+          import sysconfig
+          path = Path(sysconfig.get_path("purelib")) / "endstone/plugin/plugin_loader.py"
+          text = path.read_text()
+          text = text.replace('                "-m",\n', '                "-X",\n                "importtime",\n                "-m",\n')
+          if os.environ["INSTALLER_STDIN"] == "devnull":
+              text = text.replace("            env=env,\n", "            env=env,\n            stdin=subprocess.DEVNULL,\n")
+          path.write_text(text)
+          PY
+
       - name: Build minimal installer control
         run: uv build --wheel --out-dir reload-diagnostic-wheel ./fixtures/endstone-reload-diagnostic
 
@@ -105,7 +121,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: windows-installer-diagnosis-${{ matrix.python }}
+          name: windows-installer-diagnosis-${{ matrix.stdin }}
           path: |
             endkeep-installer-control.json
             endkeep-installer-control.log

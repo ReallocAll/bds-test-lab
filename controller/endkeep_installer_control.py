@@ -23,9 +23,6 @@ def main() -> int:
     write_disabled_bstats_config(target)
     evidence = {"status": "RUNNING", "endkeep_installed": False, "worker_created": False}
     result = root / "endkeep-installer-control.json"
-    trace = root / "pip-traces"
-    trace.mkdir(exist_ok=True)
-    os.environ["ENDKEEP_INSTALLER_TRACE"] = str(trace)
     os.environ["PIP_LOG"] = str(root / "endkeep-installer-pip.log")
     os.environ["PIP_VERBOSE"] = "3"
     server = ServerProcess([sys.executable, "-m", "endstone", "--yes", "--server-folder", str(target)],
