@@ -1,0 +1,1 @@
+Auxiliary research branch for Spark PR #49 no-shim Windows BDS validation. Do not merge as part of Spark PR #49.

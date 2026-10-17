@@ -17,13 +17,22 @@ class CiLifecycleControl(Plugin):
             "description": "Gracefully shut down Endstone for CI lifecycle validation",
             "usages": ["/cishutdown"],
             "permissions": ["endstone_ci_lifecycle_control.command.cishutdown"],
-        }
+        },
+        "ciack": {
+            "description": "Acknowledge completion of a CI native-console command",
+            "usages": ["/ciack <token: str>"],
+            "permissions": ["endstone_ci_lifecycle_control.command.ciack"],
+        },
     }
     permissions = {  # noqa: RUF012 - Endstone discovers permission metadata from the plugin class.
         "endstone_ci_lifecycle_control.command.cishutdown": {
             "description": "Allow the CI lifecycle harness to shut down Endstone gracefully.",
             "default": "op",
-        }
+        },
+        "endstone_ci_lifecycle_control.command.ciack": {
+            "description": "Allow only the console to acknowledge ordered CI commands.",
+            "default": "console",
+        },
     }
 
     def __init__(self) -> None:
@@ -35,6 +44,8 @@ class CiLifecycleControl(Plugin):
     def on_enable(self) -> None:
         if self.get_command("cishutdown") is None:
             raise RuntimeError("Endstone did not register the cishutdown command")
+        if self.get_command("ciack") is None:
+            raise RuntimeError("Endstone did not register the ciack command")
         self.data_folder.mkdir(parents=True, exist_ok=True)
         self._request_path = self.data_folder / "shutdown.request"
         self._command_path = self.data_folder / "command.request"
@@ -49,7 +60,7 @@ class CiLifecycleControl(Plugin):
         if self._file_control_task is None:
             raise RuntimeError("Endstone did not schedule the CI file control")
         self.logger.info(
-            "CI lifecycle control enabled; cishutdown registered; "
+            "CI lifecycle control enabled; cishutdown registered; ciack registered; "
             f"command-control={self._command_path.resolve()}; file-control={self._request_path.resolve()}"
         )
 
@@ -99,7 +110,13 @@ class CiLifecycleControl(Plugin):
         self.server.shutdown()
 
     def on_command(self, sender: CommandSender, command: Command, args: list[str]) -> bool:
-        del sender, args
+        del sender
+        if command.name == "ciack":
+            if len(args) != 1 or not args[0].strip():
+                self.logger.error("CI command acknowledgement rejected: token is required")
+                return False
+            self.logger.info(f"CI command transport acknowledged; token={args[0].strip()}")
+            return True
         if command.name != "cishutdown":
             return False
         self.logger.info("CI lifecycle shutdown requested")
