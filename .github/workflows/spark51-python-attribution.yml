@@ -1,0 +1,102 @@
+name: Spark PR51 Python attribution
+
+on:
+  pull_request:
+    paths:
+      - ".github/spark51-candidate.txt"
+      - ".github/workflows/spark51-python-attribution.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    name: CPython ${{ matrix.python-version }} runtime
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13', '3.14']
+
+    steps:
+      - name: Checkout lab
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Resolve exact Spark candidate
+        id: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(tr -d '\r\n ' < .github/spark51-candidate.txt)"
+          test "${#sha}" = 40
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact Spark candidate
+        uses: actions/checkout@v4
+        with:
+          repository: ReallocAll/spark
+          ref: ${{ steps.candidate.outputs.sha }}
+          path: spark-src
+          persist-credentials: false
+
+      - name: Verify exact Spark provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C spark-src rev-parse HEAD)" = "${{ steps.candidate.outputs.sha }}"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Locate libpython
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_ENV"
+          import os
+          import sysconfig
+          libdir = sysconfig.get_config_var('LIBDIR')
+          library = sysconfig.get_config_var('LDLIBRARY') or sysconfig.get_config_var('INSTSONAME')
+          if not libdir or not library:
+              raise SystemExit('setup-python did not expose a shared libpython')
+          path = os.path.join(libdir, library)
+          if not os.path.isfile(path):
+              raise SystemExit(f'libpython not found: {path}')
+          print(f'SPARK_TEST_LIBPYTHON={path}')
+          PY
+
+      - name: Build and run shadow-stack stress
+        shell: bash
+        working-directory: spark-src
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror \
+            -Isrc tests/native/python/python_shadow_stack_test.cpp \
+            -pthread -o python-shadow-stack-test
+          ./python-shadow-stack-test
+
+      - name: Build and run real attribution runtime
+        shell: bash
+        working-directory: spark-src
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror \
+            -Isrc tests/native/python/python_attribution_runtime_test.cpp \
+            src/native/sampler/thread_info.cpp \
+            -ldl -pthread -o python-attribution-runtime-test
+          ./python-attribution-runtime-test
+
+      - name: Build and run reload identity regression
+        shell: bash
+        working-directory: spark-src
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror \
+            -Isrc tests/native/python/python_reload_identity_test.cpp \
+            src/native/sampler/thread_info.cpp \
+            -ldl -pthread -o python-reload-identity-test
+          ./python-reload-identity-test

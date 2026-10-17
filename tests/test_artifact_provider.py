@@ -139,8 +139,16 @@ class ArtifactProviderTest(unittest.TestCase):
             },
         }
         artifacts = {
-            "endstone": {"id": 60, "name": "endstone-linux.zip"},
-            "spark": {"id": 61, "name": "spark-linux"},
+            "endstone": {
+                "id": 60,
+                "name": "endstone-linux.zip",
+                "digest": "sha256:endstone-api-digest",
+            },
+            "spark": {
+                "id": 61,
+                "name": "spark-linux",
+                "digest": "sha256:spark-api-digest",
+            },
         }
         calls: list[tuple[str, str, str | None]] = []
 
@@ -172,6 +180,14 @@ class ArtifactProviderTest(unittest.TestCase):
         )
         self.assertEqual(result["components"]["endstone"]["sha"], endstone_sha)
         self.assertEqual(result["components"]["spark"]["sha"], spark_sha)
+        self.assertEqual(
+            result["components"]["endstone"]["artifact"]["digest"],
+            "sha256:endstone-api-digest",
+        )
+        self.assertEqual(
+            result["components"]["spark"]["artifact"]["digest"],
+            "sha256:spark-api-digest",
+        )
 
     def test_explicit_component_shas_override_environment(self) -> None:
         spark_sha = "3" * 40
